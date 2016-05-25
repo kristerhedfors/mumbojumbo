@@ -15,6 +15,7 @@ import hashlib
 import Queue
 import base64
 import random
+import re
 
 
 # logging.basicConfig(level=logging.DEBUG)
@@ -52,6 +53,15 @@ class Mumbojumbo(object):
         self._missing_count = {}
         self._history = {}
         self.outq = Queue.Queue()
+        sexpr = r's-(?P<uniq_id>[A-Za-z0-9]+)' +\
+                r'-(?P<count>[0-9]+)' +\
+                r'-(?P<checksum>[A-Za-z0-9]+)'
+        dexpr = r'd-(?P<uniq_id>[A-Za-z0-9]+)' +\
+                r'-(?P<idx>[0-9]+)' +\
+                r'-(?P<chunk>[A-Za-z0-9]+)' +\
+                r'-(?P<checksum>[A-Za-z0-9]+)'
+        self._sexpr = re.compile(sexpr)
+        self._dexpr = re.compile(dexpr)
 
     def gen_chunks(self, data):
         encoded = b32enc(data)
@@ -117,6 +127,24 @@ class Mumbojumbo(object):
         h = 's-{0}-{1}-{2}{3}'.format(uniq_id, count, checksum, tld)
         return h
 
+    def _handle_spacket(self, uniq_id, count):
+        if uniq_id in self._history:
+            return
+        count = int(count)
+        logger.debug('asserting')
+        assert count <= self._max_count
+        self._packets[uniq_id] = [None] * count
+        self._missing_count[uniq_id] = count
+        logger.debug('S packet done')
+
+    def _handle_dpacket(self, uniq_id, idx, chunk):
+        if uniq_id in self._packets:
+            if self._packets[uniq_id][idx] is None:
+                self._packets[uniq_id][idx] = chunk
+                self._missing_count[uniq_id] -= 1
+            if self._missing_count[uniq_id] == 0:
+                self.finalize(uniq_id)
+
     def parse_dnsname(self, h, tld=tld):
         '''
             Parse some dnsname. Once the start-dnsname
@@ -127,32 +155,19 @@ class Mumbojumbo(object):
         if not h.endswith(tld):
             return
         h = h[:-len(tld)]
-        if h.startswith('s-'):
-            logger.debug('S packet')
-            h = h[2:]
-            (uniq_id, count, checksum) = h.split('-')
+        m = self._sexpr.match(h)
+        if m:
+            checksum = m.group('checksum')
             self.verify_checksum(_h.replace(checksum, ''), checksum)
-            if uniq_id in self._history:
-                return
-            count = int(count)
-            logger.debug('asserting')
-            assert count <= self._max_count
-            self._packets[uniq_id] = [None] * count
-            self._missing_count[uniq_id] = count
-            logger.debug('S packet done')
-        elif h.startswith('d-'):
-            h = h[2:]
-            (uniq_id, idx, chunk, checksum) = h.split('-')
+            self._handle_spacket(m.group('uniq_id'),
+                                 int(m.group('count')))
+        m = self._dexpr.match(h)
+        if m:
+            checksum = m.group('checksum')
             self.verify_checksum(_h.replace(checksum, ''), checksum)
-            if uniq_id in self._history:
-                return
-            idx = int(idx)
-            if uniq_id in self._packets:
-                if self._packets[uniq_id][idx] is None:
-                    self._packets[uniq_id][idx] = chunk
-                    self._missing_count[uniq_id] -= 1
-                if self._missing_count[uniq_id] == 0:
-                    self.finalize(uniq_id)
+            self._handle_dpacket(m.group('uniq_id'),
+                                 int(m.group('idx')),
+                                 m.group('chunk'))
 
     def finalize(self, uniq_id):
         b32buf = ''.join(self._packets[uniq_id])
@@ -176,6 +191,9 @@ def ping_hosts(hosts):
 
 
 def read_dns_queries(iff):
+    '''
+        TODO: add -R dns.qry.name matches '.*tld'
+    '''
     cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
     p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
     line = p.stdout.readline().strip()
