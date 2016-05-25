@@ -234,23 +234,12 @@ def test_server(seed=123, rounds=10):
 def main(*args):
     mj = Mumbojumbo()
 
-    if args[0] == '--server':
+    if args[0] == '--test-server':
         test_server()
         sys.exit()
 
-        for line in read_dns_queries('eth0'):
-            mj.parse_dnsname(line)
-            if not mj.outq.empty():
-                packet = mj.outq.get()
-                print 'Got packet:', repr(packet)
-        sys.exit()
-
-    elif args[0] == '--client':
+    elif args[0] == '--test-client':
         test_client()
-        sys.exit()
-        chunks = mj.split('aaaaaaaaaabbbbbbccccccccdddddddeeeeeeeeffffff')
-        print '\n'.join(chunks)
-        ping_hosts(chunks)
         sys.exit()
 
 
