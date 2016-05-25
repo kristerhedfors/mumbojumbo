@@ -8,18 +8,17 @@
 import sys
 import logging
 import subprocess
-import multiprocessing
-import socket
 import time
 import os
 import hmac
 import hashlib
 import Queue
-import re
 import base64
+import random
 
 
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +50,7 @@ class Mumbojumbo(object):
     def __init__(self):
         self._packets = {}
         self._missing_count = {}
+        self._history = {}
         self.outq = Queue.Queue()
 
     def gen_chunks(self, data):
@@ -91,6 +91,9 @@ class Mumbojumbo(object):
         assert self.calc_checksum(msg) == checksum
 
     def split(self, data, tld=tld):
+        '''
+            split data into a start-dnsname and a number of data-dnsnames
+        '''
         lst = []
         uniq_id = self.get_uniq_id()
         chunks = self.gen_chunks(data)
@@ -114,7 +117,12 @@ class Mumbojumbo(object):
         h = 's-{0}-{1}-{2}{3}'.format(uniq_id, count, checksum, tld)
         return h
 
-    def parse_packet(self, h, tld=tld):
+    def parse_dnsname(self, h, tld=tld):
+        '''
+            Parse some dnsname. Once the start-dnsname
+            and all data chunks are obtained, the entire packet
+            is reassembled and added to Queue self.outq
+        '''
         _h = h
         if not h.endswith(tld):
             return
@@ -124,6 +132,8 @@ class Mumbojumbo(object):
             h = h[2:]
             (uniq_id, count, checksum) = h.split('-')
             self.verify_checksum(_h.replace(checksum, ''), checksum)
+            if uniq_id in self._history:
+                return
             count = int(count)
             logger.debug('asserting')
             assert count <= self._max_count
@@ -134,6 +144,8 @@ class Mumbojumbo(object):
             h = h[2:]
             (uniq_id, idx, chunk, checksum) = h.split('-')
             self.verify_checksum(_h.replace(checksum, ''), checksum)
+            if uniq_id in self._history:
+                return
             idx = int(idx)
             if uniq_id in self._packets:
                 if self._packets[uniq_id][idx] is None:
@@ -148,42 +160,99 @@ class Mumbojumbo(object):
         self.outq.put(buf)
         del self._packets[uniq_id]
         del self._missing_count[uniq_id]
+        self._history[uniq_id] = True
 
 
 def ping_hosts(hosts):
     plist = []
+    devnull = open(os.devnull, 'w')
     for host in hosts:
         cmd = 'ping -c1 -w1 {0}'.format(host)
-        time.sleep(0.1)
-        p = subprocess.Popen(cmd.split())
+        time.sleep(0.01)
+        p = subprocess.Popen(cmd.split(), stderr=devnull)
     for p in plist:
         p.wait()
+    devnull.close()
+
+
+def read_dns_queries(iff):
+    cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
+    p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
+    line = p.stdout.readline().strip()
+    while line:
+        logger.debug('parsing ' + line)
+        yield line
+        logger.debug('reading next query...')
+        line = p.stdout.readline().strip()
+    p.wait()
+
+
+def test_client(seed=123, rounds=10):
+    mj = Mumbojumbo()
+    r = random.Random()
+    r.seed(seed)
+    for i in xrange(rounds):
+        data = os.urandom(random.randint(1, 100))
+        logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
+        datahash = hashlib.sha256(data).digest()
+        logger.info('HASH({0}): {1}'.format(len(datahash), repr(datahash)))
+        ping_hosts(mj.split(data))
+        ping_hosts(mj.split(datahash))
+    print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
+
+
+def test_server(seed=123, rounds=10):
+    mj = Mumbojumbo()
+    r = random.Random()
+    r.seed(seed)
+    while rounds > 0:
+        #
+        # getting packet with random data
+        #
+        data = None
+        datahash = None
+        for dnsname in read_dns_queries('eth0'):
+            mj.parse_dnsname(dnsname)
+            if not mj.outq.empty():
+                if not data:
+                    data = mj.outq.get()
+                    logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
+                else:
+                    datahash = mj.outq.get()
+                    logger.info('HASH({0}): {1}'.format(len(datahash),
+                                                        repr(datahash)))
+                    assert datahash == hashlib.sha256(data).digest()
+                    data = datahash = None
+                    rounds -= 1
+                sys.stdout.flush()
+            if rounds == 0:
+                break
+        sys.stdout.flush()
+    print 'SUCCESS all {0} packets had correct hashes'.format(rounds)
 
 
 def main(*args):
     mj = Mumbojumbo()
 
     if args[0] == '--server':
-        cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
-        p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
-        line = p.stdout.readline().strip()
-        while line:
-            logger.debug('parsing ' + line)
-            mj.parse_packet(line)
+        test_server()
+        sys.exit()
+
+        for line in read_dns_queries('eth0'):
+            mj.parse_dnsname(line)
             if not mj.outq.empty():
                 packet = mj.outq.get()
                 print 'Got packet:', repr(packet)
-            logger.debug('reading next query...')
-            line = p.stdout.readline().strip()
-        p.wait()
         sys.exit()
 
     elif args[0] == '--client':
+        test_client()
+        sys.exit()
         chunks = mj.split('aaaaaaaaaabbbbbbccccccccdddddddeeeeeeeeffffff')
         print '\n'.join(chunks)
         ping_hosts(chunks)
+        sys.exit()
 
 
 if __name__ == '__main__':
     sys.exit(main(*sys.argv[1:]))
-
