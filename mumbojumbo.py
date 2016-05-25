@@ -128,7 +128,7 @@ class Mumbojumbo(object):
         return h
 
     def _handle_spacket(self, uniq_id, count):
-        if uniq_id in self._history:
+        if uniq_id in self._history or uniq_id in self._packets:
             return
         count = int(count)
         logger.debug('asserting')
@@ -183,7 +183,7 @@ def ping_hosts(hosts):
     devnull = open(os.devnull, 'w')
     for host in hosts:
         cmd = 'ping -c1 -w1 {0}'.format(host)
-        time.sleep(0.01)
+        time.sleep(0.03)
         p = subprocess.Popen(cmd.split(), stderr=devnull)
     for p in plist:
         p.wait()
@@ -205,12 +205,10 @@ def read_dns_queries(iff):
     p.wait()
 
 
-def test_client(seed=123, rounds=10):
+def test_client(rounds=10):
     mj = Mumbojumbo()
-    r = random.Random()
-    r.seed(seed)
     for i in xrange(rounds):
-        data = os.urandom(random.randint(1, 100))
+        data = os.urandom(random.randint(0, 1024))
         logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
         datahash = hashlib.sha256(data).digest()
         logger.info('HASH({0}): {1}'.format(len(datahash), repr(datahash)))
@@ -219,10 +217,8 @@ def test_client(seed=123, rounds=10):
     print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
 
 
-def test_server(seed=123, rounds=10):
+def test_server(rounds=10):
     mj = Mumbojumbo()
-    r = random.Random()
-    r.seed(seed)
     while rounds > 0:
         #
         # getting packet with random data
@@ -253,11 +249,11 @@ def main(*args):
     mj = Mumbojumbo()
 
     if args[0] == '--test-server':
-        test_server()
+        test_server(rounds=100)
         sys.exit()
 
     elif args[0] == '--test-client':
-        test_client()
+        test_client(rounds=100)
         sys.exit()
 
 
