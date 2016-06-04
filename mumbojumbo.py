@@ -243,9 +243,8 @@ class Packet(object):
     def serialize(self):
         return self._data
 
-    @classmethod
-    def deserialize(cls, raw):
-        cls(data=raw)
+    def deserialize(self, raw):
+        self.__class__(data=raw)
 
 
 class Fragment(Packet):
@@ -262,8 +261,7 @@ class Fragment(Packet):
     def gen_packet_id(cls):
         return struct.unpack('I', nacl.public.random(4))[0]
 
-    @classmethod
-    def deserialize(cls, raw):
+    def deserialize(self, raw):
         packet_id = struct.unpack('I', raw[:4])[0]
         frag_index = struct.unpack('H', raw[4:6])[0]
         frag_count = struct.unpack('H', raw[6:8])[0]
@@ -271,8 +269,8 @@ class Fragment(Packet):
         data = raw[10:]
         assert datalen == len(data)
         assert frag_index < frag_count
-        return cls(packet_id=packet_id, frag_index=frag_index,
-                   frag_count=frag_count, data=data)
+        return self.__class__(packet_id=packet_id, frag_index=frag_index,
+                              frag_count=frag_count, data=data)
 
     #
     # __init__
@@ -312,6 +310,14 @@ class PublicFragment(Fragment):
         return super(PublicFragment, self).deserialize(plaintext)
 
 
+def _split2len(s, n):
+    def _f(s, n):
+        while s:
+            yield s[:n]
+            s = s[n:]
+    return list(_f(s, n))
+
+
 class DnsPublicFragment(PublicFragment):
     '''
         DNS-tunnel-style Packet fragment encrypted/decrypted using
@@ -327,13 +333,13 @@ class DnsPublicFragment(PublicFragment):
     def serialize(self):
         ser = super(DnsPublicFragment, self).serialize()
         serb32 = self._b32enc(ser)
-        parts = self._split2len(serb32, 63)
+        parts = _split2len(serb32, 63)
         dnsname = '.'.join(parts) + self._tld
-        print '>', dnsname
+        # print '>', dnsname
         return dnsname
 
     def deserialize(self, dnsname):
-        print '<', dnsname
+        # print '<', dnsname
         if dnsname.endswith(self._tld):
             serb32 = dnsname[:-len(self._tld)].replace('.', '')
             ser = self._b32dec(serb32)
@@ -349,12 +355,25 @@ class DnsPublicFragment(PublicFragment):
             s += '=' * (8 - r)
         return base64.b32decode(s)
 
-    def _split2len(self, s, n):
-        def _f(s, n):
-            while s:
-                yield s[:n]
-                s = s[n:]
-        return list(_f(s, n))
+
+class PacketEngine(object):
+
+    def __init__(self, frag_cls=None, max_frag_datalen=None):
+        self._frag_cls = frag_cls
+        self._max_fragment_datalen = max_frag_datalen
+        self._deserialize_queue = Queue.Queue()
+
+    def to_wire(self, packet_data):
+        '''
+            Generator yielding zero or more fragments from data.
+        '''
+        for frag_data in _split2len(packet_data, self._max_fragment_datalen):
+            frag = self._frag_cls(data=frag_data)
+            wire_data = frag.serialize()
+            yield wire_data
+
+    def from_wire(self, wire_data):
+        frag = self._frag_cls().deserialize(wire_data)
 
 
 def main(*args):
