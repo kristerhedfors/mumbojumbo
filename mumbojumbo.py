@@ -294,7 +294,9 @@ class Fragment(Packet):
 
 
 class PublicFragment(Fragment):
-
+    '''
+        Packet fragment encrypted/decrypted using nacl.public.Box().
+    '''
     def __init__(self, private_key=None, public_key=None, **kw):
         self._box = nacl.public.Box(private_key, public_key)
         super(PublicFragment, self).__init__(**kw)
@@ -308,6 +310,51 @@ class PublicFragment(Fragment):
     def deserialize(self, ciphertext):
         plaintext = self._box.decrypt(ciphertext=ciphertext)
         return super(PublicFragment, self).deserialize(plaintext)
+
+
+class DnsPublicFragment(PublicFragment):
+    '''
+        DNS-tunnel-style Packet fragment encrypted/decrypted using
+        nacl.public.Box().
+
+        Has the shape of:
+            '{Base32Encoded_PublicFragment}{tld}'
+    '''
+    def __init__(self, tld='', **kw):
+        self._tld = tld
+        super(DnsPublicFragment, self).__init__(**kw)
+
+    def serialize(self):
+        ser = super(DnsPublicFragment, self).serialize()
+        serb32 = self._b32enc(ser)
+        parts = self._split2len(serb32, 63)
+        dnsname = '.'.join(parts) + self._tld
+        print '>', dnsname
+        return dnsname
+
+    def deserialize(self, dnsname):
+        print '<', dnsname
+        if dnsname.endswith(self._tld):
+            serb32 = dnsname[:-len(self._tld)].replace('.', '')
+            ser = self._b32dec(serb32)
+            return super(DnsPublicFragment, self).deserialize(ser)
+
+    def _b32enc(self, s):
+        return base64.b32encode(s).replace('=', '').lower()
+
+    def _b32dec(self, s):
+        s = s.upper()
+        r = len(s) % 8
+        if r:
+            s += '=' * (8 - r)
+        return base64.b32decode(s)
+
+    def _split2len(self, s, n):
+        def _f(s, n):
+            while s:
+                yield s[:n]
+                s = s[n:]
+        return list(_f(s, n))
 
 
 def main(*args):
@@ -383,16 +430,20 @@ class MyTestMixin(object):
 
 class Test_PublicFragment(unittest.TestCase, MyTestMixin):
 
-    def test1(self):
+    def do_test_cls(self, cls, **kw):
         k1 = nacl.public.PrivateKey.generate()
         k2 = nacl.public.PrivateKey.generate()
-        # f1 = PublicFragment(private_key=k1, public_key=k2.public_key)
-        # f2 = PublicFragment(private_key=k2, public_key=k1.public_key)
-        pfcls1 = functools.partial(PublicFragment, private_key=k1,
-                                   public_key=k2.public_key)
-        pfcls2 = functools.partial(PublicFragment, private_key=k2,
-                                   public_key=k1.public_key)
+        # f1 = cls(private_key=k1, public_key=k2.public_key)
+        # f2 = cls(private_key=k2, public_key=k1.public_key)
+        pfcls1 = functools.partial(cls, private_key=k1,
+                                   public_key=k2.public_key, **kw)
+        pfcls2 = functools.partial(cls, private_key=k2,
+                                   public_key=k1.public_key, **kw)
         self.multi_public_serialize_deserialize(pfcls1, pfcls2)
+
+    def test_various_classes(self):
+        self.do_test_cls(PublicFragment)
+        self.do_test_cls(DnsPublicFragment, tld='.asdqwe.com')
 
     def test2(self):
         self.serialize_deserialize(Fragment, frag_index=3, frag_count=4,
