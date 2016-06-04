@@ -422,7 +422,8 @@ class MyTestMixin(object):
         frag_count = random.randint(frag_index + 1, frag_index + 100)
         datalist = ['']
         datalist += ['a']
-        datalist += [os.urandom(random.randint(0, 4096)) for i in xrange(100)]
+        datalist += [nacl.public.random(random.randint(0, 4096))
+                     for i in xrange(100)]
         for data in datalist:
             self.public_serialize_deserialize(pfcls1, pfcls2, frag_index,
                                               frag_count, data)
