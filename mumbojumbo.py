@@ -231,30 +231,30 @@ class PacketException(Exception):
     pass
 
 
-class Packet(object):
+class BaseFragment(object):
 
-    def __init__(self, data=''):
-        self._data = data
+    def __init__(self, frag_data=''):
+        self._frag_data = frag_data
 
     @property
-    def data(self):
-        return self._data
+    def frag_data(self):
+        return self._frag_data
 
     def serialize(self):
-        return self._data
+        return self._frag_data
 
     def deserialize(self, raw):
-        self.__class__(data=raw)
+        self.__class__(frag_data=raw)
 
 
-class Fragment(Packet):
+class Fragment(BaseFragment):
     '''
         Packet format:
             u32 packet_id
             u16 frag_index
             u16 frag_count
-            u16 len(data)
-            bytes data
+            u16 len(frag_data)
+            bytes frag_data
     '''
 
     @classmethod
@@ -266,11 +266,11 @@ class Fragment(Packet):
         frag_index = struct.unpack('H', raw[4:6])[0]
         frag_count = struct.unpack('H', raw[6:8])[0]
         datalen = struct.unpack('H', raw[8:10])[0]
-        data = raw[10:]
-        assert datalen == len(data)
+        frag_data = raw[10:]
+        assert datalen == len(frag_data)
         assert frag_index < frag_count
         return self.__class__(packet_id=packet_id, frag_index=frag_index,
-                              frag_count=frag_count, data=data)
+                              frag_count=frag_count, frag_data=frag_data)
 
     #
     # __init__
@@ -286,8 +286,8 @@ class Fragment(Packet):
         ser += struct.pack('I', self._packet_id)
         ser += struct.pack('H', self._frag_index)
         ser += struct.pack('H', self._frag_count)
-        ser += struct.pack('H', len(self._data))
-        ser += self._data
+        ser += struct.pack('H', len(self._frag_data))
+        ser += self._frag_data
         return ser
 
 
@@ -360,7 +360,7 @@ class PacketEngine(object):
 
     def __init__(self, frag_cls=None, max_frag_datalen=None):
         self._frag_cls = frag_cls
-        self._max_fragment_datalen = max_frag_datalen
+        self._max_frag_datalen = max_frag_datalen
         self._deserialize_queue = Queue.Queue()
 
     def to_wire(self, packet_data):
@@ -368,7 +368,7 @@ class PacketEngine(object):
             Generator yielding zero or more fragments from data.
         '''
         for frag_data in _split2len(packet_data, self._max_fragment_datalen):
-            frag = self._frag_cls(data=frag_data)
+            frag = self._frag_cls(frag_data=frag_data)
             wire_data = frag.serialize()
             yield wire_data
 
@@ -389,16 +389,18 @@ def main(*args):
 
 class MyTestMixin(object):
 
-    def serialize_deserialize(self, frag_cls, frag_index, frag_count, data):
+    def serialize_deserialize(self, frag_cls, frag_index, frag_count,
+                              frag_data):
         '''
             test deserialize(serialize()) of frag_cls
         '''
-        fr1 = frag_cls(frag_index=frag_index, frag_count=frag_count, data=data)
+        fr1 = frag_cls(frag_index=frag_index, frag_count=frag_count,
+                       frag_data=frag_data)
         fr2 = fr1.deserialize(fr1.serialize())
         assert fr1._packet_id == fr2._packet_id
         assert frag_index == fr1._frag_index == fr2._frag_index
         assert frag_count == fr1._frag_count == fr2._frag_count
-        assert data == fr1.data == fr2.data
+        assert frag_data == fr1.frag_data == fr2.frag_data
 
     def multi_serialize_deserialize(self, frag_cls):
         '''
@@ -416,11 +418,12 @@ class MyTestMixin(object):
             self.serialize_deserialize(frag_cls, frag_index, frag_count, data)
 
     def public_serialize_deserialize(self, pfcls1, pfcls2, frag_index,
-                                     frag_count, data):
+                                     frag_count, frag_data):
         '''
             test deserialize(serialize()) of frag_cls
         '''
-        fr1 = pfcls1(frag_index=frag_index, frag_count=frag_count, data=data)
+        fr1 = pfcls1(frag_index=frag_index, frag_count=frag_count,
+                     frag_data=frag_data)
         #
         # pfcls2 is partial, therefore .func
         #
@@ -428,7 +431,7 @@ class MyTestMixin(object):
         assert fr1._packet_id == fr2._packet_id
         assert frag_index == fr1._frag_index == fr2._frag_index
         assert frag_count == fr1._frag_count == fr2._frag_count
-        assert data == fr1.data == fr2.data
+        assert frag_data == fr1.frag_data == fr2.frag_data
 
     def multi_public_serialize_deserialize(self, pfcls1, pfcls2):
         '''
@@ -467,7 +470,7 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
 
     def test2(self):
         self.serialize_deserialize(Fragment, frag_index=3, frag_count=4,
-                                   data='asdqwe')
+                                   frag_data='asdqwe')
         self.multi_serialize_deserialize(Fragment)
 
 
@@ -476,13 +479,14 @@ class Test_Fragment(unittest.TestCase):
     def test1(self):
         frag_index = 4
         frag_count = 7
-        data = 'foobar'
-        fr1 = Fragment(frag_index=frag_index, frag_count=frag_count, data=data)
+        frag_data = 'foobar'
+        fr1 = Fragment(frag_index=frag_index, frag_count=frag_count,
+                       frag_data=frag_data)
         fr2 = fr1.deserialize(fr1.serialize())
         assert fr1._packet_id == fr2._packet_id
         assert frag_index == fr1._frag_index == fr2._frag_index
         assert frag_count == fr1._frag_count == fr2._frag_count
-        assert data == fr1.data == fr2.data
+        assert frag_data == fr1.frag_data == fr2.frag_data
 
 
 if __name__ == '__main__':
