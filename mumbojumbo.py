@@ -5,17 +5,23 @@
 #  replay (no timestamp)
 #  hmac shared secret issues
 #
-import sys
-import logging
-import subprocess
-import time
-import os
-import hmac
-import hashlib
-import Queue
+#  b32enc(type + id + countOrIdx [ + data]) + tld
 import base64
+import functools
+import hashlib
+import hmac
+import logging
+import os
+import Queue
 import random
 import re
+import struct
+import subprocess
+import sys
+import time
+import unittest
+
+import nacl.public
 
 
 # logging.basicConfig(level=logging.DEBUG)
@@ -47,103 +53,86 @@ class Mumbojumbo(object):
     tld = '.mumbojumbo.sometld.xy'
     _hmac_key = 'frutticola94239482349582984010293090943048274389273'
     _max_count = 1024  # max hostname chunks allowed; prevent memory DoS
+    _outkey = nacl.public.PrivateKey.generate()
+    _inkey = nacl.public.PrivateKey.generate()
+    _outbox = nacl.public.Box(_outkey, _inkey.public_key)
+    _inbox = nacl.public.Box(_inkey, _outkey.public_key)
+
+    sexpr = r'(?P<b32nonce>[A-Za-z0-9.]+)' +\
+            r'\.s(?P<count>[0-9]+)' +\
+            tld.replace('.', '\\.')
+
+    dexpr = r'(?P<b32chunkparts>[A-Za-z0-9.]+)' +\
+            r'\.d(?P<idx>[0-9]+)' +\
+            tld.replace('.', '\\.')
 
     def __init__(self):
         self._packets = {}
         self._missing_count = {}
         self._history = {}
         self.outq = Queue.Queue()
-        sexpr = r's-(?P<uniq_id>[A-Za-z0-9]+)' +\
-                r'-(?P<count>[0-9]+)' +\
-                r'-(?P<checksum>[A-Za-z0-9]+)'
-        dexpr = r'd-(?P<uniq_id>[A-Za-z0-9]+)' +\
-                r'-(?P<idx>[0-9]+)' +\
-                r'-(?P<chunk>[A-Za-z0-9]+)' +\
-                r'-(?P<checksum>[A-Za-z0-9]+)'
         self._sexpr = re.compile(sexpr)
         self._dexpr = re.compile(dexpr)
 
-    def gen_chunks(self, data):
+    def _gen_chunks(self, data):
         encoded = b32enc(data)
         chunks = split2len(encoded, 32)
         return chunks
 
-    def encrypt(self, plaintext):
-        cmd = 'gpg -e --recipient krister@sometld.xy -e --yes'.split()
-        p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE)
-        p.stdin.write(plaintext)
-        p.stdin.flush()
-        p.stdin.close()
-        ciphertext = p.stdout.read()
-        p.wait()
+    def _encrypt(self, plaintext):
+        nonce = nacl.public.random(16)
+        ciphertext = self._outbox(plaintext, nonce)
         return ciphertext
 
-    def decrypt(self, ciphertext):
-        cmd = 'gpg -e --recipient krister@sometld.xy -e --yes'.split()
-        p = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                             stdout=subprocess.PIPE)
-        p.stdin.write(ciphertext)
-        p.stdin.flush()
-        p.stdin.close()
-        plaintext = p.stdout.read()
-        p.wait()
+    def _decrypt(self, ciphertext):
+        plaintext = self._inbox(ciphertext)
         return plaintext
 
-    def get_uniq_id(self):
-        return os.urandom(6).encode('hex')
-
-    def calc_checksum(self, msg):
-        h = hmac.new(self._hmac_key, msg=msg, digestmod=hashlib.sha256)
-        return h.hexdigest()[:12]
-
-    def verify_checksum(self, msg, checksum):
-        assert self.calc_checksum(msg) == checksum
-
-    def split(self, data, tld=tld):
+    def split(self, plaintext, tld=tld):
         '''
             split data into a start-dnsname and a number of data-dnsnames
         '''
         lst = []
-        uniq_id = self.get_uniq_id()
-        chunks = self.gen_chunks(data)
+        nonce = nacl.public.random(16)
+        ciphertext = self._encrypt(plaintext)
+        chunks = self._gen_chunks(ciphertext)
         for (i, chunk) in enumerate(chunks):
-            h = self.build_data_packet(uniq_id, i, chunk, tld)
+            h = self._build_data_packet(nonce, i, chunk, tld)
             lst.append(h)
-        count = len(lst)
-        h = self.build_start_packet(uniq_id, count, tld)
+        h = self._build_start_packet(nonce, len(chunks), tld)
         lst.insert(0, h)
         return lst
 
-    def build_data_packet(self, uniq_id, i, chunk, tld):
-        h = 'd-{0}-{1}-{2}-{3}{4}'.format(uniq_id, i, chunk, '', tld)
-        checksum = self.calc_checksum(h)
-        h = 'd-{0}-{1}-{2}-{3}{4}'.format(uniq_id, i, chunk, checksum, tld)
+    def _build_data_packet(self, nonce, i, chunk, tld):
+        h = '.'.join(split2len(b32enc(chunk), 63))
+        h += '.d{0}'.format(i)
+        h += tld
         return h
 
-    def build_start_packet(self, uniq_id, count, tld):
-        h = 's-{0}-{1}-{2}{3}'.format(uniq_id, count, '', tld)
-        checksum = self.calc_checksum(h)
-        h = 's-{0}-{1}-{2}{3}'.format(uniq_id, count, checksum, tld)
+    def _build_start_packet(self, nonce, count, tld):
+        h += b32enc(nonce)
+        h += '.s{0}'.format(count)
+        h += tld
         return h
 
-    def _handle_spacket(self, uniq_id, count):
-        if uniq_id in self._history or uniq_id in self._packets:
+    def _handle_spacket(self, nonce, count):
+        if nonce in self._history or nonce in self._packets:
             return
         count = int(count)
         logger.debug('asserting')
         assert count <= self._max_count
-        self._packets[uniq_id] = [None] * count
-        self._missing_count[uniq_id] = count
+        self._packets[nonce] = [None] * count
+        self._missing_count[nonce] = count
         logger.debug('S packet done')
 
-    def _handle_dpacket(self, uniq_id, idx, chunk):
-        if uniq_id in self._packets:
-            if self._packets[uniq_id][idx] is None:
-                self._packets[uniq_id][idx] = chunk
-                self._missing_count[uniq_id] -= 1
-            if self._missing_count[uniq_id] == 0:
-                self.finalize(uniq_id)
+    def _handle_dpacket(self, nonce, idx, b32chunkparts):
+        if nonce in self._packets:
+            if self._packets[nonce][idx] is None:
+                chunk = b32dec(b32chunkparts.replace('.', ''))
+                self._packets[nonce][idx] = chunk
+                self._missing_count[nonce] -= 1
+            if self._missing_count[nonce] == 0:
+                self._finalize(nonce)
 
     def parse_dnsname(self, h, tld=tld):
         '''
@@ -152,30 +141,24 @@ class Mumbojumbo(object):
             is reassembled and added to Queue self.outq
         '''
         _h = h
-        if not h.endswith(tld):
-            return
-        h = h[:-len(tld)]
         m = self._sexpr.match(h)
         if m:
-            checksum = m.group('checksum')
-            self.verify_checksum(_h.replace(checksum, ''), checksum)
-            self._handle_spacket(m.group('uniq_id'),
+            self._handle_spacket(m.group('nonce'),
                                  int(m.group('count')))
+            return
         m = self._dexpr.match(h)
         if m:
-            checksum = m.group('checksum')
-            self.verify_checksum(_h.replace(checksum, ''), checksum)
-            self._handle_dpacket(m.group('uniq_id'),
+            self._handle_dpacket(m.group('nonce'),
                                  int(m.group('idx')),
-                                 m.group('chunk'))
+                                 m.group('b32chunkparts'))
 
-    def finalize(self, uniq_id):
-        b32buf = ''.join(self._packets[uniq_id])
+    def _finalize(self, nonce):
+        b32buf = ''.join(self._packets[nonce])
         buf = b32dec(b32buf)
         self.outq.put(buf)
-        del self._packets[uniq_id]
-        del self._missing_count[uniq_id]
-        self._history[uniq_id] = True
+        del self._packets[nonce]
+        del self._missing_count[nonce]
+        self._history[nonce] = True
 
 
 def ping_hosts(hosts):
@@ -208,7 +191,7 @@ def read_dns_queries(iff):
 def test_client(rounds=10):
     mj = Mumbojumbo()
     for i in xrange(rounds):
-        data = os.urandom(random.randint(0, 1024))
+        data = nacl.public.random(random.randint(0, 1024))
         logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
         datahash = hashlib.sha256(data).digest()
         logger.info('HASH({0}): {1}'.format(len(datahash), repr(datahash)))
@@ -245,6 +228,90 @@ def test_server(rounds=10):
     print 'SUCCESS all {0} packets had correct hashes'.format(rounds)
 
 
+class PacketException(Exception):
+    pass
+
+
+class Packet(object):
+
+    def __init__(self, data=''):
+        self._data = data
+
+    @property
+    def data(self):
+        return self._data
+
+    def serialize(self):
+        yield self._data
+
+    @classmethod
+    def deserialize(cls, raw):
+        cls(data=data)
+
+
+
+class Fragment(Packet):
+    '''
+        Packet format:
+            u32 packet_id
+            u16 frag_index
+            u16 frag_count
+            u16 len(data)
+            bytes data
+    '''
+
+    @classmethod
+    def gen_packet_id(cls):
+        return struct.unpack('I', nacl.public.random(4))[0]
+
+    @classmethod
+    def deserialize(cls, raw):
+        packet_id = struct.unpack('I', raw[:4])[0]
+        frag_index = struct.unpack('H', raw[4:6])[0]
+        frag_count = struct.unpack('H', raw[6:8])[0]
+        datalen = struct.unpack('H', raw[8:10])[0]
+        data = raw[10:]
+        assert datalen == len(data)
+        assert frag_index < frag_count
+        return cls(packet_id=packet_id, frag_index=frag_index,
+                   frag_count=frag_count, data=data)
+
+    #
+    # __init__
+    #
+    def __init__(self, packet_id=None, frag_index=0, frag_count=1, **kw):
+        self._packet_id = packet_id or self.__class__.gen_packet_id()
+        self._frag_index = frag_index
+        self._frag_count = frag_count
+        super(Fragment, self).__init__(**kw)
+
+    def serialize(self):
+        ser = ''
+        ser += struct.pack('I', self._packet_id)
+        ser += struct.pack('H', self._frag_index)
+        ser += struct.pack('H', self._frag_count)
+        ser += struct.pack('H', len(self._data))
+        ser += self._data
+        return ser
+
+
+class PublicFragment(Fragment):
+
+    def __init__(self, private_key=None, public_key=None, **kw):
+        self._box = nacl.public.Box(private_key, public_key)
+        super(PublicFragment, self).__init__(**kw)
+
+    def serialize(self):
+        plaintext = super(PublicFragment, self).serialize()
+        nonce = nacl.public.random(24)
+        ciphertext = self._box.encrypt(plaintext=plaintext, nonce=nonce)
+        return ciphertext
+
+    def deserialize(self, ciphertext):
+        plaintext = self._box.decrypt(ciphertext=ciphertext)
+        return super(PublicFragment, self).deserialize(plaintext)
+
+
 def main(*args):
     mj = Mumbojumbo()
 
@@ -257,5 +324,103 @@ def main(*args):
         sys.exit()
 
 
+class MyTestMixin(object):
+
+    def serialize_deserialize(self, frag_cls, frag_index, frag_count, data):
+        '''
+            test deserialize(serialize()) of frag_cls
+        '''
+        fr1 = frag_cls(frag_index=frag_index, frag_count=frag_count, data=data)
+        fr2 = fr1.deserialize(fr1.serialize())
+        assert fr1._packet_id == fr2._packet_id
+        assert frag_index == fr1._frag_index == fr2._frag_index
+        assert frag_count == fr1._frag_count == fr2._frag_count
+        assert data == fr1.data == fr2.data
+
+    def multi_serialize_deserialize(self, frag_cls):
+        '''
+            test deserialize(serialize()) of frag_cls with:
+            * zero-length data
+            * one byte length data
+            * 100 random data lengths between 0 and 1024
+        '''
+        frag_index = random.randint(0,100)
+        frag_count = random.randint(frag_index + 1, frag_index + 100)
+        datalist = ['']
+        datalist += ['a']
+        datalist += [os.urandom(random.randint(0, 4096)) for i in xrange(100)]
+        for data in datalist:
+            self.serialize_deserialize(frag_cls, frag_index, frag_count, data)
+
+    def public_serialize_deserialize(self, pfcls1, pfcls2, frag_index,
+                                     frag_count, data):
+        '''
+            test deserialize(serialize()) of frag_cls
+        '''
+        fr1 = pfcls1(frag_index=frag_index, frag_count=frag_count, data=data)
+        #
+        # pfcls2 is partial, therefore .func
+        #
+        fr2 = pfcls2().deserialize(fr1.serialize())
+        assert fr1._packet_id == fr2._packet_id
+        assert frag_index == fr1._frag_index == fr2._frag_index
+        assert frag_count == fr1._frag_count == fr2._frag_count
+        assert data == fr1.data == fr2.data
+
+    def multi_public_serialize_deserialize(self, pfcls1, pfcls2):
+        '''
+            test deserialize(serialize()) of frag_cls with:
+            * zero-length data
+            * one byte length data
+            * 100 random data lengths between 0 and 1024
+        '''
+        frag_index = random.randint(0, 100)
+        frag_count = random.randint(frag_index + 1, frag_index + 100)
+        datalist = ['']
+        datalist += ['a']
+        datalist += [os.urandom(random.randint(0, 4096)) for i in xrange(100)]
+        for data in datalist:
+            self.public_serialize_deserialize(pfcls1, pfcls2, frag_index,
+                                              frag_count, data)
+
+
+class Test_PublicFragment(unittest.TestCase, MyTestMixin):
+
+    def test1(self):
+        k1 = nacl.public.PrivateKey.generate()
+        k2 = nacl.public.PrivateKey.generate()
+        f1 = PublicFragment(private_key=k1, public_key=k2.public_key)
+        f2 = PublicFragment(private_key=k2, public_key=k1.public_key)
+        pfcls1 = functools.partial(PublicFragment, private_key=k1,
+                                   public_key=k2.public_key)
+        pfcls2 = functools.partial(PublicFragment, private_key=k2,
+                                   public_key=k1.public_key)
+        self.multi_public_serialize_deserialize(pfcls1, pfcls2)
+
+    def test2(self):
+        self.serialize_deserialize(Fragment, frag_index=3, frag_count=4,
+                                   data='asdqwe')
+        self.multi_serialize_deserialize(Fragment)
+
+
+class Test_Fragment(unittest.TestCase):
+
+    def test1(self):
+        frag_index = 4
+        frag_count = 7
+        data = 'foobar'
+        fr1 = Fragment(frag_index=frag_index, frag_count=frag_count, data=data)
+        fr2 = fr1.deserialize(fr1.serialize())
+        assert fr1._packet_id == fr2._packet_id
+        assert frag_index == fr1._frag_index == fr2._frag_index
+        assert frag_count == fr1._frag_count == fr2._frag_count
+        assert data == fr1.data == fr2.data
+
+
 if __name__ == '__main__':
-    sys.exit(main(*sys.argv[1:]))
+    if sys.argv[1] == '--test':
+        del sys.argv[1]
+        import unittest
+        unittest.main()
+    else:
+        sys.exit(main(*sys.argv[1:]))
