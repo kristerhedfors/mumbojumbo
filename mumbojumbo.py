@@ -265,9 +265,9 @@ class Fragment(BaseFragment):
         packet_id = struct.unpack('I', raw[:4])[0]
         frag_index = struct.unpack('H', raw[4:6])[0]
         frag_count = struct.unpack('H', raw[6:8])[0]
-        datalen = struct.unpack('H', raw[8:10])[0]
+        frag_data_len = struct.unpack('H', raw[8:10])[0]
         frag_data = raw[10:]
-        assert datalen == len(frag_data)
+        assert frag_data_len == len(frag_data)
         assert 1 <= frag_count
         assert frag_index < frag_count
         return self.__class__(packet_id=packet_id, frag_index=frag_index,
@@ -359,9 +359,9 @@ class DnsPublicFragment(PublicFragment):
 
 class PacketEngine(object):
 
-    def __init__(self, frag_cls=None, max_frag_datalen=None):
+    def __init__(self, frag_cls=None, max_frag_data_len=None):
         self._frag_cls = frag_cls
-        self._max_frag_datalen = max_frag_datalen
+        self._max_frag_data_len = max_frag_data_len
         self._packet_assembly = {}
         self._packet_assembly_counter = {}
 
@@ -369,7 +369,7 @@ class PacketEngine(object):
         '''
             Generator yielding zero or more fragments from data.
         '''
-        for frag_data in _split2len(packet_data, self._max_fragment_datalen):
+        for frag_data in _split2len(packet_data, self._max_frag_data_len):
             frag = self._frag_cls(frag_data=frag_data)
             wire_data = frag.serialize()
             yield wire_data
@@ -383,10 +383,10 @@ class PacketEngine(object):
         if frag is not None:
             packet_assembly = self._packet_assembly
             packet_id = frag._packet_id
-            frag_data_lst = None
             #
             # get frag_data_lst for packet
             #
+            frag_data_lst = None
             if packet_id not in packet_assembly:
                 frag_data_lst = [None] * frag._frag_count
                 packet_assembly[packet_id] = frag_data_lst
