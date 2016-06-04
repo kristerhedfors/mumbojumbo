@@ -268,6 +268,7 @@ class Fragment(BaseFragment):
         datalen = struct.unpack('H', raw[8:10])[0]
         frag_data = raw[10:]
         assert datalen == len(frag_data)
+        assert 1 <= frag_count
         assert frag_index < frag_count
         return self.__class__(packet_id=packet_id, frag_index=frag_index,
                               frag_count=frag_count, frag_data=frag_data)
@@ -361,7 +362,8 @@ class PacketEngine(object):
     def __init__(self, frag_cls=None, max_frag_datalen=None):
         self._frag_cls = frag_cls
         self._max_frag_datalen = max_frag_datalen
-        self._deserialize_queue = Queue.Queue()
+        self._packet_assembly = {}
+        self._packet_assembly_counter = {}
 
     def to_wire(self, packet_data):
         '''
@@ -373,7 +375,47 @@ class PacketEngine(object):
             yield wire_data
 
     def from_wire(self, wire_data):
+        '''
+            Returns packet if wire_data constitutes final missing fragment
+            of a packet, otherwise None.
+        '''
         frag = self._frag_cls().deserialize(wire_data)
+        if frag is not None:
+            packet_assembly = self._packet_assembly
+            packet_id = frag._packet_id
+            frag_data_lst = None
+            #
+            # get frag_data_lst for packet
+            #
+            if packet_id not in packet_assembly:
+                frag_data_lst = [None] * frag._frag_count
+                packet_assembly[packet_id] = frag_data_lst
+            elif len(packet_assembly[packet_id]) != frag._frag_count:
+                print 'ERR _frag_count mismatch'
+                return
+            else:  # packet is known
+                frag_data_lst = packet_assembly[packet_id]
+            #
+            # insert fragment if new
+            #
+            if frag_data_lst[frag._frag_index] is not None:
+                counter = self._packet_assembly_counter
+                frag_data_lst[frag._frag_index] = frag._frag_data
+                if packet_id not in counter:
+                    counter[packet_id] = frag._frag_count
+                counter[frag._frag_count] -= 1
+                if counter[frag._frag_count] < 0:
+                    raise Exception('error: counter < 0')
+                if counter[frag._frag_count] == 0:
+                    #
+                    # final fragment obtained, return packet
+                    #
+                    return self._finalize_packet(packet_id)
+
+    def _finalize_packet(self, packet_id):
+        frag_data_lst = self._packet_assembly[packet_id]
+        packet_data = ''.join(frag_data_lst)
+        return packet_data
 
 
 def main(*args):
@@ -448,6 +490,21 @@ class MyTestMixin(object):
                                               frag_count, data)
 
 
+class Test_Fragment(unittest.TestCase):
+
+    def test1(self):
+        frag_index = 4
+        frag_count = 7
+        frag_data = 'foobar'
+        fr1 = Fragment(frag_index=frag_index, frag_count=frag_count,
+                       frag_data=frag_data)
+        fr2 = fr1.deserialize(fr1.serialize())
+        assert fr1._packet_id == fr2._packet_id
+        assert frag_index == fr1._frag_index == fr2._frag_index
+        assert frag_count == fr1._frag_count == fr2._frag_count
+        assert frag_data == fr1.frag_data == fr2.frag_data
+
+
 class Test_PublicFragment(unittest.TestCase, MyTestMixin):
 
     def do_test_cls(self, cls, **kw):
@@ -467,21 +524,6 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
         self.serialize_deserialize(Fragment, frag_index=3, frag_count=4,
                                    frag_data='asdqwe')
         self.multi_serialize_deserialize(Fragment)
-
-
-class Test_Fragment(unittest.TestCase):
-
-    def test1(self):
-        frag_index = 4
-        frag_count = 7
-        frag_data = 'foobar'
-        fr1 = Fragment(frag_index=frag_index, frag_count=frag_count,
-                       frag_data=frag_data)
-        fr2 = fr1.deserialize(fr1.serialize())
-        assert fr1._packet_id == fr2._packet_id
-        assert frag_index == fr1._frag_index == fr2._frag_index
-        assert frag_count == fr1._frag_count == fr2._frag_count
-        assert frag_data == fr1.frag_data == fr2.frag_data
 
 
 if __name__ == '__main__':
