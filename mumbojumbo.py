@@ -9,7 +9,6 @@
 import base64
 import functools
 import hashlib
-import hmac
 import logging
 import os
 import Queue
@@ -71,8 +70,8 @@ class Mumbojumbo(object):
         self._missing_count = {}
         self._history = {}
         self.outq = Queue.Queue()
-        self._sexpr = re.compile(sexpr)
-        self._dexpr = re.compile(dexpr)
+        self._sexpr = re.compile(self.sexpr)
+        self._dexpr = re.compile(self.dexpr)
 
     def _gen_chunks(self, data):
         encoded = b32enc(data)
@@ -110,6 +109,7 @@ class Mumbojumbo(object):
         return h
 
     def _build_start_packet(self, nonce, count, tld):
+        h = ''
         h += b32enc(nonce)
         h += '.s{0}'.format(count)
         h += tld
@@ -140,7 +140,6 @@ class Mumbojumbo(object):
             and all data chunks are obtained, the entire packet
             is reassembled and added to Queue self.outq
         '''
-        _h = h
         m = self._sexpr.match(h)
         if m:
             self._handle_spacket(m.group('nonce'),
@@ -242,12 +241,11 @@ class Packet(object):
         return self._data
 
     def serialize(self):
-        yield self._data
+        return self._data
 
     @classmethod
     def deserialize(cls, raw):
-        cls(data=data)
-
+        cls(data=raw)
 
 
 class Fragment(Packet):
@@ -313,7 +311,6 @@ class PublicFragment(Fragment):
 
 
 def main(*args):
-    mj = Mumbojumbo()
 
     if args[0] == '--test-server':
         test_server(rounds=100)
@@ -344,7 +341,7 @@ class MyTestMixin(object):
             * one byte length data
             * 100 random data lengths between 0 and 1024
         '''
-        frag_index = random.randint(0,100)
+        frag_index = random.randint(0, 100)
         frag_count = random.randint(frag_index + 1, frag_index + 100)
         datalist = ['']
         datalist += ['a']
@@ -389,8 +386,8 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
     def test1(self):
         k1 = nacl.public.PrivateKey.generate()
         k2 = nacl.public.PrivateKey.generate()
-        f1 = PublicFragment(private_key=k1, public_key=k2.public_key)
-        f2 = PublicFragment(private_key=k2, public_key=k1.public_key)
+        # f1 = PublicFragment(private_key=k1, public_key=k2.public_key)
+        # f2 = PublicFragment(private_key=k2, public_key=k1.public_key)
         pfcls1 = functools.partial(PublicFragment, private_key=k1,
                                    public_key=k2.public_key)
         pfcls2 = functools.partial(PublicFragment, private_key=k2,
