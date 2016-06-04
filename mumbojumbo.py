@@ -424,9 +424,6 @@ class MyTestMixin(object):
         '''
         fr1 = pfcls1(frag_index=frag_index, frag_count=frag_count,
                      frag_data=frag_data)
-        #
-        # pfcls2 is partial, therefore .func
-        #
         fr2 = pfcls2().deserialize(fr1.serialize())
         assert fr1._packet_id == fr2._packet_id
         assert frag_index == fr1._frag_index == fr2._frag_index
@@ -456,8 +453,6 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
     def do_test_cls(self, cls, **kw):
         k1 = nacl.public.PrivateKey.generate()
         k2 = nacl.public.PrivateKey.generate()
-        # f1 = cls(private_key=k1, public_key=k2.public_key)
-        # f2 = cls(private_key=k2, public_key=k1.public_key)
         pfcls1 = functools.partial(cls, private_key=k1,
                                    public_key=k2.public_key, **kw)
         pfcls2 = functools.partial(cls, private_key=k2,
