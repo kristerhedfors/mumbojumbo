@@ -257,10 +257,6 @@ class Fragment(BaseFragment):
             bytes frag_data
     '''
 
-    @classmethod
-    def gen_packet_id(cls):
-        return struct.unpack('I', nacl.public.random(4))[0]
-
     def deserialize(self, raw):
         packet_id = struct.unpack('I', raw[:4])[0]
         frag_index = struct.unpack('H', raw[4:6])[0]
@@ -277,7 +273,7 @@ class Fragment(BaseFragment):
     # __init__
     #
     def __init__(self, packet_id=None, frag_index=0, frag_count=1, **kw):
-        self._packet_id = packet_id or self.__class__.gen_packet_id()
+        self._packet_id = packet_id or PacketEngine.gen_packet_id()
         self._frag_index = frag_index
         self._frag_count = frag_count
         super(Fragment, self).__init__(**kw)
@@ -361,6 +357,10 @@ class DnsPublicFragment(PublicFragment):
 
 class PacketEngine(object):
 
+    @classmethod
+    def gen_packet_id(cls):
+        return struct.unpack('I', nacl.public.random(4))[0]
+
     def __init__(self, frag_cls=None, max_frag_data_len=None):
         self._frag_cls = frag_cls
         self._max_frag_data_len = max_frag_data_len
@@ -376,10 +376,17 @@ class PacketEngine(object):
         '''
             Generator yielding zero or more fragments from data.
         '''
-        for frag_data in _split2len(packet_data, self._max_frag_data_len):
-            frag = self._frag_cls(frag_data=frag_data)
+        packet_id = self.__class__.gen_packet_id()
+        frag_data_lst = _split2len(packet_data, self._max_frag_data_len)
+        frag_count = len(frag_data_lst)
+        frag_index = 0
+        for frag_data in frag_data_lst:
+            frag = self._frag_cls(packet_id=packet_id, frag_index=frag_index,
+                                  frag_count=frag_count, frag_data=frag_data)
             wire_data = frag.serialize()
+            print 'YIELD FRAG', packet_id
             yield wire_data
+            frag_index += 1
 
     def from_wire(self, wire_data):
         '''
@@ -406,6 +413,7 @@ class PacketEngine(object):
             # insert fragment if new
             #
             if frag_data_lst[frag._frag_index] is None:
+                print 'is none'
                 counter = self._packet_assembly_counter
                 frag_data_lst[frag._frag_index] = frag._frag_data
                 if packet_id not in counter:
@@ -418,6 +426,7 @@ class PacketEngine(object):
                     # final fragment obtained, return packet
                     #
                     self._finalize_packet(packet_id)
+                print 'counter', counter[packet_id]
 
     def _finalize_packet(self, packet_id):
         frag_data_lst = self._packet_assembly[packet_id]
@@ -535,6 +544,13 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
 
 class Test_PacketEngine(unittest.TestCase, MyTestMixin):
 
+    def setUp(self):
+        packet_data_lst = ['a']
+        packet_data_lst += ['a']
+        packet_data_lst += [nacl.public.random(random.randint(1, 4096))
+                            for i in xrange(100)]
+        self.packet_data_lst = packet_data_lst
+
     def do_test_cls(self, cls, **kw):
         k1 = nacl.public.PrivateKey.generate()
         k2 = nacl.public.PrivateKey.generate()
@@ -542,12 +558,18 @@ class Test_PacketEngine(unittest.TestCase, MyTestMixin):
                                    public_key=k2.public_key, **kw)
         pfcls2 = functools.partial(DnsPublicFragment, private_key=k2,
                                    public_key=k1.public_key, **kw)
-        packet_data = 'foobar'
         pe1 = PacketEngine(frag_cls=pfcls1, max_frag_data_len=100)
         pe2 = PacketEngine(frag_cls=pfcls2, max_frag_data_len=100)
-        for wire_data in pe1.to_wire(packet_data=packet_data):
-            pe2.from_wire(wire_data=wire_data)
-        assert pe2.packet_outqueue.get() == packet_data
+        for packet_data in self.packet_data_lst:
+            for wire_data in pe1.to_wire(packet_data=packet_data):
+                print 'GOT FRAG'
+                pe2.from_wire(wire_data=wire_data)
+                print 'GOT FRAG DONE'
+            out_data = pe2.packet_outqueue.get()
+            print 'INN', len(packet_data), repr(packet_data)
+            print 'OUT', len(out_data), repr(out_data)
+            assert packet_data == out_data
+            assert pe2.packet_outqueue.empty()
 
     def test_classes(self):
         self.do_test_cls(PacketEngine)
