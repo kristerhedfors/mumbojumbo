@@ -327,7 +327,9 @@ class DnsPublicFragment(PublicFragment):
         Has the shape of:
             '{Base32Encoded_PublicFragment}{tld}'
     '''
-    def __init__(self, tld='', **kw):
+    DEFAULT_TLD = '.sometld.xy'
+
+    def __init__(self, tld=DEFAULT_TLD, **kw):
         self._tld = tld
         super(DnsPublicFragment, self).__init__(**kw)
 
@@ -364,6 +366,11 @@ class PacketEngine(object):
         self._max_frag_data_len = max_frag_data_len
         self._packet_assembly = {}
         self._packet_assembly_counter = {}
+        self._packet_outqueue = Queue.Queue()
+
+    @property
+    def packet_outqueue(self):
+        return self._packet_outqueue
 
     def to_wire(self, packet_data):
         '''
@@ -398,24 +405,24 @@ class PacketEngine(object):
             #
             # insert fragment if new
             #
-            if frag_data_lst[frag._frag_index] is not None:
+            if frag_data_lst[frag._frag_index] is None:
                 counter = self._packet_assembly_counter
                 frag_data_lst[frag._frag_index] = frag._frag_data
                 if packet_id not in counter:
                     counter[packet_id] = frag._frag_count
-                counter[frag._frag_count] -= 1
-                if counter[frag._frag_count] < 0:
+                counter[packet_id] -= 1
+                if counter[packet_id] < 0:
                     raise Exception('error: counter < 0')
-                if counter[frag._frag_count] == 0:
+                if counter[packet_id] == 0:
                     #
                     # final fragment obtained, return packet
                     #
-                    return self._finalize_packet(packet_id)
+                    self._finalize_packet(packet_id)
 
     def _finalize_packet(self, packet_id):
         frag_data_lst = self._packet_assembly[packet_id]
         packet_data = ''.join(frag_data_lst)
-        return packet_data
+        self.packet_outqueue.put(packet_data)
 
 
 def main(*args):
@@ -516,7 +523,7 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
                                    public_key=k1.public_key, **kw)
         self.multi_public_serialize_deserialize(pfcls1, pfcls2)
 
-    def test_various_classes(self):
+    def test_classes(self):
         self.do_test_cls(PublicFragment)
         self.do_test_cls(DnsPublicFragment, tld='.asdqwe.com')
 
@@ -524,6 +531,26 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
         self.serialize_deserialize(Fragment, frag_index=3, frag_count=4,
                                    frag_data='asdqwe')
         self.multi_serialize_deserialize(Fragment)
+
+
+class Test_PacketEngine(unittest.TestCase, MyTestMixin):
+
+    def do_test_cls(self, cls, **kw):
+        k1 = nacl.public.PrivateKey.generate()
+        k2 = nacl.public.PrivateKey.generate()
+        pfcls1 = functools.partial(DnsPublicFragment, private_key=k1,
+                                   public_key=k2.public_key, **kw)
+        pfcls2 = functools.partial(DnsPublicFragment, private_key=k2,
+                                   public_key=k1.public_key, **kw)
+        packet_data = 'foobar'
+        pe1 = PacketEngine(frag_cls=pfcls1, max_frag_data_len=100)
+        pe2 = PacketEngine(frag_cls=pfcls2, max_frag_data_len=100)
+        for wire_data in pe1.to_wire(packet_data=packet_data):
+            pe2.from_wire(wire_data=wire_data)
+        assert pe2.packet_outqueue.get() == packet_data
+
+    def test_classes(self):
+        self.do_test_cls(PacketEngine)
 
 
 if __name__ == '__main__':
