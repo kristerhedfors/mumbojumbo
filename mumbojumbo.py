@@ -13,7 +13,6 @@ import logging
 import os
 import Queue
 import random
-import re
 import struct
 import subprocess
 import sys
@@ -37,127 +36,6 @@ def b32dec(s):
     if r:
         s += '=' * (8 - r)
     return base64.b32decode(s)
-
-
-def split2len(s, n):
-    def _f(s, n):
-        while s:
-            yield s[:n]
-            s = s[n:]
-    return list(_f(s, n))
-
-
-class Mumbojumbo(object):
-
-    tld = '.mumbojumbo.sometld.xy'
-    _hmac_key = 'frutticola94239482349582984010293090943048274389273'
-    _max_count = 1024  # max hostname chunks allowed; prevent memory DoS
-    _outkey = nacl.public.PrivateKey.generate()
-    _inkey = nacl.public.PrivateKey.generate()
-    _outbox = nacl.public.Box(_outkey, _inkey.public_key)
-    _inbox = nacl.public.Box(_inkey, _outkey.public_key)
-
-    sexpr = r'(?P<b32nonce>[A-Za-z0-9.]+)' +\
-            r'\.s(?P<count>[0-9]+)' +\
-            tld.replace('.', '\\.')
-
-    dexpr = r'(?P<b32chunkparts>[A-Za-z0-9.]+)' +\
-            r'\.d(?P<idx>[0-9]+)' +\
-            tld.replace('.', '\\.')
-
-    def __init__(self):
-        self._packets = {}
-        self._missing_count = {}
-        self._history = {}
-        self.outq = Queue.Queue()
-        self._sexpr = re.compile(self.sexpr)
-        self._dexpr = re.compile(self.dexpr)
-
-    def _gen_chunks(self, data):
-        encoded = b32enc(data)
-        chunks = split2len(encoded, 32)
-        return chunks
-
-    def _encrypt(self, plaintext):
-        nonce = nacl.public.random(16)
-        ciphertext = self._outbox(plaintext, nonce)
-        return ciphertext
-
-    def _decrypt(self, ciphertext):
-        plaintext = self._inbox(ciphertext)
-        return plaintext
-
-    def split(self, plaintext, tld=tld):
-        '''
-            split data into a start-dnsname and a number of data-dnsnames
-        '''
-        lst = []
-        nonce = nacl.public.random(16)
-        ciphertext = self._encrypt(plaintext)
-        chunks = self._gen_chunks(ciphertext)
-        for (i, chunk) in enumerate(chunks):
-            h = self._build_data_packet(nonce, i, chunk, tld)
-            lst.append(h)
-        h = self._build_start_packet(nonce, len(chunks), tld)
-        lst.insert(0, h)
-        return lst
-
-    def _build_data_packet(self, nonce, i, chunk, tld):
-        h = '.'.join(split2len(b32enc(chunk), 63))
-        h += '.d{0}'.format(i)
-        h += tld
-        return h
-
-    def _build_start_packet(self, nonce, count, tld):
-        h = ''
-        h += b32enc(nonce)
-        h += '.s{0}'.format(count)
-        h += tld
-        return h
-
-    def _handle_spacket(self, nonce, count):
-        if nonce in self._history or nonce in self._packets:
-            return
-        count = int(count)
-        logger.debug('asserting')
-        assert count <= self._max_count
-        self._packets[nonce] = [None] * count
-        self._missing_count[nonce] = count
-        logger.debug('S packet done')
-
-    def _handle_dpacket(self, nonce, idx, b32chunkparts):
-        if nonce in self._packets:
-            if self._packets[nonce][idx] is None:
-                chunk = b32dec(b32chunkparts.replace('.', ''))
-                self._packets[nonce][idx] = chunk
-                self._missing_count[nonce] -= 1
-            if self._missing_count[nonce] == 0:
-                self._finalize(nonce)
-
-    def parse_dnsname(self, h, tld=tld):
-        '''
-            Parse some dnsname. Once the start-dnsname
-            and all data chunks are obtained, the entire packet
-            is reassembled and added to Queue self.outq
-        '''
-        m = self._sexpr.match(h)
-        if m:
-            self._handle_spacket(m.group('nonce'),
-                                 int(m.group('count')))
-            return
-        m = self._dexpr.match(h)
-        if m:
-            self._handle_dpacket(m.group('nonce'),
-                                 int(m.group('idx')),
-                                 m.group('b32chunkparts'))
-
-    def _finalize(self, nonce):
-        b32buf = ''.join(self._packets[nonce])
-        buf = b32dec(b32buf)
-        self.outq.put(buf)
-        del self._packets[nonce]
-        del self._missing_count[nonce]
-        self._history[nonce] = True
 
 
 def ping_hosts(hosts):
@@ -308,6 +186,9 @@ class PublicFragment(Fragment):
 
 
 def _split2len(s, n):
+    if s == '':
+        return ['']
+
     def _f(s, n):
         while s:
             yield s[:n]
@@ -384,7 +265,6 @@ class PacketEngine(object):
             frag = self._frag_cls(packet_id=packet_id, frag_index=frag_index,
                                   frag_count=frag_count, frag_data=frag_data)
             wire_data = frag.serialize()
-            print 'YIELD FRAG', packet_id
             yield wire_data
             frag_index += 1
 
@@ -413,7 +293,6 @@ class PacketEngine(object):
             # insert fragment if new
             #
             if frag_data_lst[frag._frag_index] is None:
-                print 'is none'
                 counter = self._packet_assembly_counter
                 frag_data_lst[frag._frag_index] = frag._frag_data
                 if packet_id not in counter:
@@ -426,7 +305,6 @@ class PacketEngine(object):
                     # final fragment obtained, return packet
                     #
                     self._finalize_packet(packet_id)
-                print 'counter', counter[packet_id]
 
     def _finalize_packet(self, packet_id):
         frag_data_lst = self._packet_assembly[packet_id]
@@ -545,34 +423,32 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
 class Test_PacketEngine(unittest.TestCase, MyTestMixin):
 
     def setUp(self):
-        packet_data_lst = ['a']
+        packet_data_lst = ['']
         packet_data_lst += ['a']
-        packet_data_lst += [nacl.public.random(random.randint(1, 4096))
-                            for i in xrange(100)]
-        self.packet_data_lst = packet_data_lst
-
-    def do_test_cls(self, cls, **kw):
+        packet_data_lst += [nacl.public.random(random.randint(1, 2048))
+                            for i in xrange(64)]
         k1 = nacl.public.PrivateKey.generate()
         k2 = nacl.public.PrivateKey.generate()
         pfcls1 = functools.partial(DnsPublicFragment, private_key=k1,
-                                   public_key=k2.public_key, **kw)
+                                   public_key=k2.public_key)
         pfcls2 = functools.partial(DnsPublicFragment, private_key=k2,
-                                   public_key=k1.public_key, **kw)
-        pe1 = PacketEngine(frag_cls=pfcls1, max_frag_data_len=100)
-        pe2 = PacketEngine(frag_cls=pfcls2, max_frag_data_len=100)
+                                   public_key=k1.public_key)
+        self.packet_data_lst = packet_data_lst
+        self.pfcls1 = pfcls1
+        self.pfcls2 = pfcls2
+
+    def do_test_cls(self, cls, **kw):
+        pe1 = PacketEngine(frag_cls=self.pfcls1, **kw)
+        pe2 = PacketEngine(frag_cls=self.pfcls2, **kw)
         for packet_data in self.packet_data_lst:
             for wire_data in pe1.to_wire(packet_data=packet_data):
-                print 'GOT FRAG'
                 pe2.from_wire(wire_data=wire_data)
-                print 'GOT FRAG DONE'
             out_data = pe2.packet_outqueue.get()
-            print 'INN', len(packet_data), repr(packet_data)
-            print 'OUT', len(out_data), repr(out_data)
             assert packet_data == out_data
             assert pe2.packet_outqueue.empty()
 
     def test_classes(self):
-        self.do_test_cls(PacketEngine)
+        self.do_test_cls(PacketEngine, max_frag_data_len=100)
 
 
 if __name__ == '__main__':
