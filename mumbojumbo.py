@@ -134,22 +134,6 @@ class Fragment(BaseFragment):
             u16 len(frag_data)
             bytes frag_data
     '''
-
-    def deserialize(self, raw):
-        packet_id = struct.unpack('I', raw[:4])[0]
-        frag_index = struct.unpack('H', raw[4:6])[0]
-        frag_count = struct.unpack('H', raw[6:8])[0]
-        frag_data_len = struct.unpack('H', raw[8:10])[0]
-        frag_data = raw[10:]
-        assert frag_data_len == len(frag_data)
-        assert 1 <= frag_count
-        assert frag_index < frag_count
-        return self.__class__(packet_id=packet_id, frag_index=frag_index,
-                              frag_count=frag_count, frag_data=frag_data)
-
-    #
-    # __init__
-    #
     def __init__(self, packet_id=None, frag_index=0, frag_count=1, **kw):
         self._packet_id = packet_id or PacketEngine.gen_packet_id()
         self._frag_index = frag_index
@@ -164,6 +148,18 @@ class Fragment(BaseFragment):
         ser += struct.pack('H', len(self._frag_data))
         ser += self._frag_data
         return ser
+
+    def deserialize(self, raw):
+        packet_id = struct.unpack('I', raw[:4])[0]
+        frag_index = struct.unpack('H', raw[4:6])[0]
+        frag_count = struct.unpack('H', raw[6:8])[0]
+        frag_data_len = struct.unpack('H', raw[8:10])[0]
+        frag_data = raw[10:]
+        assert frag_data_len == len(frag_data)
+        assert 1 <= frag_count
+        assert frag_index < frag_count
+        return self.__class__(packet_id=packet_id, frag_index=frag_index,
+                              frag_count=frag_count, frag_data=frag_data)
 
 
 class PublicFragment(Fragment):
