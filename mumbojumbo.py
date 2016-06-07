@@ -18,11 +18,12 @@ import subprocess
 import sys
 import time
 import unittest
+import pdb
 
 import nacl.public
 
 
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
 #  logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -150,10 +151,19 @@ class DnsPublicFragment(PublicFragment):
 
     def deserialize(self, dnsname):
         # print '<', dnsname
+        logger.debug('DnsPublicFragment: deserialize() enter')
         if dnsname.endswith(self._tld):
             serb32 = dnsname[:-len(self._tld)].replace('.', '')
             ser = self._b32dec(serb32)
-            return super(DnsPublicFragment, self).deserialize(ser)
+            val = super(DnsPublicFragment, self).deserialize(ser)
+            if val is None:
+                logger.debug('DnsPublicFragment: deserialize() error')
+            else:
+                logger.debug('DnsPublicFragment: deserialize() success')
+            return val
+        else:
+            msg = 'DnsPublicFragment: deserialize() invalid tld: ' + dnsname[:10]
+            logger.debug(msg)
 
     def _b32enc(self, s):
         return base64.b32encode(s).replace('=', '').lower()
@@ -365,6 +375,34 @@ def test_dns_query():
     name_server.query_all(names)
 
 
+def test_performance():
+    _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
+    private_key = nacl.public.PrivateKey(_key.decode('base64'))
+    pfcls = functools.partial(DnsPublicFragment, private_key=private_key,
+                              public_key=private_key.public_key)
+    packet_engine = PacketEngine(pfcls)
+    data = nacl.public.random(1024)
+
+    count = 1024
+    lst = []
+    ta = time.time()
+    for i in xrange(count):
+        for item in packet_engine.to_wire(data):
+            lst.append(item)
+    tb = time.time()
+    for item in lst:
+        packet_engine.from_wire(item)
+    tc = time.time()
+
+    while not packet_engine.packet_outqueue.empty():
+        packet_engine.packet_outqueue.get()
+        count -= 1
+    assert count == 0
+
+    print 'send time:', tb - ta
+    print 'recv time:', tc - tb
+
+
 def main(*args):
 
     _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
@@ -383,6 +421,10 @@ def main(*args):
 
     elif args[0] == '--test-dns':
         test_dns_query()
+        sys.exit()
+
+    elif args[0] == '--test-performance':
+        test_performance()
         sys.exit()
 
 
