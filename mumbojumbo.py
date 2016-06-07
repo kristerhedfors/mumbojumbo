@@ -38,7 +38,6 @@ def b32dec(s):
     return base64.b32decode(s)
 
 
-
 class PacketException(Exception):
     pass
 
@@ -119,6 +118,7 @@ def _split2len(s, n):
     assert n > 0
     if s == '':
         return ['']
+
     def _f(s, n):
         while s:
             yield s[:n]
@@ -206,7 +206,7 @@ class PacketEngine(object):
             Returns packet if wire_data constitutes final missing fragment
             of a packet, otherwise None.
         '''
-        logger.debug('from_wire() len(wire_data)==' + str(len(packet_data)))
+        logger.debug('from_wire() len(wire_data)==' + str(len(wire_data)))
         frag = self._frag_cls().deserialize(wire_data)
         if frag is not None:
             packet_assembly = self._packet_assembly
@@ -253,9 +253,10 @@ def ping_hosts(hosts):
     for host in hosts:
         cmd = 'ping -c1 -w1 {0}'.format(host)
         time.sleep(0.03)
+        logger.debug('ping_hosts(): ' + cmd)
         p = subprocess.Popen(cmd.split(), stderr=devnull)
         plist.append(p)
-    logger.debug('wait() plist')
+    logger.debug('ping_hosts(): plist wait()')
     for p in plist:
         p.wait()
     devnull.close()
@@ -277,13 +278,14 @@ def read_dns_queries(iff):
 
 
 def test_client(packet_engine, rounds=10):
+    name_server = NameServer()
     for i in xrange(rounds):
-        data = nacl.public.random(random.randint(0, 1024))
+        data = nacl.public.random(random.randint(256, 512))
         logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
         datahash = hashlib.sha256(data).digest()
         logger.info('HASH({0}): {1}'.format(len(datahash), repr(datahash)))
-        ping_hosts(packet_engine.to_wire(data))
-        print 'asd'
+        # ping_hosts(packet_engine.to_wire(data))
+        name_server.query_all(packet_engine.to_wire(data))
     print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
 
 
@@ -293,7 +295,7 @@ def test_server(packet_engine, rounds=10):
         # getting packet with random data
         #
         data = None
-        datahash = None
+        # datahash = None
         for dnsname in read_dns_queries('eth0'):
             packet_engine.from_wire(dnsname)
             if not packet_engine.packet_outqueue.empty():
@@ -304,6 +306,63 @@ def test_server(packet_engine, rounds=10):
                 break
         sys.stdout.flush()
     print 'SUCCESS all {0} packets had correct hashes'.format(rounds)
+
+
+class NameServer(object):
+
+    DEFAULT_ADDR = ('8.8.8.8', 53)
+
+    def __init__(self, addr=DEFAULT_ADDR):
+        if type(addr) is str:
+            addr = (addr, 53)
+        self._addr = addr
+
+    def _get_socket(self):
+        from socket import (
+            socket, AF_INET, SOCK_DGRAM
+        )
+        s = socket(AF_INET, SOCK_DGRAM)
+        s.connect(self._addr)
+        return s
+
+    def _build_query(self, name):
+        s = ''
+        s += nacl.public.random(2)  # query id
+        s += '\x01\x00'  # standard query
+        s += '\x00\x01'  # queries
+        s += '\x00\x00'  # answer rr:s
+        s += '\x00\x00'  # authority rr:s
+        s += '\x00\x00'  # additional rr:s
+        for part in name.split('.'):
+            s += chr(len(part))
+            s += part
+        s += '\x00'
+        s += '\x00\x01'  # type: a, host address
+        s += '\x00\x01'  # class: in
+        return s
+
+    def query(self, name):
+        s = self._get_socket()
+        try:
+            qry = self._build_query(name)
+            s.send(qry)
+        finally:
+            s.close()
+
+    def query_all(self, names):
+        s = self._get_socket()
+        try:
+            for name in names:
+                qry = self._build_query(name)
+                s.send(qry)
+        finally:
+            s.close()
+
+
+def test_dns_query():
+    name_server = NameServer()
+    names = 'www.dn.se www.kernel.org whatever.asdqwe.com'.split()
+    name_server.query_all(names)
 
 
 def main(*args):
@@ -320,6 +379,10 @@ def main(*args):
 
     elif args[0] == '--test-client':
         test_client(packet_engine, rounds=100)
+        sys.exit()
+
+    elif args[0] == '--test-dns':
+        test_dns_query()
         sys.exit()
 
 
