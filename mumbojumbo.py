@@ -162,7 +162,8 @@ class DnsPublicFragment(PublicFragment):
                 logger.debug('DnsPublicFragment: deserialize() success')
             return val
         else:
-            msg = 'DnsPublicFragment: deserialize() invalid tld: ' + dnsname[:10]
+            msg = 'DnsPublicFragment: deserialize() invalid tld: '
+            msg += dnsname[:10]
             logger.debug(msg)
 
     def _b32enc(self, s):
