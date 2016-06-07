@@ -22,8 +22,8 @@ import unittest
 import nacl.public
 
 
-# logging.basicConfig(level=logging.DEBUG)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
+#  logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -37,72 +37,6 @@ def b32dec(s):
         s += '=' * (8 - r)
     return base64.b32decode(s)
 
-
-def ping_hosts(hosts):
-    plist = []
-    devnull = open(os.devnull, 'w')
-    for host in hosts:
-        cmd = 'ping -c1 -w1 {0}'.format(host)
-        time.sleep(0.03)
-        p = subprocess.Popen(cmd.split(), stderr=devnull)
-    for p in plist:
-        p.wait()
-    devnull.close()
-
-
-def read_dns_queries(iff):
-    '''
-        TODO: add -R dns.qry.name matches '.*tld'
-    '''
-    cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
-    p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
-    line = p.stdout.readline().strip()
-    while line:
-        logger.debug('parsing ' + line)
-        yield line
-        logger.debug('reading next query...')
-        line = p.stdout.readline().strip()
-    p.wait()
-
-
-def test_client(rounds=10):
-    mj = Mumbojumbo()
-    for i in xrange(rounds):
-        data = nacl.public.random(random.randint(0, 1024))
-        logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
-        datahash = hashlib.sha256(data).digest()
-        logger.info('HASH({0}): {1}'.format(len(datahash), repr(datahash)))
-        ping_hosts(mj.split(data))
-        ping_hosts(mj.split(datahash))
-    print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
-
-
-def test_server(rounds=10):
-    mj = Mumbojumbo()
-    while rounds > 0:
-        #
-        # getting packet with random data
-        #
-        data = None
-        datahash = None
-        for dnsname in read_dns_queries('eth0'):
-            mj.parse_dnsname(dnsname)
-            if not mj.outq.empty():
-                if not data:
-                    data = mj.outq.get()
-                    logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
-                else:
-                    datahash = mj.outq.get()
-                    logger.info('HASH({0}): {1}'.format(len(datahash),
-                                                        repr(datahash)))
-                    assert datahash == hashlib.sha256(data).digest()
-                    data = datahash = None
-                    rounds -= 1
-                sys.stdout.flush()
-            if rounds == 0:
-                break
-        sys.stdout.flush()
-    print 'SUCCESS all {0} packets had correct hashes'.format(rounds)
 
 
 class PacketException(Exception):
@@ -182,9 +116,9 @@ class PublicFragment(Fragment):
 
 
 def _split2len(s, n):
+    assert n > 0
     if s == '':
         return ['']
-
     def _f(s, n):
         while s:
             yield s[:n]
@@ -234,11 +168,13 @@ class DnsPublicFragment(PublicFragment):
 
 class PacketEngine(object):
 
+    MAX_FRAG_DATA_LEN = 100
+
     @classmethod
     def gen_packet_id(cls):
         return struct.unpack('I', nacl.public.random(4))[0]
 
-    def __init__(self, frag_cls=None, max_frag_data_len=None):
+    def __init__(self, frag_cls=None, max_frag_data_len=MAX_FRAG_DATA_LEN):
         self._frag_cls = frag_cls
         self._max_frag_data_len = max_frag_data_len
         self._packet_assembly = {}
@@ -253,6 +189,7 @@ class PacketEngine(object):
         '''
             Generator yielding zero or more fragments from data.
         '''
+        logger.debug('to_wire() len(packet_data)==' + str(len(packet_data)))
         packet_id = self.__class__.gen_packet_id()
         frag_data_lst = _split2len(packet_data, self._max_frag_data_len)
         frag_count = len(frag_data_lst)
@@ -269,6 +206,7 @@ class PacketEngine(object):
             Returns packet if wire_data constitutes final missing fragment
             of a packet, otherwise None.
         '''
+        logger.debug('from_wire() len(wire_data)==' + str(len(packet_data)))
         frag = self._frag_cls().deserialize(wire_data)
         if frag is not None:
             packet_assembly = self._packet_assembly
@@ -308,14 +246,80 @@ class PacketEngine(object):
         self.packet_outqueue.put(packet_data)
 
 
+def ping_hosts(hosts):
+    logger.debug('ping_hosts()')
+    plist = []
+    devnull = open(os.devnull, 'w')
+    for host in hosts:
+        cmd = 'ping -c1 -w1 {0}'.format(host)
+        time.sleep(0.03)
+        p = subprocess.Popen(cmd.split(), stderr=devnull)
+        plist.append(p)
+    logger.debug('wait() plist')
+    for p in plist:
+        p.wait()
+    devnull.close()
+
+
+def read_dns_queries(iff):
+    '''
+        TODO: add -R dns.qry.name matches '.*tld'
+    '''
+    cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
+    p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
+    line = p.stdout.readline().strip()
+    while line:
+        logger.debug('parsing ' + line)
+        yield line
+        logger.debug('reading next query...')
+        line = p.stdout.readline().strip()
+    p.wait()
+
+
+def test_client(packet_engine, rounds=10):
+    for i in xrange(rounds):
+        data = nacl.public.random(random.randint(0, 1024))
+        logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
+        datahash = hashlib.sha256(data).digest()
+        logger.info('HASH({0}): {1}'.format(len(datahash), repr(datahash)))
+        ping_hosts(packet_engine.to_wire(data))
+        print 'asd'
+    print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
+
+
+def test_server(packet_engine, rounds=10):
+    while rounds > 0:
+        #
+        # getting packet with random data
+        #
+        data = None
+        datahash = None
+        for dnsname in read_dns_queries('eth0'):
+            packet_engine.from_wire(dnsname)
+            if not packet_engine.packet_outqueue.empty():
+                data = packet_engine.packet_outqueue.get()
+                logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
+                sys.stdout.flush()
+            if rounds == 0:
+                break
+        sys.stdout.flush()
+    print 'SUCCESS all {0} packets had correct hashes'.format(rounds)
+
+
 def main(*args):
 
+    _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
+    private_key = nacl.public.PrivateKey(_key.decode('base64'))
+    pfcls = functools.partial(DnsPublicFragment, private_key=private_key,
+                              public_key=private_key.public_key)
+    packet_engine = PacketEngine(pfcls)
+
     if args[0] == '--test-server':
-        test_server(rounds=100)
+        test_server(packet_engine, rounds=100)
         sys.exit()
 
     elif args[0] == '--test-client':
-        test_client(rounds=100)
+        test_client(packet_engine, rounds=100)
         sys.exit()
 
 
