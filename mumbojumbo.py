@@ -273,19 +273,25 @@ def ping_hosts(hosts):
     devnull.close()
 
 
-def read_dns_queries(iff):
-    '''
-        TODO: add -R dns.qry.name matches '.*tld'
-    '''
-    cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
-    p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
-    line = p.stdout.readline().strip()
-    while line:
-        logger.debug('parsing ' + line)
-        yield line
-        logger.debug('reading next query...')
+class DnsQuerySniffer(object):
+
+    def __init__(self, iff):
+        self._iff = iff
+
+    def __iter__(self):
+        cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
+        self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
         line = p.stdout.readline().strip()
-    p.wait()
+        while line:
+            logger.debug('parsing ' + line)
+            yield line
+            logger.debug('reading next query...')
+            line = p.stdout.readline().strip()
+        p.wait()
+
+    def __del__(self):
+        self._p.terminate()
+        self._p.wait()
 
 
 def test_client(packet_engine, rounds=10):
@@ -301,13 +307,14 @@ def test_client(packet_engine, rounds=10):
 
 
 def test_server(packet_engine, rounds=10):
+    query_sniffer = DnsQuerySniffer('eth0')
     while rounds > 0:
         #
         # getting packet with random data
         #
         data = None
         datahash = None
-        for dnsname in read_dns_queries('eth0'):
+        for dnsname in query_sniffer:
             packet_engine.from_wire(dnsname)
             if not packet_engine.packet_outqueue.empty():
                 if not data:
@@ -324,8 +331,7 @@ def test_server(packet_engine, rounds=10):
                     rounds -= 1
             if rounds == 0:
                 break
-        sys.stdout.flush()
-    print 'SUCCESS all {0} packets had correct hashes'.format(rounds)
+    logger.info('SUCCESS all {0} packets had correct hashes'.format(rounds))
 
 
 class NameServer(object):
