@@ -18,13 +18,13 @@ import subprocess
 import sys
 import time
 import unittest
-import pdb
+# import pdb
 
 import nacl.public
 
 
 # logging.basicConfig(level=logging.DEBUG)
-#  logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -291,12 +291,12 @@ def read_dns_queries(iff):
 def test_client(packet_engine, rounds=10):
     name_server = NameServer()
     for i in xrange(rounds):
-        data = nacl.public.random(random.randint(256, 512))
+        data = nacl.public.random(random.randint(10, 20))
         logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
         datahash = hashlib.sha256(data).digest()
         logger.info('HASH({0}): {1}'.format(len(datahash), repr(datahash)))
-        # ping_hosts(packet_engine.to_wire(data))
         name_server.query_all(packet_engine.to_wire(data))
+        name_server.query_all(packet_engine.to_wire(datahash))
     print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
 
 
@@ -306,13 +306,22 @@ def test_server(packet_engine, rounds=10):
         # getting packet with random data
         #
         data = None
-        # datahash = None
+        datahash = None
         for dnsname in read_dns_queries('eth0'):
             packet_engine.from_wire(dnsname)
             if not packet_engine.packet_outqueue.empty():
-                data = packet_engine.packet_outqueue.get()
-                logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
-                sys.stdout.flush()
+                if not data:
+                    data = packet_engine.packet_outqueue.get()
+                    logger.info('DATA({0}): {1}'.format(len(data),
+                                                        repr(data)))
+                else:
+                    datahash = packet_engine.packet_outqueue.get()
+                    logger.info('HASH({0}): {1}'.format(len(datahash),
+                                                        repr(datahash)))
+                    assert datahash == hashlib.sha256(data).digest()
+                    logger.info('hash OK!')
+                    data = None
+                    rounds -= 1
             if rounds == 0:
                 break
         sys.stdout.flush()
