@@ -273,7 +273,7 @@ def ping_hosts(hosts):
     devnull.close()
 
 
-class DnsQuerySniffer(object):
+class DnsQueryReader(object):
 
     def __init__(self, iff):
         self._iff = iff
@@ -295,7 +295,7 @@ class DnsQuerySniffer(object):
 
 
 def test_client(packet_engine, rounds=10):
-    name_server = NameServer()
+    name_server = DnsQueryWriter()
     for i in xrange(rounds):
         data = nacl.public.random(random.randint(10, 20))
         logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
@@ -307,7 +307,7 @@ def test_client(packet_engine, rounds=10):
 
 
 def test_server(packet_engine, rounds=10):
-    query_sniffer = DnsQuerySniffer('eth0')
+    query_sniffer = DnsQueryReader('eth0')
     while rounds > 0:
         #
         # getting packet with random data
@@ -334,21 +334,21 @@ def test_server(packet_engine, rounds=10):
     logger.info('SUCCESS all {0} packets had correct hashes'.format(rounds))
 
 
-class NameServer(object):
+class DnsQueryWriter(object):
 
-    DEFAULT_ADDR = ('8.8.8.8', 53)
+    DEFAULT_ADDR = ('127.0.0.1', 53)
 
-    def __init__(self, addr=DEFAULT_ADDR):
-        if type(addr) is str:
-            addr = (addr, 53)
-        self._addr = addr
+    def __init__(self, name_server=DEFAULT_ADDR):
+        if type(name_server) is str:
+            name_server = (name_server, 53)
+        self._name_server = name_server
 
     def _get_socket(self):
         from socket import (
             socket, AF_INET, SOCK_DGRAM
         )
         s = socket(AF_INET, SOCK_DGRAM)
-        s.connect(self._addr)
+        s.connect(self._name_server)
         return s
 
     def _build_query(self, name):
@@ -385,8 +385,35 @@ class NameServer(object):
             s.close()
 
 
+
+def main(*args):
+
+    _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
+    private_key = nacl.public.PrivateKey(_key.decode('base64'))
+    pfcls = functools.partial(DnsPublicFragment, private_key=private_key,
+                              public_key=private_key.public_key)
+    packet_engine = PacketEngine(pfcls)
+
+    if args[0] == '--test-server':
+        logger.info('Now run ./mumbojumbo.py --test-client in other terminal')
+        test_server(packet_engine, rounds=100)
+        sys.exit()
+
+    elif args[0] == '--test-client':
+        test_client(packet_engine, rounds=100)
+        sys.exit()
+
+    elif args[0] == '--test-dns':
+        test_dns_query()
+        sys.exit()
+
+    elif args[0] == '--test-performance':
+        test_performance()
+        sys.exit()
+
+
 def test_dns_query():
-    name_server = NameServer()
+    name_server = DnsQueryWriter()
     names = 'www.dn.se www.kernel.org whatever.asdqwe.com'.split()
     name_server.query_all(names)
 
@@ -417,31 +444,6 @@ def test_performance():
 
     print 'send time:', tb - ta
     print 'recv time:', tc - tb
-
-
-def main(*args):
-
-    _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
-    private_key = nacl.public.PrivateKey(_key.decode('base64'))
-    pfcls = functools.partial(DnsPublicFragment, private_key=private_key,
-                              public_key=private_key.public_key)
-    packet_engine = PacketEngine(pfcls)
-
-    if args[0] == '--test-server':
-        test_server(packet_engine, rounds=100)
-        sys.exit()
-
-    elif args[0] == '--test-client':
-        test_client(packet_engine, rounds=100)
-        sys.exit()
-
-    elif args[0] == '--test-dns':
-        test_dns_query()
-        sys.exit()
-
-    elif args[0] == '--test-performance':
-        test_performance()
-        sys.exit()
 
 
 class MyTestMixin(object):
