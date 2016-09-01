@@ -181,22 +181,24 @@ def test_performance():
 
     count = 1024
     lst = []
-    ta = time.time()
+    t1 = time.time()
     for i in xrange(count):
         for item in packet_engine.to_wire(data):
             lst.append(item)
-    tb = time.time()
+    t2 = time.time()
     for item in lst:
         packet_engine.from_wire(item)
-    tc = time.time()
+    t3 = time.time()
 
     while not packet_engine.packet_outqueue.empty():
         packet_engine.packet_outqueue.get()
         count -= 1
     assert count == 0
 
-    print 'send time:', tb - ta
-    print 'recv time:', tc - tb
+    print 'Offline processing of 1024 messages, 1024 bytes per message:'
+    print 'send time: {0:.2f}s'.format(t2 - t1)
+    print 'recv time: {0:.2f}s'.format(t3 - t2)
+    print 'message fragment count:', len(lst)
 
 
 class MyTestMixin(object):

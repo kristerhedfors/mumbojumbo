@@ -6,13 +6,11 @@
 import base64
 import functools
 import logging
-import os
 import Queue
 import socket
 import struct
 import subprocess
 import sys
-import time
 # import pdb
 
 import nacl.public
@@ -270,32 +268,18 @@ class PacketEngine(object):
         self.packet_outqueue.put(packet_data)
 
 
-def ping_hosts(hosts):
-    logger.debug('ping_hosts()')
-    plist = []
-    devnull = open(os.devnull, 'w')
-    for host in hosts:
-        cmd = 'ping -c1 -w1 {0}'.format(host)
-        time.sleep(0.03)
-        logger.debug('ping_hosts(): ' + cmd)
-        p = subprocess.Popen(cmd.split(), stderr=devnull)
-        plist.append(p)
-    logger.debug('ping_hosts(): plist wait()')
-    for p in plist:
-        p.wait()
-    devnull.close()
-
-
 class DnsQueryReader(object):
     '''
         Use tshark to generate DNS queries.
     '''
+    TSHARK = '/usr/bin/tshark'
+
     def __init__(self, iff='', domain=''):
         self._iff = iff
         self._domain = domain
 
     def __iter__(self):
-        cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
+        cmd = self.TSHARK + ' -li eth0 -T fields -e dns.qry.name udp port 53'
         self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
         name = p.stdout.readline().strip()
         while name:
