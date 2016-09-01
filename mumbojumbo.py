@@ -287,19 +287,23 @@ def ping_hosts(hosts):
 
 
 class DnsQueryReader(object):
-
-    def __init__(self, iff):
+    '''
+        Use tshark to generate DNS queries.
+    '''
+    def __init__(self, iff='', domain=''):
         self._iff = iff
+        self._domain = domain
 
     def __iter__(self):
         cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
         self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
-        line = p.stdout.readline().strip()
-        while line:
-            logger.debug('parsing ' + line)
-            yield line
+        name = p.stdout.readline().strip()
+        while name:
+            logger.debug('parsing ' + name)
+            if not self._domain or name.lower().endswith(self._domain):
+                yield name
             logger.debug('reading next query...')
-            line = p.stdout.readline().strip()
+            name = p.stdout.readline().strip()
         p.wait()
 
     def __del__(self):
@@ -313,6 +317,12 @@ def main(*args):
 
     pfcls_server = functools.partial(DnsPublicFragment, private_key=private_key)
     packet_engine_server = PacketEngine(pfcls_server)
+
+    dns_query_reader = DnsQueryReader(iff='eth0',
+                                      domain='.test.test5.sentorlab.se')
+    for name in dns_query_reader:
+        print name
+        sys.stdout.flush()
 
 
 if __name__ == '__main__':
