@@ -36,7 +36,14 @@ class MJException(Exception):
     pass
 
 
-class BaseFragment(object):
+class Bindable(object):
+
+    @classmethod
+    def bind(cls, *args, **kw):
+        return functools.partial(cls, *args, **kw)
+
+
+class BaseFragment(Bindable):
 
     def __init__(self, frag_data=''):
         self._frag_data = frag_data
@@ -296,10 +303,13 @@ class DnsQueryReader(object):
 
 
 def main(*args):
-    _private_key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
+    _private_key = '42UIa1gvAP2cnaIIFToFiLXVAwZClf8rBZE4VsL3q+w='
+    _public_key = 'JsmA8se+0pEEP9ReRiPyDuAYn9Q0n4zazqhgYUfPZTA='
     private_key = nacl.public.PrivateKey(_private_key.decode('base64'))
+    public_key = nacl.public.PublicKey(_public_key.decode('base64'))
 
-    pfcls_server = functools.partial(DnsPublicFragment, private_key=private_key)
+    pfcls_server = DnsPublicFragment.bind(private_key=private_key,
+                                          public_key=public_key)
     packet_engine_server = PacketEngine(pfcls_server)
 
     dns_query_reader = DnsQueryReader(iff='eth0',

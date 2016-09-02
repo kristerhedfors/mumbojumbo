@@ -174,8 +174,8 @@ def test_dns_query():
 def test_performance():
     _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
     private_key = nacl.public.PrivateKey(_key.decode('base64'))
-    pfcls = functools.partial(DnsPublicFragment, private_key=private_key,
-                              public_key=private_key.public_key)
+    pfcls = DnsPublicFragment.bind(private_key=private_key,
+                                   public_key=private_key.public_key)
     packet_engine = PacketEngine(pfcls)
     data = nacl.public.random(1024)
 
@@ -282,10 +282,8 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
     def do_test_cls(self, cls, **kw):
         k1 = nacl.public.PrivateKey.generate()
         k2 = nacl.public.PrivateKey.generate()
-        pfcls1 = functools.partial(cls, private_key=k1,
-                                   public_key=k2.public_key, **kw)
-        pfcls2 = functools.partial(cls, private_key=k2,
-                                   public_key=k1.public_key, **kw)
+        pfcls1 = cls.bind(private_key=k1, public_key=k2.public_key, **kw)
+        pfcls2 = cls.bind(private_key=k2, public_key=k1.public_key, **kw)
         self.multi_public_serialize_deserialize(pfcls1, pfcls2)
 
     def test_classes(self):
@@ -307,10 +305,10 @@ class Test_PacketEngine(unittest.TestCase, MyTestMixin):
                             for i in xrange(64)]
         k1 = nacl.public.PrivateKey.generate()
         k2 = nacl.public.PrivateKey.generate()
-        pfcls1 = functools.partial(DnsPublicFragment, private_key=k1,
-                                   public_key=k2.public_key)
-        pfcls2 = functools.partial(DnsPublicFragment, private_key=k2,
-                                   public_key=k1.public_key)
+        pfcls1 = DnsPublicFragment.bind(private_key=k1,
+                                        public_key=k2.public_key)
+        pfcls2 = DnsPublicFragment.bind(private_key=k2,
+                                        public_key=k1.public_key)
         self.packet_data_lst = packet_data_lst
         self.pfcls1 = pfcls1
         self.pfcls2 = pfcls2
@@ -335,14 +333,12 @@ def main(*args):
     pk1 = nacl.public.PrivateKey(_pk1.decode('base64'))
     pk2 = nacl.public.PrivateKey(_pk2.decode('base64'))
 
-    pfcls_client = functools.partial(DnsPublicFragment,
-                                     private_key=pk1,
-                                     public_key=pk2.public_key)
+    pfcls_client = DnsPublicFragment.bind(private_key=pk1,
+                                          public_key=pk2.public_key)
     packet_engine_client = PacketEngine(pfcls_client)
 
-    pfcls_server = functools.partial(DnsPublicFragment,
-                                     private_key=pk2,
-                                     public_key=pk1.public_key)
+    pfcls_server = DnsPublicFragment.bind(private_key=pk2,
+                                          public_key=pk1.public_key)
 
     packet_engine_server = PacketEngine(pfcls_server)
 
