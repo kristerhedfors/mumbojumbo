@@ -84,8 +84,8 @@ def test_client(packet_engine, rounds=10):
     print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
 
 
-def test_server(packet_engine, rounds=10):
-    query_sniffer = DnsQueryReader('eth0')
+def test_server(packet_engine, rounds=10, **kw):
+    query_sniffer = DnsQueryReader(**kw)
     i = 0
     while rounds > 0:
         logger.info('ROUND({0})'.format(i))
@@ -330,23 +330,26 @@ class Test_PacketEngine(unittest.TestCase, MyTestMixin):
 
 
 def main(*args):
-    _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
-    private_key = nacl.public.PrivateKey(_key.decode('base64'))
-    # pfcls = functools.partial(DnsPublicFragment, private_key=private_key,
-    #                          public_key=private_key.public_key)
-    # packet_engine = PacketEngine(pfcls)
+    _pk1 = 'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
+    _pk2 = 'DGor3Mkdy8Txp4bRMPYURduV7fVXcUCNnaFra1RIums='
+    pk1 = nacl.public.PrivateKey(_pk1.decode('base64'))
+    pk2 = nacl.public.PrivateKey(_pk2.decode('base64'))
 
     pfcls_client = functools.partial(DnsPublicFragment,
-                                     public_key=private_key.public_key)
+                                     private_key=pk1,
+                                     public_key=pk2.public_key)
     packet_engine_client = PacketEngine(pfcls_client)
 
-    pfcls_server = functools.partial(DnsPublicFragment, private_key=private_key)
+    pfcls_server = functools.partial(DnsPublicFragment,
+                                     private_key=pk2,
+                                     public_key=pk1.public_key)
+
     packet_engine_server = PacketEngine(pfcls_server)
 
     if len(args):
         if args[0] == '--test-server':
             logger.info('Now run ./mumbojumbo.py --test-client in other term')
-            test_server(packet_engine_server, rounds=100)
+            test_server(packet_engine_server, rounds=100, iff='eth0')
             sys.exit()
 
         elif args[0] == '--test-client':
