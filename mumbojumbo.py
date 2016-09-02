@@ -32,7 +32,7 @@ def b32dec(s):
     return base64.b32decode(s)
 
 
-class PacketException(Exception):
+class MJException(Exception):
     pass
 
 
@@ -157,11 +157,9 @@ class DnsPublicFragment(PublicFragment):
         serb32 = self._b32enc(ser)
         parts = _split2len(serb32, 63)
         dnsname = '.'.join(parts) + self._tld
-        # print '>', dnsname
         return dnsname
 
     def deserialize(self, dnsname):
-        # print '<', dnsname
         logger.debug('DnsPublicFragment: deserialize() enter')
         if dnsname.endswith(self._tld):
             serb32 = dnsname[:-len(self._tld)].replace('.', '')
@@ -225,8 +223,8 @@ class PacketEngine(object):
 
     def from_wire(self, wire_data):
         '''
-            Returns packet if wire_data constitutes final missing fragment
-            of a packet, otherwise None.
+            if wire_data constitutes final missing fragment of a packet:
+              put assembled packet to packet_outqueue
         '''
         logger.debug('from_wire() len(wire_data)==' + str(len(wire_data)))
         frag = self._frag_cls().deserialize(wire_data)
@@ -241,7 +239,7 @@ class PacketEngine(object):
                 frag_data_lst = [None] * frag._frag_count
                 packet_assembly[packet_id] = frag_data_lst
             elif len(packet_assembly[packet_id]) != frag._frag_count:
-                print 'ERR _frag_count mismatch'
+                logger.error('from_wire(): _frag_count mismatch')
                 return
             else:  # packet is known
                 frag_data_lst = packet_assembly[packet_id]
@@ -255,7 +253,9 @@ class PacketEngine(object):
                     counter[packet_id] = frag._frag_count
                 counter[packet_id] -= 1
                 if counter[packet_id] < 0:
-                    raise Exception('error: counter < 0')
+                    msg = 'from_wire(): counter[packet_id] < 0'
+                    logger.error(msg)
+                    raise MJException(msg)
                 if counter[packet_id] == 0:
                     #
                     # final fragment obtained, return packet
