@@ -308,13 +308,13 @@ def main(*args):
     private_key = nacl.public.PrivateKey(_private_key.decode('base64'))
     public_key = nacl.public.PublicKey(_public_key.decode('base64'))
 
-    pf_cls = DnsPublicFragment.bind(domain='.test.test5.sentorlab.se',
+    pf_cls = DnsPublicFragment.bind(domain='.xyxyx.se',
                                     private_key=private_key,
                                     public_key=public_key)
     packet_engine = PacketEngine(pf_cls)
 
     dns_query_reader = DnsQueryReader(iff='eth0',
-                                      domain='.test.test5.sentorlab.se')
+                                      domain='.xyxyx.se')
     for name in dns_query_reader:
         print name
         packet_engine.from_wire(name)
