@@ -1,7 +1,7 @@
 #  replay (no timestamp)
 #  hmac shared secret issues
 #
-#  b32enc(type + id + countOrIdx [ + data]) + tld
+#  b32enc(type + id + countOrIdx [ + data]) + domain
 #
 import base64
 import functools
@@ -155,21 +155,21 @@ class DnsPublicFragment(PublicFragment):
     '''
     DEFAULT_TLD = '.sometld.xy'
 
-    def __init__(self, tld=DEFAULT_TLD, **kw):
-        self._tld = tld
+    def __init__(self, domain=DEFAULT_TLD, **kw):
+        self._domain = domain
         super(DnsPublicFragment, self).__init__(**kw)
 
     def serialize(self):
         ser = super(DnsPublicFragment, self).serialize()
         serb32 = self._b32enc(ser)
         parts = _split2len(serb32, 63)
-        dnsname = '.'.join(parts) + self._tld
+        dnsname = '.'.join(parts) + self._domain
         return dnsname
 
     def deserialize(self, dnsname):
         logger.debug('DnsPublicFragment: deserialize() enter')
-        if dnsname.endswith(self._tld):
-            serb32 = dnsname[:-len(self._tld)].replace('.', '')
+        if dnsname.endswith(self._domain):
+            serb32 = dnsname[:-len(self._domain)].replace('.', '')
             ser = self._b32dec(serb32)
             val = super(DnsPublicFragment, self).deserialize(ser)
             if val is None:
@@ -178,7 +178,7 @@ class DnsPublicFragment(PublicFragment):
                 logger.debug('DnsPublicFragment: deserialize() success')
             return val
         else:
-            msg = 'DnsPublicFragment: deserialize() invalid tld: '
+            msg = 'DnsPublicFragment: deserialize() invalid domain: '
             msg += dnsname[:10]
             logger.debug(msg)
 
@@ -308,14 +308,18 @@ def main(*args):
     private_key = nacl.public.PrivateKey(_private_key.decode('base64'))
     public_key = nacl.public.PublicKey(_public_key.decode('base64'))
 
-    pfcls_server = DnsPublicFragment.bind(private_key=private_key,
-                                          public_key=public_key)
-    packet_engine_server = PacketEngine(pfcls_server)
+    pf_cls = DnsPublicFragment.bind(domain='.test.test5.sentorlab.se',
+                                    private_key=private_key,
+                                    public_key=public_key)
+    packet_engine = PacketEngine(pf_cls)
 
     dns_query_reader = DnsQueryReader(iff='eth0',
                                       domain='.test.test5.sentorlab.se')
     for name in dns_query_reader:
         print name
+        packet_engine.from_wire(name)
+        if not packet_engine.packet_outqueue.empty():
+            print 'GET:', packet_engine.packet_outqueue.get()
         sys.stdout.flush()
 
 

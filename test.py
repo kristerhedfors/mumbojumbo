@@ -5,9 +5,8 @@
 #  replay (no timestamp)
 #  hmac shared secret issues
 #
-#  b32enc(type + id + countOrIdx [ + data]) + tld
+#  b32enc(type + id + countOrIdx [ + data]) + domain
 #
-import functools
 import hashlib
 import logging
 import os
@@ -288,7 +287,7 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
 
     def test_classes(self):
         self.do_test_cls(PublicFragment)
-        self.do_test_cls(DnsPublicFragment, tld='.asdqwe.com')
+        self.do_test_cls(DnsPublicFragment, domain='.asdqwe.com')
 
     def test2(self):
         self.serialize_deserialize(Fragment, frag_index=3, frag_count=4,
