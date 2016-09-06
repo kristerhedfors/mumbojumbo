@@ -107,9 +107,17 @@ class Fragment(BaseFragment):
         frag_count = self._unpack_ntohs(raw[6:8])
         frag_data_len = self._unpack_ntohs(raw[8:10])
         frag_data = raw[10:]
-        assert frag_data_len == len(frag_data)
+        try:
+            assert frag_data_len == len(frag_data)
+        except:
+            logger.debug('bad frag_data_len: %d' % frag_data_len)
+            raise
         assert 1 <= frag_count
-        assert frag_index < frag_count
+        try:
+            assert frag_index < frag_count
+        except:
+            logger.debug('bad frag_count: %d' % frag_count)
+            raise
         return self.__class__(packet_id=packet_id, frag_index=frag_index,
                               frag_count=frag_count, frag_data=frag_data)
 
@@ -136,6 +144,7 @@ class PublicFragment(Fragment):
             logger.debug('decrypt failed with exception')
             raise
         logger.debug('decrypted {0} bytes of data'.format(len(plaintext)))
+        logger.debug('{0}'.format(repr(plaintext)))
         return super(PublicFragment, self).deserialize(plaintext)
 
 
