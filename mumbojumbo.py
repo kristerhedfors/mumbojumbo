@@ -16,8 +16,8 @@ import sys
 import nacl.public
 
 
-# logging.basicConfig(level=logging.DEBUG)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -129,7 +129,13 @@ class PublicFragment(Fragment):
         return ciphertext
 
     def deserialize(self, ciphertext):
-        plaintext = self._box.decrypt(ciphertext=ciphertext)
+        plaintext = ''
+        try:
+            plaintext = self._box.decrypt(ciphertext=ciphertext)
+        except:
+            logger.debug('decrypt failed with exception')
+            raise
+        logger.debug('decrypted {0} bytes of data'.format(len(plaintext)))
         return super(PublicFragment, self).deserialize(plaintext)
 
 
@@ -286,7 +292,8 @@ class DnsQueryReader(object):
         self._domain = domain
 
     def __iter__(self):
-        cmd = self.TSHARK + ' -li eth0 -T fields -e dns.qry.name udp port 53'
+        cmd = self.TSHARK
+        cmd += ' -li eth0 -T fields -e dns.qry.name -- udp port 53'
         self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
         name = p.stdout.readline().strip()
         while name:

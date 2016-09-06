@@ -77,9 +77,9 @@ def test_client(packet_engine, rounds=10):
         datahash = hashlib.sha256(data).digest()
         logger.info('HASH({0}): {1}'.format(len(datahash), repr(datahash)))
         name_server.query_all(packet_engine.to_wire(data))
-        time.sleep(0.03)
+        time.sleep(0.1)
         name_server.query_all(packet_engine.to_wire(datahash))
-        time.sleep(0.03)
+        time.sleep(0.1)
     print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
 
 
