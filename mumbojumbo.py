@@ -398,7 +398,8 @@ to = otheruser@otherhost.xy
 
 def option_parser():
     p = optparse.OptionParser(usage=__usage__)
-    p.add_option('-c', '--config', help='use this config file')
+    p.add_option('-c', '--config', metavar='path',
+                 help='use this config file')
     p.add_option('', '--gen-keys', action='store_true',
                  help='generate and print two NaCL key pairs')
     p.add_option('', '--gen-config-skel', action='store_true',
@@ -407,7 +408,8 @@ def option_parser():
                  help='encrypt some value using a NaCL secret key')
     # p.add_option('', '--decrypt', metavar='val',
     #              help='decrypt `val` using a NaCL secret key')
-    p.add_option('-L', '--loglevel', help='list all issues by host')
+    # p.add_option('-L', '--loglevel', metavar='INFO|DEBUG|..',
+    #              help='set debug log level')
     # p.add_option('-v', '--verbose', action='count', help='increase verbosity')
     return p
 
