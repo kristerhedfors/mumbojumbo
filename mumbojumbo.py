@@ -36,6 +36,11 @@
 #   * a Mumbojumbo client,
 #   * a reason for using Mumbojumbo(!)
 #
+# TODO:
+#   * make starttls and auth for SMTP optional through config
+#   * multiple SMTP recipients
+#   * handle --loglevel correctly
+#
 import base64
 import functools
 import logging
@@ -47,12 +52,19 @@ import sys
 import optparse
 import ConfigParser
 import traceback
-# import pdb
+import smtplib
+import hashlib
+import hmac
+import getpass
+# from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 import nacl.public
+import nacl.secret
 
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 global logger
 logger = logging.getLogger(__name__)
 
@@ -246,7 +258,7 @@ class DnsPublicFragment(PublicFragment):
 
 class PacketEngine(object):
 
-    MAX_FRAG_DATA_LEN = 100
+    MAX_FRAG_DATA_LEN = 100  # make dynamic
 
     @classmethod
     def gen_packet_id(cls):
@@ -367,11 +379,20 @@ __config_skel__ = '''\
 #   client_privkey={client_privkey}
 #   server_pubkey={server_pubkey}
 #
+
 [main]
 domain = .xyxyx.xy  # including leading dot
 network-interface = eth0
 client-pubkey = {client_pubkey}
 server-privkey = {server_privkey}
+
+[smtp]
+server = 127.0.0.1
+port = 587
+username = someuser
+encrypted-password = {create using `python mumbojumbo.py --encrypt`}
+from = someuser@somehost.xy
+to = otheruser@otherhost.xy
 '''
 
 
@@ -382,8 +403,12 @@ def option_parser():
                  help='generate and print two NaCL key pairs')
     p.add_option('', '--gen-config-skel', action='store_true',
                  help='print config skeleton file')
+    p.add_option('', '--encrypt', action='store_true',
+                 help='encrypt some value using a NaCL secret key')
+    # p.add_option('', '--decrypt', metavar='val',
+    #              help='decrypt `val` using a NaCL secret key')
     p.add_option('-L', '--loglevel', help='list all issues by host')
-    p.add_option('-v', '--verbose', action='count', help='increase verbosity')
+    # p.add_option('-v', '--verbose', action='count', help='increase verbosity')
     return p
 
 
@@ -394,7 +419,54 @@ def get_nacl_keypair_base64():
     return (priv, pub)
 
 
+class SMTPForwarder(object):
+
+    def __init__(self, server='', port='', from_='', to='',
+                 username=None, password=None):
+        self._server = server
+        self._port = port
+        self._from = from_
+        self._to = to
+        self._username = username
+        self._password = password
+
+    def sendmail(self, subject='', text='', charset='utf-8'):
+        msg = MIMEText(text)  # utf8 haer med?
+        msg.set_charset(charset)
+        msg['Subject'] = subject
+        msg['From'] = self._from
+        msg['To'] = self._to
+        smtp = smtplib.SMTP(self._server, port=self._port)
+        smtp.ehlo_or_helo_if_needed()
+        smtp.starttls()
+        if self._username or self._password:
+            smtp.login(self._username, self._password)
+        smtp.sendmail(self._from, [self._to], msg.as_string())
+        smtp.quit()
+
+
+class SecretBox(nacl.secret.SecretBox):
+    '''
+        "extended" to use passwords (usually weak),
+        by means of simple HMACSHA256 key expansion.
+    '''
+    def __init__(self, key, *args, **kw):
+        key = self.expand(key, 1984)
+        super(SecretBox, self).__init__(key, *args, **kw)
+
+    def _expand(self, origkey, key):
+        h = hmac.HMAC(key=key, msg=origkey, digestmod=hashlib.sha256)
+        return h.digest()
+
+    def expand(self, key, count):
+        origkey = key
+        for _ in xrange(count):
+            key = self._expand(origkey, key)
+        return key
+
+
 def main():
+    global logger
     (opt, args) = option_parser().parse_args()
 
     if opt.loglevel:
@@ -420,6 +492,22 @@ def main():
         print pub
         sys.exit()
 
+    if opt.encrypt:
+        key = getpass.getpass('enter encryption key:')
+        key2 = getpass.getpass('enter encryption key again:')
+        assert key == key2
+        secret = getpass.getpass('enter secret value:')
+        secret2 = getpass.getpass('enter secret value again:')
+        assert secret == secret2
+        del key2
+        del secret2
+        nonce = nacl.utils.random(24)
+        encval = SecretBox(key).encrypt(secret, nonce)
+        print ''
+        print 'This is your secret value encrypted using your symmetric key:'
+        print encval.encode('base64').strip()
+        sys.exit()
+
     if not opt.config:
         print 'Error: No config file specified; you can generate one using',
         print '--gen-config-skel.'
@@ -442,6 +530,26 @@ def main():
 
     logger.info('domain={0}, network_interface={1}'.format(
         domain, network_interface))
+
+    #
+    # SMTP forwarding of data?
+    #
+    smtp_forwarder = None
+    smtp_items = config.items('smtp')
+    smtp_items = dict(smtp_items)
+    if smtp_items:
+        key = getpass.getpass('Enter SMTP password decryption key:')
+        password = SecretBox(key).decrypt(
+            smtp_items['encrypted-password'].decode('base64')
+        )
+        smtp_forwarder = SMTPForwarder(
+            server=smtp_items['server'],
+            port=smtp_items['port'],
+            from_=smtp_items['from'],
+            to=smtp_items['to'],
+            username=smtp_items['username'],
+            password=password)
+        # smtp_forwarder.sendmail('test', 'testtest')
 
     #
     # prepare packet fragment class
@@ -474,7 +582,13 @@ def main():
             logger.info(msg)
             continue
         if not packet_engine.packet_outqueue.empty():
-            print 'GET:', packet_engine.packet_outqueue.get()
+            data = packet_engine.packet_outqueue.get()
+            if smtp_forwarder:
+                logger.info('sending email')
+                logger.debug('email contents:' + data)
+                smtp_forwarder.sendmail(subject='Hello World!', text=data)
+            else:
+                print 'GET:', packet_engine.packet_outqueue.get()
         sys.stdout.flush()
 
 
