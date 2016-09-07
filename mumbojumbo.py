@@ -373,7 +373,7 @@ $ python mumbojumbo.py [options]
 
 __config_skel__ = '''\
 #
-# !! remember to `sudo chmod 0600` this file !!
+# !! remember to `chmod 0600` this file !!
 #
 # for use on client-side:
 #   client_privkey={client_privkey}
@@ -390,7 +390,7 @@ server-privkey = {server_privkey}
 server = 127.0.0.1
 port = 587
 username = someuser
-encrypted-password = {create using `python mumbojumbo.py --encrypt`}
+encrypted-password = [create using `python mumbojumbo.py --encrypt`]
 from = someuser@somehost.xy
 to = otheruser@otherhost.xy
 '''
