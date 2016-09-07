@@ -471,11 +471,11 @@ def main():
     global logger
     (opt, args) = option_parser().parse_args()
 
-    if opt.loglevel:
-        global logger
-        level = getattr(logging, opt.loglevel.upper())
-        logging.basicConfig(level=level)
-        logger = logging.getLogger(__name__)
+    # if opt.loglevel:
+    #     global logger
+    #     level = getattr(logging, opt.loglevel.upper())
+    #     logging.basicConfig(level=level)
+    #     logger = logging.getLogger(__name__)
 
     if opt.gen_config_skel:
         (client_privkey, client_pubkey) = get_nacl_keypair_base64()
