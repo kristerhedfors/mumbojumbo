@@ -1,7 +1,40 @@
-#  replay (no timestamp)
-#  hmac shared secret issues
+#!/usr/bin/env python
 #
-#  b32enc(type + id + countOrIdx [ + data]) + domain
+# Copyright (c) 2016, Krister Hedfors
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this
+#  list of conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice,
+#  this list of conditions and the following disclaimer in the documentation
+#  and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+#
+# Enough with that..
+#
+# This is an implementation of the Mumbojumbo protocol. Essentially NaCL
+# public key encrypted (currently) one way communication over DNS.
+#
+# Requirements:
+#   * The python package `pynacl`,
+#   * ability to run `tshark` for DNS packet capturing,
+#   * a Mumbojumbo client,
+#   * a reason for using Mumbojumbo(!)
 #
 import base64
 import functools
@@ -11,13 +44,16 @@ import socket
 import struct
 import subprocess
 import sys
+import optparse
+import ConfigParser
+import traceback
 # import pdb
 
 import nacl.public
 
 
-logging.basicConfig(level=logging.DEBUG)
-# logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
+global logger
 logger = logging.getLogger(__name__)
 
 
@@ -141,7 +177,7 @@ class PublicFragment(Fragment):
         try:
             plaintext = self._box.decrypt(ciphertext=ciphertext)
         except:
-            logger.debug('decrypt failed with exception')
+            logger.debug('decrypt exception:' + traceback.format_exc())
             raise
         logger.debug('decrypted {0} bytes of data'.format(len(plaintext)))
         logger.debug('{0}'.format(repr(plaintext)))
@@ -168,7 +204,7 @@ class DnsPublicFragment(PublicFragment):
         Has the shape of:
             '{Base32Encoded_PublicFragment}{tld}'
     '''
-    DEFAULT_TLD = '.sometld.xy'
+    DEFAULT_TLD = '.xyxyx.xy'
 
     def __init__(self, domain=DEFAULT_TLD, **kw):
         self._domain = domain
@@ -318,26 +354,129 @@ class DnsQueryReader(object):
         self._p.wait()
 
 
-def main(*args):
-    _private_key = '42UIa1gvAP2cnaIIFToFiLXVAwZClf8rBZE4VsL3q+w='
-    _public_key = 'JsmA8se+0pEEP9ReRiPyDuAYn9Q0n4zazqhgYUfPZTA='
-    private_key = nacl.public.PrivateKey(_private_key.decode('base64'))
-    public_key = nacl.public.PublicKey(_public_key.decode('base64'))
+__usage__ = '''
+$ python mumbojumbo.py [options]
+'''
 
-    pf_cls = DnsPublicFragment.bind(domain='.xyxyx.se',
-                                    private_key=private_key,
-                                    public_key=public_key)
+
+__config_skel__ = '''\
+#
+# !! remember to `sudo chmod 0600` this file !!
+#
+# for use on client-side:
+#   client_privkey={client_privkey}
+#   server_pubkey={server_pubkey}
+#
+[main]
+domain = .xyxyx.xy  # including leading dot
+network-interface = eth0
+client-pubkey = {client_pubkey}
+server-privkey = {server_privkey}
+'''
+
+
+def option_parser():
+    p = optparse.OptionParser(usage=__usage__)
+    p.add_option('-c', '--config', help='use this config file')
+    p.add_option('', '--gen-keys', action='store_true',
+                 help='generate and print two NaCL key pairs')
+    p.add_option('', '--gen-config-skel', action='store_true',
+                 help='print config skeleton file')
+    p.add_option('-L', '--loglevel', help='list all issues by host')
+    p.add_option('-v', '--verbose', action='count', help='increase verbosity')
+    return p
+
+
+def get_nacl_keypair_base64():
+    private_key = nacl.public.PrivateKey.generate()
+    priv = private_key.encode().encode('base64').strip()
+    pub = private_key.public_key.encode().encode('base64').strip()
+    return (priv, pub)
+
+
+def main():
+    (opt, args) = option_parser().parse_args()
+
+    if opt.loglevel:
+        global logger
+        level = getattr(logging, opt.loglevel.upper())
+        logging.basicConfig(level=level)
+        logger = logging.getLogger(__name__)
+
+    if opt.gen_config_skel:
+        (client_privkey, client_pubkey) = get_nacl_keypair_base64()
+        (server_privkey, server_pubkey) = get_nacl_keypair_base64()
+        print __config_skel__.format(
+            client_privkey=client_privkey,
+            client_pubkey=client_pubkey,
+            server_privkey=server_privkey,
+            server_pubkey=server_pubkey
+        )
+        sys.exit()
+
+    if opt.gen_keys:
+        (priv, pub) = get_nacl_keypair_base64()
+        print priv
+        print pub
+        sys.exit()
+
+    if not opt.config:
+        print 'Error: No config file specified; you can generate one using',
+        print '--gen-config-skel.'
+        sys.exit(1)
+
+    config = ConfigParser.SafeConfigParser()
+    config.read(opt.config)
+
+    #
+    # parse NaCL keys
+    #
+    server_privkey = nacl.public.PrivateKey(
+        config.get('main', 'server-privkey').decode('base64')
+    )
+    client_pubkey = nacl.public.PublicKey(
+        config.get('main', 'client-pubkey').decode('base64')
+    )
+    domain = config.get('main', 'domain')
+    network_interface = config.get('main', 'network-interface')
+
+    logger.info('domain={0}, network_interface={1}'.format(
+        domain, network_interface))
+
+    #
+    # prepare packet fragment class
+    #
+    pf_cls = DnsPublicFragment.bind(domain=domain,
+                                    private_key=server_privkey,
+                                    public_key=client_pubkey)
+    #
+    # build packet engine based on fragment class
+    #
     packet_engine = PacketEngine(pf_cls)
 
-    dns_query_reader = DnsQueryReader(iff='eth0',
-                                      domain='.xyxyx.se')
+    #
+    # initiate DNS query reader for queries under domain
+    #
+    dns_query_reader = DnsQueryReader(iff=network_interface, domain=domain)
+
+    #
+    # iterate sniffed DNS queries do domain;
+    # start to decrypt, parse and reassemble fragments
+    # into complete packets
+    #
     for name in dns_query_reader:
-        print name
-        packet_engine.from_wire(name)
+        logger.debug('DNS query for: ' + name)
+        try:
+            packet_engine.from_wire(name)
+        except:
+            msg = 'exception in from_wire(): '
+            msg += traceback.format_exc()
+            logger.info(msg)
+            continue
         if not packet_engine.packet_outqueue.empty():
             print 'GET:', packet_engine.packet_outqueue.get()
         sys.stdout.flush()
 
 
 if __name__ == '__main__':
-    sys.exit(main(*sys.argv[1:]))
+    sys.exit(main())
