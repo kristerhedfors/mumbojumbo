@@ -37,6 +37,8 @@
 #   * a reason for using Mumbojumbo(!)
 #
 # TODO:
+#   * make max_frag_data_len dynamic; long domain names
+#     will otherwise fail to fragment correctly
 #   * distributed transmission over different domains
 #     - encrypt using symmetric key K
 #     - split key into K{0..n} using ssss
@@ -266,7 +268,12 @@ class DnsPublicFragment(PublicFragment):
 
 class PacketEngine(object):
 
-    MAX_FRAG_DATA_LEN = 100  # make dynamic
+    #
+    # make dynamic or long domain names will fail when
+    # fragmenting data!
+    #
+    MAX_FRAG_DATA_LEN = 80
+
 
     @classmethod
     def gen_packet_id(cls):
