@@ -37,6 +37,11 @@
 #   * a reason for using Mumbojumbo(!)
 #
 # TODO:
+#   * distributed transmission over different domains
+#     - encrypt using symmetric key K
+#     - split key into K{0..n} using ssss
+#     - for i in 0..n: send Ki+ciphertext to n different domains
+#     - collect required number of key parts, rebuild, decrypt
 #   * handle blocking SMTP
 #   * respond to DNS-queries
 #   * multiple SMTP recipients
@@ -457,8 +462,7 @@ class SMTPForwarder(object):
 
 class SecretBox(nacl.secret.SecretBox):
     '''
-        "extended" to use passwords (usually weak),
-        by means of simple HMACSHA256 key expansion.
+        Added key expansion to allow arbitrary key lengths.
     '''
     def __init__(self, key, *args, **kw):
         key = self.expand(key, 1984)
@@ -477,7 +481,7 @@ class SecretBox(nacl.secret.SecretBox):
 
 def getpass2(msg):
     '''
-        Read secret twice from terminal until both values match,
+        Read secret twice from terminal, repeat until both values match,
         then return secret.
     '''
     sec = None
