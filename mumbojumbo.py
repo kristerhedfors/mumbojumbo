@@ -37,9 +37,13 @@
 #   * a reason for using Mumbojumbo(!)
 #
 # TODO:
-#   * make starttls and auth for SMTP optional through config
+#   * handle blocking SMTP
+#   * respond to DNS-queries
 #   * multiple SMTP recipients
 #   * handle --loglevel correctly
+#   * configurable logfile
+#   * generic forwarder interface, more forwarders
+#   * file-based decryption key for encrypted-password
 #
 import base64
 import functools
@@ -56,7 +60,6 @@ import smtplib
 import hashlib
 import hmac
 import getpass
-# from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 import nacl.public
