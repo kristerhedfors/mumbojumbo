@@ -467,6 +467,21 @@ class SecretBox(nacl.secret.SecretBox):
         return key
 
 
+def getpass2(msg):
+    '''
+        Read secret twice from terminal until both values match,
+        then return secret.
+    '''
+    sec = None
+    while True:
+        sec = getpass.getpass(msg + ':')
+        sec2 = getpass.getpass(msg + ' again:')
+        if sec == sec2:
+            break
+        print 'The values do not match, try again'
+    return sec
+
+
 def main():
     global logger
     (opt, args) = option_parser().parse_args()
@@ -495,18 +510,12 @@ def main():
         sys.exit()
 
     if opt.encrypt:
-        key = getpass.getpass('enter encryption key:')
-        key2 = getpass.getpass('enter encryption key again:')
-        assert key == key2
-        secret = getpass.getpass('enter secret value:')
-        secret2 = getpass.getpass('enter secret value again:')
-        assert secret == secret2
-        del key2
-        del secret2
+        key = getpass2('enter encryption key')
+        secret = getpass2('enter secret value')
         nonce = nacl.utils.random(24)
         encval = SecretBox(key).encrypt(secret, nonce)
         print ''
-        print 'This is your secret value encrypted using your symmetric key:'
+        print 'This is your secret value encrypted using the key you typed in:'
         print encval.encode('base64').strip()
         sys.exit()
 
