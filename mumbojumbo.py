@@ -389,6 +389,7 @@ server-privkey = {server_privkey}
 [smtp]
 server = 127.0.0.1
 port = 587
+start-tls
 username = someuser
 encrypted-password = [create using `python mumbojumbo.py --encrypt`]
 from = someuser@somehost.xy
@@ -406,6 +407,8 @@ def option_parser():
                  help='print config skeleton file')
     p.add_option('', '--encrypt', action='store_true',
                  help='encrypt some value using a NaCL secret key')
+    p.add_option('', '--test-smtp', action='store_true',
+                 help='send one mail to test SMTP config')
     # p.add_option('', '--decrypt', metavar='val',
     #              help='decrypt `val` using a NaCL secret key')
     # p.add_option('-L', '--loglevel', metavar='INFO|DEBUG|..',
@@ -423,12 +426,13 @@ def get_nacl_keypair_base64():
 
 class SMTPForwarder(object):
 
-    def __init__(self, server='', port='', from_='', to='',
+    def __init__(self, server='', port='', from_='', to='', starttls=True,
                  username=None, password=None):
         self._server = server
         self._port = port
         self._from = from_
         self._to = to
+        self._starttls = starttls
         self._username = username
         self._password = password
 
@@ -440,7 +444,8 @@ class SMTPForwarder(object):
         msg['To'] = self._to
         smtp = smtplib.SMTP(self._server, port=self._port)
         smtp.ehlo_or_helo_if_needed()
-        smtp.starttls()
+        if self._starttls:
+            smtp.starttls()
         if self._username or self._password:
             smtp.login(self._username, self._password)
         smtp.sendmail(self._from, [self._to], msg.as_string())
@@ -524,23 +529,8 @@ def main():
         print '--gen-config-skel.'
         sys.exit(1)
 
-    config = ConfigParser.SafeConfigParser()
+    config = ConfigParser.SafeConfigParser(allow_no_value=True)
     config.read(opt.config)
-
-    #
-    # parse NaCL keys
-    #
-    server_privkey = nacl.public.PrivateKey(
-        config.get('main', 'server-privkey').decode('base64')
-    )
-    client_pubkey = nacl.public.PublicKey(
-        config.get('main', 'client-pubkey').decode('base64')
-    )
-    domain = config.get('main', 'domain')
-    network_interface = config.get('main', 'network-interface')
-
-    logger.info('domain={0}, network_interface={1}'.format(
-        domain, network_interface))
 
     #
     # SMTP forwarding of data?
@@ -556,11 +546,31 @@ def main():
         smtp_forwarder = SMTPForwarder(
             server=smtp_items['server'],
             port=smtp_items['port'],
+            starttls=config.has_option('smtp', 'start-tls'),
             from_=smtp_items['from'],
             to=smtp_items['to'],
             username=smtp_items['username'],
             password=password)
         # smtp_forwarder.sendmail('test', 'testtest')
+
+    if opt.test_smtp:
+        smtp_forwarder.sendmail('doing --test-smtp', 'body of --test-smtp')
+        sys.exit()
+
+    #
+    # parse NaCL keys
+    #
+    server_privkey = nacl.public.PrivateKey(
+        config.get('main', 'server-privkey').decode('base64')
+    )
+    client_pubkey = nacl.public.PublicKey(
+        config.get('main', 'client-pubkey').decode('base64')
+    )
+    domain = config.get('main', 'domain')
+    network_interface = config.get('main', 'network-interface')
+
+    logger.info('domain={0}, network_interface={1}'.format(
+        domain, network_interface))
 
     #
     # prepare packet fragment class
@@ -584,7 +594,11 @@ def main():
     # into complete packets
     #
     for name in dns_query_reader:
-        logger.debug('DNS query for: ' + name)
+        logger.debug('read DNS query for: ' + name)
+        #
+        # try-catch to prevent deserialization exceptions from causing
+        # a DOS attack.
+        #
         try:
             packet_engine.from_wire(name)
         except:
@@ -592,6 +606,9 @@ def main():
             msg += traceback.format_exc()
             logger.info(msg)
             continue
+        #
+        # did a packet complete after reading the last fragment?
+        #
         if not packet_engine.packet_outqueue.empty():
             data = packet_engine.packet_outqueue.get()
             if smtp_forwarder:
