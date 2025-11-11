@@ -255,7 +255,7 @@ class DnsPublicFragment(PublicFragment):
         Has the shape of:
             '{Base32Encoded_PublicFragment}{tld}'
     '''
-    DEFAULT_TLD = '.xyxyx.xy'
+    DEFAULT_TLD = '.asd.qwe'
 
     def __init__(self, domain=DEFAULT_TLD, **kw):
         self._domain = domain
@@ -426,7 +426,8 @@ class DnsQueryReader(object):
                 interface = interface or 'eth0'
 
         cmd = f'{tshark} -li {interface} -T fields -e dns.qry.name -- udp port 53'
-        self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
+        # Redirect stderr to /dev/null to prevent tshark banner from polluting JSON output
+        self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         name = p.stdout.readline().strip()
         if isinstance(name, bytes):
             name = name.decode('utf-8')
@@ -456,14 +457,14 @@ __config_skel__ = '''\
 # !! remember to `chmod 0600` this file !!
 #
 # for use on client-side:
-#   domain = .xyxyx.xy
+#   domain = .asd.qwe
 #   client_privkey = {client_privkey}
 #   server_pubkey = {server_pubkey}
 #
 
 [main]
 # Domain including leading dot
-domain = .xyxyx.xy
+domain = .asd.qwe
 # Network interface - macOS: en0, en1; Linux: eth0, wlan0
 network-interface = en0
 client-pubkey = {client_pubkey}

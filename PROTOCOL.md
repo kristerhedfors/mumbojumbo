@@ -47,11 +47,11 @@ Mumbojumbo is a DNS tunneling protocol that provides covert, encrypted communica
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  Step 4: Split into 63-char DNS labels                      │   │
 │  │                                                               │   │
-│  │  4qd7...xyz.abc1...def2.gh34...jkl5.xyxyx.xy                │   │
+│  │  4qd7...xyz.abc1...def2.gh34...jkl5.asd.qwe                │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │           │                                                           │
 │           ▼                                                           │
-│  DNS Query: 4qd7...xyz.abc1...def2.gh34...jkl5.xyxyx.xy            │
+│  DNS Query: 4qd7...xyz.abc1...def2.gh34...jkl5.asd.qwe            │
 │                                                                       │
 └───────────────────────────────┬───────────────────────────────────────┘
                                 │
@@ -74,7 +74,7 @@ Mumbojumbo is a DNS tunneling protocol that provides covert, encrypted communica
 │           │                                                           │
 │           ▼                                                           │
 │  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  Step 2: Filter by Domain (.xyxyx.xy)                       │   │
+│  │  Step 2: Filter by Domain (.asd.qwe)                       │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │           │                                                           │
 │           ▼                                                           │
@@ -188,7 +188,7 @@ Mumbojumbo uses NaCl (libsodium) public-key authenticated encryption via `nacl.p
 │  Configuration File (mumbojumbo.conf):                        │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │ [main]                                                   │ │
-│  │ domain = .xyxyx.xy                                       │ │
+│  │ domain = .asd.qwe                                       │ │
 │  │ network-interface = en0                                  │ │
 │  │ client-pubkey = wP8r...M= (base64)                       │ │
 │  │ server-privkey = xQ9s...N= (base64)                      │ │
@@ -199,7 +199,7 @@ Mumbojumbo uses NaCl (libsodium) public-key authenticated encryption via `nacl.p
 │  │ Client receives via secure channel:                     │ │
 │  │   • client_privkey = yR0t...O= (base64)                 │ │
 │  │   • server_pubkey = zS1u...P= (base64)                  │ │
-│  │   • domain = .xyxyx.xy                                   │ │
+│  │   • domain = .asd.qwe                                   │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
 └──────────────────────────────────────────────────────────────┘
@@ -282,7 +282,7 @@ DNS has strict limitations on label length and format:
 │  │         │ (59 chars, fits in one label)                 │ │
 │  │         ▼                                                │ │
 │  │  DNS Name:                                               │ │
-│  │    jjvruxg4bfjrq2lbmfxgs43pn5tuk6bqmfzwk.xyxyx.xy       │ │
+│  │    jjvruxg4bfjrq2lbmfxgs43pn5tuk6bqmfzwk.asd.qwe       │ │
 │  │                                                          │ │
 │  │  Longer Fragment:                                        │ │
 │  │  Base32 (150 chars):                                     │ │
@@ -295,7 +295,7 @@ DNS has strict limitations on label length and format:
 │  │         │                                                │ │
 │  │         ▼                                                │ │
 │  │  DNS Name:                                               │ │
-│  │    <label1>.<label2>.<label3>.xyxyx.xy                  │ │
+│  │    <label1>.<label2>.<label3>.asd.qwe                  │ │
 │  │                                                          │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
@@ -315,8 +315,8 @@ base32 = base32_encode(encrypted)  # "jjvruxg4bfjrq2lbmfxgs43pn5tuk6bq"
 labels = split_every_63_chars(base32)  # ["jjvruxg4bfjrq2lbmfxgs43pn5tuk6bq"]
 
 # Step 3: Join with dots and add domain
-dns_name = ".".join(labels) + ".xyxyx.xy"
-# Result: "jjvruxg4bfjrq2lbmfxgs43pn5tuk6bq.xyxyx.xy"
+dns_name = ".".join(labels) + ".asd.qwe"
+# Result: "jjvruxg4bfjrq2lbmfxgs43pn5tuk6bq.asd.qwe"
 
 # This DNS name is now queried by the client
 # The query propagates through DNS infrastructure
@@ -452,7 +452,7 @@ CLIENT SIDE:
 
 5. Create DNS query:
    (84 chars, fits in one label)
-   DNS: eizuwyzblbqwy3dfon2gs3thebswy3lpnyqhmzlsoqydamb3he2dkmztge3dsmrsmfzwizlsfy.xyxyx.xy
+   DNS: eizuwyzblbqwy3dfon2gs3thebswy3lpnyqhmzlsoqydamb3he2dkmztge3dsmrsmfzwizlsfy.asd.qwe
 
 6. Send DNS query to resolver
 
@@ -460,7 +460,7 @@ CLIENT SIDE:
 DNS INFRASTRUCTURE:
 ──────────────────
 Query propagates through DNS system
-Recursive resolvers attempt to resolve .xyxyx.xy domain
+Recursive resolvers attempt to resolve .asd.qwe domain
 Eventually reaches authoritative servers (or fails)
 Server captures query via packet sniffing (tshark)
 
@@ -468,9 +468,9 @@ Server captures query via packet sniffing (tshark)
 SERVER SIDE:
 ───────────
 1. tshark captures:
-   "eizuwyzblbqwy3dfon2gs3thebswy3lpnyqhmzlsoqydamb3he2dkmztge3dsmrsmfzwizlsfy.xyxyx.xy"
+   "eizuwyzblbqwy3dfon2gs3thebswy3lpnyqhmzlsoqydamb3he2dkmztge3dsmrsmfzwizlsfy.asd.qwe"
 
-2. Filter: ends with ".xyxyx.xy" ✓
+2. Filter: ends with ".asd.qwe" ✓
 
 3. Base32 Decode:
    Remove domain: "eizuwyzblbqwy3dfon2gs3thebswy3lpnyqhmzlsoqydamb3he2dkmztge3dsmrsmfzwizlsfy"
@@ -537,9 +537,9 @@ Each fragment is independently:
 
 THREE DNS QUERIES GENERATED:
 ────────────────────────────
-Query 1: <104-char-base32-label1>.<52-char-remainder>.xyxyx.xy
-Query 2: <104-char-base32-label1>.<52-char-remainder>.xyxyx.xy
-Query 3: <100-char-base32-label1>.<50-char-remainder>.xyxyx.xy
+Query 1: <104-char-base32-label1>.<52-char-remainder>.asd.qwe
+Query 2: <104-char-base32-label1>.<52-char-remainder>.asd.qwe
+Query 3: <100-char-base32-label1>.<50-char-remainder>.asd.qwe
 
 
 SERVER SIDE RECEIVES QUERIES OUT OF ORDER:
@@ -605,7 +605,7 @@ engine.to_wire(packet_data) → yields serialized fragments
 engine.from_wire(wire_data) → reassembles, puts to queue
 
 # DNS capture
-for dns_name in DnsQueryReader(interface='en0', domain='.xyxyx.xy'):
+for dns_name in DnsQueryReader(interface='en0', domain='.asd.qwe'):
     engine.from_wire(dns_name)
 ```
 
@@ -618,7 +618,7 @@ for dns_name in DnsQueryReader(interface='en0', domain='.xyxyx.xy'):
 ```ini
 [main]
 # Domain for DNS queries (must include leading dot)
-domain = .xyxyx.xy
+domain = .asd.qwe
 
 # Network interface to monitor
 # macOS: en0, en1, en2
@@ -659,7 +659,7 @@ $ chmod 600 mumbojumbo.conf
 Client needs:
 1. `client_privkey` (32 bytes, base64)
 2. `server_pubkey` (32 bytes, base64)
-3. `domain` (e.g., `.xyxyx.xy`)
+3. `domain` (e.g., `.asd.qwe`)
 
 These can be hardcoded in client application or loaded from config.
 
@@ -756,7 +756,7 @@ Base32 Encoding:
 
 DNS:
   ├─ Label separators: variable (depends on label count)
-  ├─ Domain suffix: len(".xyxyx.xy") = 9 bytes
+  ├─ Domain suffix: len(".asd.qwe") = 9 bytes
   └─ Maximum domain name: 253 characters
 
 Total Overhead (approximate):
@@ -821,7 +821,7 @@ import nacl.public
 # Configuration from server
 CLIENT_PRIVKEY = base64.b64decode('yR0t...O=')
 SERVER_PUBKEY = base64.b64decode('zS1u...P=')
-DOMAIN = '.xyxyx.xy'
+DOMAIN = '.asd.qwe'
 
 # Create keys
 client_private = nacl.public.PrivateKey(CLIENT_PRIVKEY)
@@ -905,7 +905,7 @@ network-interface = en0  # or eth0, wlan0, etc.
 - Ensure server is listening on correct network interface
 - Verify DNS queries are being sent to a resolver
 - Check firewall rules (allow UDP port 53)
-- Try sending query manually: `dig @8.8.8.8 test.xyxyx.xy`
+- Try sending query manually: `dig @8.8.8.8 test.asd.qwe`
 
 ---
 

@@ -37,13 +37,13 @@ The generated `mumbojumbo.conf` includes the configuration needed for both serve
 # !! remember to `chmod 0600` this file !!
 #
 # for use on client-side:
-#   domain = .xyxyx.xy
+#   domain = .asd.qwe
 #   client_privkey = yCqIMzFFEvtC95gNXjvmvVumUIJDoia7Yq1UzCf/sGs=
 #   server_pubkey = sdcn50krReeK+tcKyodfWhUEkv5/HEu58e1LsfrXTms=
 #
 
 [main]
-domain = .xyxyx.xy
+domain = .asd.qwe
 network-interface = en0
 client-pubkey = u6DmkkHUVsVjsFFNuQXlM89k25kueOXeKX4j2uE7cQ8=
 server-privkey = OTlWa64XPOvLL23LCyE/9DddoaqTQKBbjrieRlSOHmE=

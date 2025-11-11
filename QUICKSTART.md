@@ -43,7 +43,7 @@ xdg-open client.html   # Linux
 
 Then:
 1. Copy the `server_pubkey` value from the config comments and paste into "Server Public Key" field
-2. Copy the `domain` value (e.g., `.xyxyx.xy`) and paste into "Domain Suffix" field
+2. Copy the `domain` value (e.g., `.asd.qwe`) and paste into "Domain Suffix" field
 3. Type your message in the textarea
 4. Click "Send via DNS"
 5. Open browser console (F12) to see the DNS queries that would be sent
@@ -66,7 +66,7 @@ python3 -m venv venv
 chmod 600 mumbojumbo.conf
 
 # 5. (Optional) Edit mumbojumbo.conf to customize domain and interface
-# Default domain: .xyxyx.xy
+# Default domain: .asd.qwe
 # Default interface: eth0
 ```
 
@@ -98,7 +98,7 @@ open client.html
 ./venv/bin/python3 mumbojumbo.py --gen-keys
 
 # Then send DNS queries manually (replace with your encoded data)
-dig @8.8.8.8 <base32-encoded-encrypted-fragment>.xyxyx.xy
+dig @8.8.8.8 <base32-encoded-encrypted-fragment>.asd.qwe
 ```
 
 ## Testing Without Root Access
@@ -144,7 +144,7 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 
 ```ini
 [main]
-domain = .xyxyx.xy
+domain = .asd.qwe
 network-interface = eth0
 client-pubkey = <base64-client-public-key>
 server-privkey = <base64-server-private-key>
@@ -166,7 +166,7 @@ to = recipient@example.com
    - Encrypts message with NaCl public key encryption
    - Fragments into chunks (80 bytes default)
    - Encodes each fragment as base32
-   - Creates DNS query: `<base32-fragment>.xyxyx.xy`
+   - Creates DNS query: `<base32-fragment>.asd.qwe`
 
 2. **Server Side:**
    - Captures DNS queries with `tshark`
