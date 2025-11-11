@@ -1,6 +1,6 @@
 # Mumbojumbo
 
-DNS tunnel with NaCl encryption. Sends encrypted messages via DNS queries.
+DNS tunnel with NaCl SealedBox encryption. Sends encrypted messages via DNS queries using anonymous one-way encryption.
 
 ## Quick Start
 
@@ -22,11 +22,12 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 
 ## What It Does
 
-- Encrypts messages with NaCl public key cryptography
+- Encrypts messages with NaCl SealedBox (anonymous public key cryptography)
 - Fragments encrypted data into chunks
 - Encodes chunks as DNS subdomain queries
 - Server captures DNS packets and reassembles messages
 - Optional SMTP forwarding
+- Client only needs server's public key (no client keypair required)
 
 ## Configuration
 
@@ -38,15 +39,14 @@ The generated `mumbojumbo.conf` includes the configuration needed for both serve
 #
 # for use on client-side:
 #   domain = .asd.qwe
-#   client_privkey = yCqIMzFFEvtC95gNXjvmvVumUIJDoia7Yq1UzCf/sGs=
-#   server_pubkey = sdcn50krReeK+tcKyodfWhUEkv5/HEu58e1LsfrXTms=
+#   mumbojumbo_pubkey = sdcn50krReeK+tcKyodfWhUEkv5/HEu58e1LsfrXTms=
 #
 
 [main]
 domain = .asd.qwe
 network-interface = en0
-client-pubkey = u6DmkkHUVsVjsFFNuQXlM89k25kueOXeKX4j2uE7cQ8=
-server-privkey = OTlWa64XPOvLL23LCyE/9DddoaqTQKBbjrieRlSOHmE=
+mumbojumbo-privkey = OTlWa64XPOvLL23LCyE/9DddoaqTQKBbjrieRlSOHmE=
+mumbojumbo-pubkey = u6DmkkHUVsVjsFFNuQXlM89k25kueOXeKX4j2uE7cQ8=
 
 [smtp]
 server = smtp.gmail.com
@@ -58,7 +58,7 @@ from = user@gmail.com
 to = recipient@example.com
 ```
 
-**For clients:** Copy the `domain`, `client_privkey`, and `server_pubkey` values from the config comments.
+**For clients:** Copy the `domain` and `mumbojumbo_pubkey` values from the config comments.
 
 ## Requirements
 
@@ -100,6 +100,7 @@ sudo apt-get install tshark
 **Educational/testing purposes only.** Not for production use.
 
 Known limitations:
+- No sender authentication (anonymous encryption)
 - No timestamp protection (replay attacks)
 - No perfect forward secrecy
 - No rate limiting

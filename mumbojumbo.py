@@ -194,39 +194,34 @@ class Fragment(BaseFragment):
 
 class PublicFragment(Fragment):
     '''
-        Packet fragment encrypted/decrypted using nacl.public.Box().
+        Packet fragment encrypted/decrypted using nacl.public.SealedBox().
+        One-way anonymous encryption using only the server's public key.
     '''
     def __init__(self, private_key=None, public_key=None, **kw):
         self._private_key = private_key
         self._public_key = public_key
-        if private_key is not None and public_key is not None:
-            self._box = nacl.public.Box(private_key, public_key)
+        # For encryption (client side): only needs public_key
+        # For decryption (server side): only needs private_key
+        if public_key is not None:
+            self._sealedbox_encrypt = nacl.public.SealedBox(public_key)
         else:
-            self._box = None
+            self._sealedbox_encrypt = None
+        if private_key is not None:
+            self._sealedbox_decrypt = nacl.public.SealedBox(private_key)
+        else:
+            self._sealedbox_decrypt = None
         super(PublicFragment, self).__init__(**kw)
 
     def serialize(self):
         plaintext = super(PublicFragment, self).serialize()
-        # Use 4-byte nonce, pad to 24 bytes for NaCl compatibility
-        nonce_short = nacl.public.random(4)
-        nonce_padded = nonce_short + (b'\x00' * 20)
-        ciphertext = self._box.encrypt(plaintext=plaintext, nonce=nonce_padded)
-        # Return only the 4-byte nonce + encrypted data (strip padding from nonce)
-        # NaCl prepends the full 24-byte nonce, so we need to replace it
-        # ciphertext format: nonce(24) + encrypted_data
-        encrypted_only = ciphertext[24:]  # Skip the 24-byte nonce
-        return nonce_short + encrypted_only
+        # SealedBox handles nonce internally - no need for manual nonce management
+        ciphertext = self._sealedbox_encrypt.encrypt(plaintext)
+        return ciphertext
 
     def deserialize(self, ciphertext):
         plaintext = b''
         try:
-            # Extract 4-byte nonce and pad to 24 bytes for NaCl
-            nonce_short = ciphertext[:4]
-            nonce_padded = nonce_short + (b'\x00' * 20)
-            encrypted_data = ciphertext[4:]
-            # Reconstruct full NaCl ciphertext format: nonce(24) + encrypted_data
-            full_ciphertext = nonce_padded + encrypted_data
-            plaintext = self._box.decrypt(ciphertext=full_ciphertext)
+            plaintext = self._sealedbox_decrypt.decrypt(ciphertext)
         except:
             logger.debug('decrypt exception:' + traceback.format_exc())
             raise
@@ -458,8 +453,7 @@ __config_skel__ = '''\
 #
 # for use on client-side:
 #   domain = .asd.qwe
-#   client_privkey = {client_privkey}
-#   server_pubkey = {server_pubkey}
+#   mumbojumbo_pubkey = {mumbojumbo_pubkey}
 #
 
 [main]
@@ -467,8 +461,8 @@ __config_skel__ = '''\
 domain = .asd.qwe
 # Network interface - macOS: en0, en1; Linux: eth0, wlan0
 network-interface = en0
-client-pubkey = {client_pubkey}
-server-privkey = {server_privkey}
+mumbojumbo-privkey = {mumbojumbo_privkey}
+mumbojumbo-pubkey = {mumbojumbo_pubkey}
 
 [smtp]
 server = 127.0.0.1
@@ -677,8 +671,7 @@ def main():
     setup_logging(verbose=opt.verbose)
 
     if opt.generate_conf:
-        (client_privkey, client_pubkey) = get_nacl_keypair_base64()
-        (server_privkey, server_pubkey) = get_nacl_keypair_base64()
+        (mumbojumbo_privkey, mumbojumbo_pubkey) = get_nacl_keypair_base64()
 
         # Find available filename: mumbojumbo.conf, mumbojumbo.conf.1, etc.
         filename = 'mumbojumbo.conf'
@@ -689,10 +682,8 @@ def main():
 
         # Write config to file
         config_content = __config_skel__.format(
-            client_privkey=client_privkey,
-            client_pubkey=client_pubkey,
-            server_privkey=server_privkey,
-            server_pubkey=server_pubkey
+            mumbojumbo_privkey=mumbojumbo_privkey,
+            mumbojumbo_pubkey=mumbojumbo_pubkey
         )
         with open(filename, 'w') as f:
             f.write(config_content)
@@ -758,12 +749,12 @@ def main():
     #
     # parse NaCL keys
     #
-    server_privkey = nacl.public.PrivateKey(
-        base64.b64decode(config.get('main', 'server-privkey'))
+    mumbojumbo_privkey = nacl.public.PrivateKey(
+        base64.b64decode(config.get('main', 'mumbojumbo-privkey'))
     )
 
-    client_pubkey = nacl.public.PublicKey(
-        base64.b64decode(config.get('main', 'client-pubkey'))
+    mumbojumbo_pubkey = nacl.public.PublicKey(
+        base64.b64decode(config.get('main', 'mumbojumbo-pubkey'))
     )
     domain = config.get('main', 'domain')
     network_interface = config.get('main', 'network-interface')
@@ -772,11 +763,11 @@ def main():
         domain, network_interface))
 
     #
-    # prepare packet fragment class
+    # prepare packet fragment class - server uses private key for decryption
     #
     pf_cls = DnsPublicFragment.bind(domain=domain,
-                                    private_key=server_privkey,
-                                    public_key=client_pubkey)
+                                    private_key=mumbojumbo_privkey,
+                                    public_key=mumbojumbo_pubkey)
     #
     # build packet engine based on fragment class
     #

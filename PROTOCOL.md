@@ -2,7 +2,7 @@
 
 ## Overview
 
-Mumbojumbo is a DNS tunneling protocol that provides covert, encrypted communication over DNS queries. It uses NaCl (libsodium) public key cryptography to encrypt messages, fragments them into manageable chunks, encodes them as base32, and transmits them as DNS subdomain queries.
+Mumbojumbo is a DNS tunneling protocol that provides covert, encrypted communication over DNS queries. It uses NaCl (libsodium) public key cryptography via SealedBox for anonymous one-way encryption. Messages are fragmented into manageable chunks, encoded as base32, and transmitted as DNS subdomain queries.
 
 **Use Cases:** Educational purposes, authorized security testing, CTF challenges, network research.
 
@@ -30,10 +30,10 @@ Mumbojumbo is a DNS tunneling protocol that provides covert, encrypted communica
 │           │                                                           │
 │           ▼                                                           │
 │  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  Step 2: Encrypt each fragment with NaCl Box               │   │
-│  │  (Client Private Key + Server Public Key)                   │   │
+│  │  Step 2: Encrypt each fragment with NaCl SealedBox         │   │
+│  │  (Mumbojumbo Public Key - anonymous one-way encryption)     │   │
 │  │                                                               │   │
-│  │  Nonce (24 bytes) + Encrypted Payload (variable)            │   │
+│  │  Encrypted Payload (SealedBox handles nonce internally)     │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │           │                                                           │
 │           ▼                                                           │
@@ -84,8 +84,8 @@ Mumbojumbo is a DNS tunneling protocol that provides covert, encrypted communica
 │           │                                                           │
 │           ▼                                                           │
 │  ┌─────────────────────────────────────────────────────────────┐   │
-│  │  Step 4: Decrypt with NaCl Box                              │   │
-│  │  (Server Private Key + Client Public Key)                   │   │
+│  │  Step 4: Decrypt with NaCl SealedBox                        │   │
+│  │  (Mumbojumbo Private Key - server decrypts anonymously)    │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │           │                                                           │
 │           ▼                                                           │
@@ -162,7 +162,7 @@ Max Fragment Size: 88 bytes (reduced from 90 bytes)
 
 ## Encryption Layer
 
-Mumbojumbo uses NaCl (libsodium) public-key authenticated encryption via `nacl.public.Box`.
+Mumbojumbo uses NaCl (libsodium) public-key anonymous encryption via `nacl.public.SealedBox`. This provides one-way encryption where clients only need the server's public key.
 
 ### Key Exchange
 
@@ -176,13 +176,11 @@ Mumbojumbo uses NaCl (libsodium) public-key authenticated encryption via `nacl.p
 │  │ $ ./mumbojumbo.py --generate-conf > mumbojumbo.conf   │ │
 │  │                                                          │ │
 │  │ Generates:                                               │ │
-│  │   • Server Private Key (32 bytes)                       │ │
-│  │   • Server Public Key (32 bytes)                        │ │
-│  │   • Client Private Key (32 bytes)                       │ │
-│  │   • Client Public Key (32 bytes)                        │ │
+│  │   • Mumbojumbo Private Key (32 bytes)                   │ │
+│  │   • Mumbojumbo Public Key (32 bytes)                    │ │
 │  │                                                          │ │
-│  │ Server stores:  server_privkey, client_pubkey          │ │
-│  │ Client receives: client_privkey, server_pubkey          │ │
+│  │ Server stores:  mumbojumbo_privkey, mumbojumbo_pubkey  │ │
+│  │ Client receives: mumbojumbo_pubkey                      │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  Configuration File (mumbojumbo.conf):                        │
@@ -190,15 +188,14 @@ Mumbojumbo uses NaCl (libsodium) public-key authenticated encryption via `nacl.p
 │  │ [main]                                                   │ │
 │  │ domain = .asd.qwe                                       │ │
 │  │ network-interface = en0                                  │ │
-│  │ client-pubkey = wP8r...M= (base64)                       │ │
-│  │ server-privkey = xQ9s...N= (base64)                      │ │
+│  │ mumbojumbo-privkey = xQ9s...N= (base64)                 │ │
+│  │ mumbojumbo-pubkey = wP8r...M= (base64)                  │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  Out-of-Band Transfer:                                        │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │ Client receives via secure channel:                     │ │
-│  │   • client_privkey = yR0t...O= (base64)                 │ │
-│  │   • server_pubkey = zS1u...P= (base64)                  │ │
+│  │   • mumbojumbo_pubkey = zS1u...P= (base64)              │ │
 │  │   • domain = .asd.qwe                                   │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
@@ -207,37 +204,34 @@ Mumbojumbo uses NaCl (libsodium) public-key authenticated encryption via `nacl.p
 
 ### Encryption Process
 
-Each fragment undergoes the following encryption:
+Each fragment undergoes the following encryption using SealedBox:
 
 ```python
 # Client Side (Transmission)
 plaintext = serialize_fragment(packet_id, frag_index, frag_count, data)
-nonce_short = random_bytes(4)  # 4-byte nonce (reduced from 24 bytes)
-nonce_padded = nonce_short + b'\x00' * 20  # Pad to 24 bytes for NaCl
-box = nacl.public.Box(client_private_key, server_public_key)
-ciphertext = box.encrypt(plaintext, nonce_padded)
-# Transmitted: nonce_short (4 bytes) + encrypted_data (variable)
-# Total overhead reduced by 20 bytes per fragment
+sealedbox = nacl.public.SealedBox(mumbojumbo_public_key)
+ciphertext = sealedbox.encrypt(plaintext)
+# SealedBox handles nonce internally - no manual nonce management needed
+# Overhead: 48 bytes (32-byte ephemeral public key + 16-byte auth tag)
 
 # Server Side (Reception)
-nonce_short = ciphertext[:4]  # Extract 4-byte nonce
-nonce_padded = nonce_short + b'\x00' * 20  # Reconstruct 24-byte nonce
-encrypted_data = ciphertext[4:]
-full_ciphertext = nonce_padded + encrypted_data  # Rebuild NaCl format
-box = nacl.public.Box(server_private_key, client_public_key)
-plaintext = box.decrypt(full_ciphertext)
+sealedbox = nacl.public.SealedBox(mumbojumbo_private_key)
+plaintext = sealedbox.decrypt(ciphertext)
 fragment = parse_fragment(plaintext)
 ```
 
 **Security Properties:**
-- **Authentication:** Server can verify the message came from the legitimate client
+- **Anonymous:** Server cannot identify the sender by cryptographic means
 - **Confidentiality:** Only the server with the private key can decrypt messages
 - **Integrity:** Any tampering is detected during decryption
+- **Simplicity:** Client only needs the public key (no client keypair required)
 
 **Limitations:**
+- ⚠️ **No authentication:** Server cannot verify sender identity
 - ⚠️ **No replay protection:** Old messages can be replayed
 - ⚠️ **No forward secrecy:** Compromised keys expose all past messages
 - ⚠️ **No timestamp validation:** Messages can be delayed or reordered
+- ⚠️ **Higher overhead:** 48 bytes vs 20 bytes (Box with 4-byte nonce)
 
 ---
 
@@ -625,11 +619,9 @@ domain = .asd.qwe
 # Linux: eth0, wlan0, ens33
 network-interface = en0
 
-# Base64-encoded NaCl public key from client
-client-pubkey = wP8rZX...Yz4M=
-
-# Base64-encoded NaCl private key for server
-server-privkey = xQ9sAa...0N5K=
+# Base64-encoded NaCl keypair for server (mumbojumbo keys)
+mumbojumbo-privkey = xQ9sAa...0N5K=
+mumbojumbo-pubkey = wP8rZX...Yz4M=
 
 [smtp]
 # Optional: forward received messages via email
@@ -650,16 +642,14 @@ $ ./mumbojumbo.py --generate-conf > mumbojumbo.conf
 $ chmod 600 mumbojumbo.conf
 
 # The config file contains comments showing which keys to give to client:
-#   client_privkey=<key1>
-#   server_pubkey=<key2>
+#   mumbojumbo_pubkey=<key>
 ```
 
 ### Client Configuration
 
 Client needs:
-1. `client_privkey` (32 bytes, base64)
-2. `server_pubkey` (32 bytes, base64)
-3. `domain` (e.g., `.asd.qwe`)
+1. `mumbojumbo_pubkey` (32 bytes, base64)
+2. `domain` (e.g., `.asd.qwe`)
 
 These can be hardcoded in client application or loaded from config.
 
@@ -670,10 +660,11 @@ These can be hardcoded in client application or loaded from config.
 ### Current Security Properties
 
 ✅ **Provides:**
-- Confidentiality (encryption via NaCl Box)
-- Authentication (client cannot be impersonated without private key)
+- Confidentiality (encryption via NaCl SealedBox)
+- Anonymity (no client authentication - sender is anonymous)
 - Integrity (tampering detected during decryption)
 - Covert channel (DNS queries appear innocuous)
+- Simplicity (client only needs public key)
 
 ❌ **Does NOT Provide:**
 - **Replay protection:** Attackers can capture and resend old fragments
@@ -819,21 +810,18 @@ import base64
 import nacl.public
 
 # Configuration from server
-CLIENT_PRIVKEY = base64.b64decode('yR0t...O=')
-SERVER_PUBKEY = base64.b64decode('zS1u...P=')
+MUMBOJUMBO_PUBKEY = base64.b64decode('zS1u...P=')
 DOMAIN = '.asd.qwe'
 
-# Create keys
-client_private = nacl.public.PrivateKey(CLIENT_PRIVKEY)
-server_public = nacl.public.PublicKey(SERVER_PUBKEY)
+# Create public key
+mumbojumbo_public = nacl.public.PublicKey(MUMBOJUMBO_PUBKEY)
 
-# Create fragment class
+# Create fragment class (client only needs public key for SealedBox)
 from mumbojumbo import DnsPublicFragment, PacketEngine
 
 frag_cls = DnsPublicFragment.bind(
     domain=DOMAIN,
-    private_key=client_private,
-    public_key=server_public
+    public_key=mumbojumbo_public
 )
 
 # Create packet engine
@@ -852,9 +840,9 @@ for dns_query in engine.to_wire(message):
 See [client.html](client.html) for a complete browser-based implementation.
 
 ```javascript
-// Generate DNS queries in browser
+// Generate DNS queries in browser using SealedBox
 const message = "Hello World!";
-const queries = generateDnsQueries(message, clientPrivKey, serverPubKey, domain);
+const queries = generateDnsQueries(message, mumbojumboPubKey, domain);
 queries.forEach(query => {
     console.log(`Query: ${query}`);
     // DNS queries shown in console
@@ -897,9 +885,9 @@ network-interface = en0  # or eth0, wlan0, etc.
 ```
 
 **Problem:** Decryption fails
-- Verify client and server are using matching key pairs
-- Check that `client_pubkey` on server matches `client_privkey` on client
-- Check that `server_privkey` on server matches `server_pubkey` on client
+- Verify client is using the correct mumbojumbo public key
+- Check that `mumbojumbo-pubkey` in server config matches the key given to client
+- Ensure server has the correct `mumbojumbo-privkey` to decrypt
 
 **Problem:** No queries captured
 - Ensure server is listening on correct network interface
@@ -916,10 +904,10 @@ network-interface = en0  # or eth0, wlan0, etc.
 | Feature | Mumbojumbo | Iodine | Dnscat2 | ICMP Tunnel |
 |---------|------------|---------|---------|-------------|
 | **Transport** | DNS queries | DNS NULL records | DNS queries | ICMP Echo |
-| **Encryption** | NaCl public key | Optional | Optional | None |
+| **Encryption** | NaCl SealedBox | Optional | Optional | None |
 | **Bi-directional** | No (one-way) | Yes | Yes | Yes |
 | **Fragmentation** | Yes | Yes | Yes | Yes |
-| **Authentication** | Yes (crypto) | Password | Pre-shared key | None |
+| **Authentication** | No (anonymous) | Password | Pre-shared key | None |
 | **Setup complexity** | Low | Medium | Medium | Low |
 | **Detection difficulty** | Medium | Medium | Medium | High |
 | **Throughput** | Low | Low | Low | Medium |
@@ -999,7 +987,7 @@ The authors assume no liability for misuse of this software.
     🔐 Encrypted DNS Tunneling Protocol 🔐
 
     Client ──[DNS Query]──> Infrastructure ──[Packet Sniff]──> Server
-            (NaCl Box)                                        (Decrypt)
+         (NaCl SealedBox)                                     (Decrypt)
             (Base32)                                          (Reassemble)
             (Fragment)                                        (Forward)
 ```

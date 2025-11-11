@@ -178,24 +178,26 @@ def test_performance():
     _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
     import base64
     private_key = nacl.public.PrivateKey(base64.b64decode(_key))
-    pfcls = DnsPublicFragment.bind(private_key=private_key,
-                                   public_key=private_key.public_key)
-    packet_engine = PacketEngine(pfcls)
+    # For SealedBox: client uses public_key only, server uses private_key only
+    pfcls_encrypt = DnsPublicFragment.bind(public_key=private_key.public_key)
+    pfcls_decrypt = DnsPublicFragment.bind(private_key=private_key)
+    packet_engine_encrypt = PacketEngine(pfcls_encrypt)
+    packet_engine_decrypt = PacketEngine(pfcls_decrypt)
     data = nacl.public.random(1024)
 
     count = 1024
     lst = []
     t1 = time.time()
     for i in range(count):
-        for item in packet_engine.to_wire(data):
+        for item in packet_engine_encrypt.to_wire(data):
             lst.append(item)
     t2 = time.time()
     for item in lst:
-        packet_engine.from_wire(item)
+        packet_engine_decrypt.from_wire(item)
     t3 = time.time()
 
-    while not packet_engine.packet_outqueue.empty():
-        packet_engine.packet_outqueue.get()
+    while not packet_engine_decrypt.packet_outqueue.empty():
+        packet_engine_decrypt.packet_outqueue.get()
         count -= 1
     assert count == 0
 
@@ -284,11 +286,12 @@ class Test_Fragment(unittest.TestCase):
 class Test_PublicFragment(unittest.TestCase, MyTestMixin):
 
     def do_test_cls(self, cls, **kw):
-        k1 = nacl.public.PrivateKey.generate()
-        k2 = nacl.public.PrivateKey.generate()
-        pfcls1 = cls.bind(private_key=k1, public_key=k2.public_key, **kw)
-        pfcls2 = cls.bind(private_key=k2, public_key=k1.public_key, **kw)
-        self.multi_public_serialize_deserialize(pfcls1, pfcls2)
+        # For SealedBox: Only need one keypair (server keypair)
+        # Client encrypts with public_key, server decrypts with private_key
+        server_privkey = nacl.public.PrivateKey.generate()
+        pfcls_encrypt = cls.bind(public_key=server_privkey.public_key, **kw)
+        pfcls_decrypt = cls.bind(private_key=server_privkey, **kw)
+        self.multi_public_serialize_deserialize(pfcls_encrypt, pfcls_decrypt)
 
     def test_classes(self):
         self.do_test_cls(PublicFragment)
@@ -307,25 +310,23 @@ class Test_PacketEngine(unittest.TestCase, MyTestMixin):
         packet_data_lst += [b'a']
         packet_data_lst += [nacl.public.random(random.randint(1, 2048))
                             for i in range(64)]
-        k1 = nacl.public.PrivateKey.generate()
-        k2 = nacl.public.PrivateKey.generate()
-        pfcls1 = DnsPublicFragment.bind(private_key=k1,
-                                        public_key=k2.public_key)
-        pfcls2 = DnsPublicFragment.bind(private_key=k2,
-                                        public_key=k1.public_key)
+        # For SealedBox: Only need one keypair (server keypair)
+        server_privkey = nacl.public.PrivateKey.generate()
+        pfcls_encrypt = DnsPublicFragment.bind(public_key=server_privkey.public_key)
+        pfcls_decrypt = DnsPublicFragment.bind(private_key=server_privkey)
         self.packet_data_lst = packet_data_lst
-        self.pfcls1 = pfcls1
-        self.pfcls2 = pfcls2
+        self.pfcls_encrypt = pfcls_encrypt
+        self.pfcls_decrypt = pfcls_decrypt
 
     def do_test_cls(self, cls, **kw):
-        pe1 = PacketEngine(frag_cls=self.pfcls1, **kw)
-        pe2 = PacketEngine(frag_cls=self.pfcls2, **kw)
+        pe_encrypt = PacketEngine(frag_cls=self.pfcls_encrypt, **kw)
+        pe_decrypt = PacketEngine(frag_cls=self.pfcls_decrypt, **kw)
         for packet_data in self.packet_data_lst:
-            for wire_data in pe1.to_wire(packet_data=packet_data):
-                pe2.from_wire(wire_data=wire_data)
-            out_data = pe2.packet_outqueue.get()
+            for wire_data in pe_encrypt.to_wire(packet_data=packet_data):
+                pe_decrypt.from_wire(wire_data=wire_data)
+            out_data = pe_decrypt.packet_outqueue.get()
             assert packet_data == out_data
-            assert pe2.packet_outqueue.empty()
+            assert pe_decrypt.packet_outqueue.empty()
 
     def test_classes(self):
         self.do_test_cls(PacketEngine, max_frag_data_len=100)
@@ -456,18 +457,16 @@ class Test_SMTPErrorHandling(unittest.TestCase):
 
 def main(*args):
     import base64
-    _pk1 = 'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
-    _pk2 = 'DGor3Mkdy8Txp4bRMPYURduV7fVXcUCNnaFra1RIums='
-    pk1 = nacl.public.PrivateKey(base64.b64decode(_pk1))
-    pk2 = nacl.public.PrivateKey(base64.b64decode(_pk2))
+    # For SealedBox: Only need one keypair (server keypair)
+    _server_privkey = 'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
+    server_privkey = nacl.public.PrivateKey(base64.b64decode(_server_privkey))
 
-    pfcls_client = DnsPublicFragment.bind(private_key=pk1,
-                                          public_key=pk2.public_key)
+    # Client only needs server's public key
+    pfcls_client = DnsPublicFragment.bind(public_key=server_privkey.public_key)
     packet_engine_client = PacketEngine(pfcls_client)
 
-    pfcls_server = DnsPublicFragment.bind(private_key=pk2,
-                                          public_key=pk1.public_key)
-
+    # Server uses private key to decrypt
+    pfcls_server = DnsPublicFragment.bind(private_key=server_privkey)
     packet_engine_server = PacketEngine(pfcls_server)
 
     if len(args):
