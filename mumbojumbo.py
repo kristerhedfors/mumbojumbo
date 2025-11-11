@@ -50,7 +50,7 @@
 #   * handle --loglevel correctly
 #   * configurable logfile
 #   * generic forwarder interface, more forwarders
-#   * file-based decryption key for encrypted-password
+#   * file-based decryption key for password-encrypted and server-privkey-encrypted
 #
 import base64
 import functools
@@ -442,14 +442,14 @@ __config_skel__ = '''\
 domain = .xyxyx.xy  # including leading dot
 network-interface = en0  # macOS: en0, en1; Linux: eth0, wlan0
 client-pubkey = {client_pubkey}
-server-privkey = {server_privkey}
+server-privkey-encrypted = [create using `python mumbojumbo.py --encrypt`]
 
 [smtp]
 server = 127.0.0.1
 port = 587
 start-tls
 username = someuser
-encrypted-password = [create using `python mumbojumbo.py --encrypt`]
+password-encrypted = [create using `python mumbojumbo.py --encrypt`]
 from = someuser@somehost.xy
 to = otheruser@otherhost.xy
 '''
@@ -602,7 +602,7 @@ def main():
     if smtp_items:
         key = getpass.getpass('Enter SMTP password decryption key:')
         password = SecretBox(key).decrypt(
-            base64.b64decode(smtp_items['encrypted-password'])
+            base64.b64decode(smtp_items['password-encrypted'])
         )
         smtp_forwarder = SMTPForwarder(
             server=smtp_items['server'],
@@ -621,9 +621,22 @@ def main():
     #
     # parse NaCL keys
     #
-    server_privkey = nacl.public.PrivateKey(
-        base64.b64decode(config.get('main', 'server-privkey'))
-    )
+    # Handle encrypted or plaintext server private key
+    if config.has_option('main', 'server-privkey-encrypted'):
+        key = getpass.getpass('Enter server private key decryption key:')
+        server_privkey_bytes = SecretBox(key).decrypt(
+            base64.b64decode(config.get('main', 'server-privkey-encrypted'))
+        )
+        server_privkey = nacl.public.PrivateKey(server_privkey_bytes)
+    elif config.has_option('main', 'server-privkey'):
+        # Legacy support for unencrypted server-privkey
+        server_privkey = nacl.public.PrivateKey(
+            base64.b64decode(config.get('main', 'server-privkey'))
+        )
+    else:
+        print('Error: No server-privkey or server-privkey-encrypted found in config')
+        sys.exit(1)
+
     client_pubkey = nacl.public.PublicKey(
         base64.b64decode(config.get('main', 'client-pubkey'))
     )
