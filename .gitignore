@@ -1,5 +1,6 @@
 mumbojumbo.conf
 mumbojumbo.log
+mumbojumbo-packets.log
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -151,3 +152,11 @@ Thumbs.db
 
 # Backup files
 *.bak
+
+# Go binaries (clients/go/)
+clients/go/mumbojumbo-client
+clients/go/mumbojumbo-client-*
+clients/go/*.test
+
+# Node.js dependencies (clients/nodejs/)
+clients/nodejs/node_modules/
