@@ -105,7 +105,7 @@ Parse a hex-encoded public key in `mj_pub_<hex>` format.
 
 The following functions are available for custom implementations:
 
-- `create_fragment(packet_id, frag_index, frag_count, frag_data)` - Build fragment with 8-byte header
+- `create_fragment(packet_id, frag_index, frag_count, frag_data)` - Build fragment with 12-byte header
 - `encrypt_fragment(plaintext, server_pubkey)` - Encrypt with NaCl SealedBox
 - `base32_encode(data)` - Base32 encode (lowercase, no padding)
 - `split_to_labels(data, max_len=63)` - Split into DNS labels
@@ -198,12 +198,21 @@ for query in queries:
 ### Fragment Structure
 
 ```
-Bytes 0-1:  packet_id (u16 big-endian)
-Bytes 2-3:  frag_index (u16 big-endian)
-Bytes 4-5:  frag_count (u16 big-endian)
-Bytes 6-7:  data_length (u16 big-endian)
-Bytes 8+:   fragment data (max 80 bytes)
+Bytes 0-1:   packet_id (u16 big-endian)
+Bytes 2-5:   frag_index (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 6-9:   frag_count (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 10-11: data_length (u16 big-endian)
+Bytes 12+:   fragment data (max 80 bytes)
+
+Total header: 12 bytes
 ```
+
+### Protocol Capacity
+
+- **Maximum fragments per packet:** 4,294,967,295 (2³² - 1)
+- **Maximum packet size:** ~320 GB (343,597,383,600 bytes)
+- **Fragment data:** 80 bytes per fragment
+- **Practical use:** Easily supports multi-GB file transfers
 
 ### Encryption
 

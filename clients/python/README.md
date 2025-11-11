@@ -50,15 +50,21 @@ echo "test" | ./mumbojumbo-client.py \
 
 ### Fragment Structure
 
-Each message is split into 80-byte fragments with an 8-byte header:
+Each message is split into 80-byte fragments with a 12-byte header:
 
 ```
-Bytes 0-1:  packet_id (u16 big-endian)
-Bytes 2-3:  frag_index (u16 big-endian)
-Bytes 4-5:  frag_count (u16 big-endian)
-Bytes 6-7:  data_length (u16 big-endian)
-Bytes 8+:   fragment data (max 80 bytes)
+Bytes 0-1:   packet_id (u16 big-endian)
+Bytes 2-5:   frag_index (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 6-9:   frag_count (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 10-11: data_length (u16 big-endian)
+Bytes 12+:   fragment data (max 80 bytes)
 ```
+
+### Protocol Capacity
+
+- **Maximum fragments per packet:** 4,294,967,295 (2³² - 1)
+- **Maximum packet size:** ~320 GB (343,597,383,600 bytes)
+- **Practical use:** Supports multi-GB file transfers over DNS
 
 ### Encryption
 
@@ -77,10 +83,10 @@ Bytes 8+:   fragment data (max 80 bytes)
 
 ```
 Input: "Hello World" (11 bytes)
-→ Fragment: 8-byte header + 11 bytes = 19 bytes
-→ Encrypt: 19 + 48 = 67 bytes
-→ Base32: ~107 characters
-→ DNS: <107-char-base32>.asd.qwe
+→ Fragment: 12-byte header + 11 bytes = 23 bytes
+→ Encrypt: 23 + 48 = 71 bytes (SealedBox overhead)
+→ Base32: ~114 characters
+→ DNS: <114-char-base32>.asd.qwe
 ```
 
 ## Testing
