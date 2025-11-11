@@ -19,33 +19,27 @@ def main():
     # Step 1: Generate config
     print_section("STEP 1: Generate Configuration File")
     print("Run this command to generate a configuration skeleton with keys:\n")
-    print("  ./venv/bin/python3 mumbojumbo.py --gen-config-skel > config.ini\n")
-    print("Then edit config.ini and set:")
+    print("  ./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf\n")
+    print("Then edit mumbojumbo.conf and set:")
     print("  - domain: Your domain (e.g., .example.com)")
     print("  - network-interface: Your network interface (e.g., eth0)")
     print("  - SMTP settings if you want email forwarding\n")
     print("Make sure to secure the config file:")
-    print("  chmod 600 config.ini\n")
+    print("  chmod 600 mumbojumbo.conf\n")
 
-    # Step 2: Generate password
-    print_section("STEP 2: (Optional) Encrypt SMTP Password")
-    print("If using SMTP forwarding, encrypt your password:\n")
-    print("  ./venv/bin/python3 mumbojumbo.py --encrypt\n")
-    print("Copy the encrypted password into config.ini\n")
-
-    # Step 3: Test SMTP
-    print_section("STEP 3: (Optional) Test SMTP Configuration")
+    # Step 2: Test SMTP
+    print_section("STEP 2: (Optional) Test SMTP Configuration")
     print("Test that SMTP is working:\n")
-    print("  ./venv/bin/python3 mumbojumbo.py --config config.ini --test-smtp\n")
+    print("  ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf --test-smtp\n")
 
-    # Step 4: Run server
-    print_section("STEP 4: Start Mumbojumbo Server")
+    # Step 3: Run server
+    print_section("STEP 3: Start Mumbojumbo Server")
     print("Start the server to listen for DNS queries:\n")
-    print("  sudo ./venv/bin/python3 mumbojumbo.py --config config.ini\n")
+    print("  sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf\n")
     print("Note: Requires sudo for packet capture with tshark\n")
 
-    # Step 5: Client usage
-    print_section("STEP 5: Send Data from Client")
+    # Step 4: Client usage
+    print_section("STEP 4: Send Data from Client")
     print("Option A - Use the HTML client:")
     print("  1. Open client.html in a web browser")
     print("  2. Type your message")
@@ -56,8 +50,8 @@ def main():
     print("  In another terminal, run:")
     print("  ./venv/bin/python3 test.py --test-client\n")
 
-    # Step 6: Test locally
-    print_section("STEP 6: Test Server (Local Testing)")
+    # Step 5: Test locally
+    print_section("STEP 5: Test Server (Local Testing)")
     print("For testing the server without a real client:\n")
     print("  Terminal 1: ./venv/bin/python3 test.py --test-server")
     print("  Terminal 2: ./venv/bin/python3 test.py --test-client\n")
@@ -80,12 +74,12 @@ def main():
     print_section("Quick Start (Minimal Setup)")
     print("For a quick test without SMTP:\n")
     print("1. Generate config:")
-    print("   ./venv/bin/python3 mumbojumbo.py --gen-config-skel > config.ini\n")
+    print("   ./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf\n")
 
-    print("2. Edit config.ini and remove or comment out the [smtp] section\n")
+    print("2. Edit mumbojumbo.conf and remove or comment out the [smtp] section\n")
 
     print("3. Start server (requires sudo):")
-    print("   sudo ./venv/bin/python3 mumbojumbo.py --config config.ini\n")
+    print("   sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf\n")
 
     print("4. In another terminal, send test data:")
     print("   ./venv/bin/python3 test.py --test-client\n")
@@ -115,7 +109,7 @@ def main():
     print("- HMAC shared secret issues")
     print("- Use only for educational purposes or authorized testing")
     print("- Always use strong, randomly generated keys")
-    print("- Protect your config.ini file (chmod 600)\n")
+    print("- Protect your mumbojumbo.conf file (chmod 600)\n")
 
     print_section("Example Configuration File")
     print("""
@@ -130,7 +124,7 @@ server = smtp.gmail.com
 port = 587
 start-tls
 username = youruser@gmail.com
-encrypted-password = <encrypted-password-from-encrypt-command>
+password = your-smtp-password
 from = youruser@gmail.com
 to = recipient@example.com
 """)

@@ -442,14 +442,14 @@ __config_skel__ = '''\
 domain = .xyxyx.xy  # including leading dot
 network-interface = en0  # macOS: en0, en1; Linux: eth0, wlan0
 client-pubkey = {client_pubkey}
-server-privkey-encrypted = [create using `python mumbojumbo.py --encrypt`]
+server-privkey = {server_privkey}
 
 [smtp]
 server = 127.0.0.1
 port = 587
 start-tls
 username = someuser
-password-encrypted = [create using `python mumbojumbo.py --encrypt`]
+password = yourpasswordhere
 from = someuser@somehost.xy
 to = otheruser@otherhost.xy
 '''
@@ -461,14 +461,10 @@ def option_parser():
                  help='use this config file')
     p.add_option('', '--gen-keys', action='store_true',
                  help='generate and print two NaCL key pairs')
-    p.add_option('', '--gen-config-skel', action='store_true',
+    p.add_option('', '--generate-conf', action='store_true',
                  help='print config skeleton file')
-    p.add_option('', '--encrypt', action='store_true',
-                 help='encrypt some value using a NaCL secret key')
     p.add_option('', '--test-smtp', action='store_true',
                  help='send one mail to test SMTP config')
-    # p.add_option('', '--decrypt', metavar='val',
-    #              help='decrypt `val` using a NaCL secret key')
     # p.add_option('-L', '--loglevel', metavar='INFO|DEBUG|..',
     #              help='set debug log level')
     # p.add_option('-v', '--verbose', action='count', help='increase verbosity')
@@ -556,7 +552,7 @@ def main():
     #     logging.basicConfig(level=level)
     #     logger = logging.getLogger(__name__)
 
-    if opt.gen_config_skel:
+    if opt.generate_conf:
         (client_privkey, client_pubkey) = get_nacl_keypair_base64()
         (server_privkey, server_pubkey) = get_nacl_keypair_base64()
         print(__config_skel__.format(
@@ -573,21 +569,9 @@ def main():
         print(pub)
         sys.exit()
 
-    if opt.encrypt:
-        key = getpass2('enter encryption key')
-        secret = getpass2('enter secret value')
-        if isinstance(secret, str):
-            secret = secret.encode('utf-8')
-        nonce = nacl.utils.random(24)
-        encval = SecretBox(key).encrypt(secret, nonce)
-        print('')
-        print('This is your secret value encrypted using the key you typed in:')
-        print(base64.b64encode(encval).decode('ascii').strip())
-        sys.exit()
-
     if not opt.config:
         print('Error: No config file specified; you can generate one using', end=' ')
-        print('--gen-config-skel.')
+        print('--generate-conf.')
         sys.exit(1)
 
     config = configparser.ConfigParser(allow_no_value=True)
@@ -600,10 +584,6 @@ def main():
     smtp_items = config.items('smtp')
     smtp_items = dict(smtp_items)
     if smtp_items:
-        key = getpass.getpass('Enter SMTP password decryption key:')
-        password = SecretBox(key).decrypt(
-            base64.b64decode(smtp_items['password-encrypted'])
-        )
         smtp_forwarder = SMTPForwarder(
             server=smtp_items['server'],
             port=smtp_items['port'],
@@ -611,7 +591,7 @@ def main():
             from_=smtp_items['from'],
             to=smtp_items['to'],
             username=smtp_items['username'],
-            password=password)
+            password=smtp_items.get('password', ''))
         # smtp_forwarder.sendmail('test', 'testtest')
 
     if opt.test_smtp:
@@ -621,21 +601,9 @@ def main():
     #
     # parse NaCL keys
     #
-    # Handle encrypted or plaintext server private key
-    if config.has_option('main', 'server-privkey-encrypted'):
-        key = getpass.getpass('Enter server private key decryption key:')
-        server_privkey_bytes = SecretBox(key).decrypt(
-            base64.b64decode(config.get('main', 'server-privkey-encrypted'))
-        )
-        server_privkey = nacl.public.PrivateKey(server_privkey_bytes)
-    elif config.has_option('main', 'server-privkey'):
-        # Legacy support for unencrypted server-privkey
-        server_privkey = nacl.public.PrivateKey(
-            base64.b64decode(config.get('main', 'server-privkey'))
-        )
-    else:
-        print('Error: No server-privkey or server-privkey-encrypted found in config')
-        sys.exit(1)
+    server_privkey = nacl.public.PrivateKey(
+        base64.b64decode(config.get('main', 'server-privkey'))
+    )
 
     client_pubkey = nacl.public.PublicKey(
         base64.b64decode(config.get('main', 'client-pubkey'))

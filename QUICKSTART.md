@@ -9,11 +9,11 @@ Mumbojumbo is a DNS tunnel that sends encrypted data via DNS queries. It uses Na
 ### Terminal 1 - Server
 ```bash
 # Generate config (do this once)
-./venv/bin/python3 mumbojumbo.py --gen-config-skel > config.ini
-chmod 600 config.ini
+./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
+chmod 600 mumbojumbo.conf
 
 # Start server (requires sudo for packet capture)
-sudo ./venv/bin/python3 mumbojumbo.py --config config.ini
+sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 ```
 
 ### Terminal 2 - Client
@@ -55,12 +55,12 @@ python3 -m venv venv
 ./venv/bin/pip install pynacl
 
 # 3. Generate configuration with keys
-./venv/bin/python3 mumbojumbo.py --gen-config-skel > config.ini
+./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
 
 # 4. Secure the config file
-chmod 600 config.ini
+chmod 600 mumbojumbo.conf
 
-# 5. (Optional) Edit config.ini to customize domain and interface
+# 5. (Optional) Edit mumbojumbo.conf to customize domain and interface
 # Default domain: .xyxyx.xy
 # Default interface: eth0
 ```
@@ -68,7 +68,7 @@ chmod 600 config.ini
 ### Running the Server
 ```bash
 # Start server (captures DNS packets on eth0)
-sudo ./venv/bin/python3 mumbojumbo.py --config config.ini
+sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 ```
 
 **Why sudo?** The server uses `tshark` to capture network packets, which requires root privileges.
@@ -115,27 +115,24 @@ This runs everything in user space without requiring packet capture.
 To forward received messages via email:
 
 ```bash
-# 1. Encrypt your SMTP password
-./venv/bin/python3 mumbojumbo.py --encrypt
-# Enter encryption key: (your master password)
-# Enter secret value: (your SMTP password)
-# Copy the encrypted output
-
-# 2. Add to config.ini:
+# 1. Add to mumbojumbo.conf:
 [smtp]
 server = smtp.gmail.com
 port = 587
 start-tls
 username = your-email@gmail.com
-encrypted-password = <paste-encrypted-password-here>
+password = your-smtp-password
 from = your-email@gmail.com
 to = recipient@example.com
 
+# 2. Secure the config file (important!)
+chmod 600 mumbojumbo.conf
+
 # 3. Test SMTP
-./venv/bin/python3 mumbojumbo.py --config config.ini --test-smtp
+./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf --test-smtp
 
 # 4. Run server (will now forward to email)
-sudo ./venv/bin/python3 mumbojumbo.py --config config.ini
+sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 ```
 
 ## Configuration File Format
@@ -153,7 +150,7 @@ server = smtp.gmail.com
 port = 587
 start-tls
 username = user@gmail.com
-encrypted-password = <encrypted-base64>
+password = your-smtp-password
 from = user@gmail.com
 to = recipient@example.com
 ```
@@ -203,7 +200,7 @@ sudo usermod -a -G wireshark $USER
 ip link show    # Linux
 ifconfig       # macOS
 
-# Update config.ini with correct interface
+# Update mumbojumbo.conf with correct interface
 ```
 
 ## Performance
@@ -258,13 +255,10 @@ This is a **demonstration implementation** with known vulnerabilities:
 ./venv/bin/python3 mumbojumbo.py --gen-keys
 
 # Generate full config skeleton
-./venv/bin/python3 mumbojumbo.py --gen-config-skel
-
-# Encrypt a password/secret
-./venv/bin/python3 mumbojumbo.py --encrypt
+./venv/bin/python3 mumbojumbo.py --generate-conf
 
 # Test SMTP settings
-./venv/bin/python3 mumbojumbo.py --config config.ini --test-smtp
+./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf --test-smtp
 
 # Show setup guide
 python3 setup_and_run.py
@@ -275,7 +269,7 @@ python3 setup_and_run.py
 - `client.html` - Web-based client interface
 - `setup_and_run.py` - Detailed setup instructions
 - `QUICKSTART.md` - This file
-- `config.ini` - Generated configuration (you create this)
+- `mumbojumbo.conf` - Generated configuration (you create this)
 - `mumbojumbo.py` - Server (converted to Python 3)
 - `test.py` - Test suite (converted to Python 3)
 
@@ -285,11 +279,11 @@ python3 setup_and_run.py
 # Complete workflow:
 
 # 1. Setup (one time)
-./venv/bin/python3 mumbojumbo.py --gen-config-skel > config.ini
-chmod 600 config.ini
+./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
+chmod 600 mumbojumbo.conf
 
 # 2. Run server
-sudo ./venv/bin/python3 mumbojumbo.py --config config.ini
+sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 
 # 3. Run client (different terminal)
 ./venv/bin/python3 test.py --test-client
