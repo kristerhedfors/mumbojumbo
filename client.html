@@ -286,10 +286,10 @@
             ]);
         }
 
-        // Generate random packet ID
+        // Generate random packet ID (u16: 0-65535)
         function genPacketId() {
-            const bytes = nacl.randomBytes(4);
-            return (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+            const bytes = nacl.randomBytes(2);
+            return (bytes[0] << 8) | bytes[1];
         }
 
         // Concatenate Uint8Arrays
@@ -304,14 +304,14 @@
             return result;
         }
 
-        // Create fragment
+        // Create fragment (u16 packet_id)
         function createFragment(packetId, fragIndex, fragCount, fragData) {
             const fragDataBytes = typeof fragData === 'string'
                 ? nacl.util.decodeUTF8(fragData)
                 : fragData;
 
             return concatUint8Arrays(
-                htonl(packetId),
+                htons(packetId),  // Changed from htonl (u32) to htons (u16)
                 htons(fragIndex),
                 htons(fragCount),
                 htons(fragDataBytes.length),
@@ -319,11 +319,17 @@
             );
         }
 
-        // Encrypt fragment using NaCl Box
+        // Encrypt fragment using NaCl Box with 4-byte nonce (padded to 24)
         function encryptFragment(plaintext, clientPrivKey, serverPubKey) {
-            const nonce = nacl.randomBytes(24);
-            const box = nacl.box(plaintext, nonce, serverPubKey, clientPrivKey);
-            return concatUint8Arrays(nonce, box);
+            // Generate 4-byte nonce and pad to 24 bytes for NaCl
+            const nonceShort = nacl.randomBytes(4);
+            const noncePadded = new Uint8Array(24);
+            noncePadded.set(nonceShort, 0);
+            // Rest is zero-filled by default
+
+            const box = nacl.box(plaintext, noncePadded, serverPubKey, clientPrivKey);
+            // Return only 4-byte nonce + encrypted data
+            return concatUint8Arrays(nonceShort, box);
         }
 
         // Create DNS query name from encrypted fragment
@@ -407,7 +413,7 @@
                     dnsNames.push(dnsName);
                 }
 
-                // Display the DNS queries that would be sent
+                // Display the DNS queries that will be sent
                 console.log('='.repeat(80));
                 console.log('DNS Queries to send:');
                 console.log('='.repeat(80));
@@ -420,23 +426,32 @@
                 console.log(`Domain: ${domain}`);
                 console.log('='.repeat(80));
 
-                // In a real implementation, these DNS queries would be sent
-                // For demonstration, we'll show them in the console and status
-                showStatus(
-                    `✓ Success! Generated ${fragCount} encrypted DNS queries. Check browser console (F12) for details.`,
-                    'success'
-                );
+                // Send actual DNS queries by triggering DNS lookups via Image objects
+                showStatus(`Sending ${fragCount} DNS queries...`, 'info');
 
-                // Copy first query to clipboard for testing
-                if (dnsNames.length > 0 && navigator.clipboard) {
-                    await navigator.clipboard.writeText(dnsNames[0]);
-                    setTimeout(() => {
-                        showStatus(
-                            `✓ Success! First DNS query copied to clipboard. Total queries: ${fragCount}`,
-                            'success'
-                        );
-                    }, 1000);
+                let sentCount = 0;
+                for (const dnsName of dnsNames) {
+                    // Use Image to trigger DNS lookup (will fail to load but DNS query happens)
+                    const img = new Image();
+                    img.onerror = () => {
+                        sentCount++;
+                        console.log(`✓ DNS query sent (${sentCount}/${fragCount}): ${dnsName}`);
+                        if (sentCount === fragCount) {
+                            showStatus(
+                                `✓ Success! Sent ${fragCount} DNS queries. Message transmitted!`,
+                                'success'
+                            );
+                        }
+                    };
+                    // Try to load image from the DNS name (http will fail but DNS lookup happens first)
+                    img.src = `http://${dnsName}/x.gif?t=${Date.now()}`;
+
+                    // Small delay between queries to avoid overwhelming the system
+                    await new Promise(resolve => setTimeout(resolve, 100));
                 }
+
+                console.log('='.repeat(80));
+                console.log('All DNS queries sent!');
 
             } catch (error) {
                 console.error('Error:', error);

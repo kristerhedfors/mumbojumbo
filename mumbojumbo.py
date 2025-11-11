@@ -55,6 +55,7 @@
 import base64
 import functools
 import logging
+import os
 import queue
 import socket
 import struct
@@ -483,7 +484,7 @@ def option_parser():
     p.add_option('', '--gen-keys', action='store_true',
                  help='generate and print two NaCL key pairs')
     p.add_option('', '--generate-conf', action='store_true',
-                 help='print config skeleton file')
+                 help='generate config skeleton file (mumbojumbo.conf)')
     p.add_option('', '--test-smtp', action='store_true',
                  help='send one mail to test SMTP config')
     # p.add_option('-L', '--loglevel', metavar='INFO|DEBUG|..',
@@ -577,12 +578,24 @@ def main():
         (client_privkey, client_pubkey) = get_nacl_keypair_base64()
         (server_privkey, server_pubkey) = get_nacl_keypair_base64()
 
-        print(__config_skel__.format(
+        # Find available filename: mumbojumbo.conf, mumbojumbo.conf.1, etc.
+        filename = 'mumbojumbo.conf'
+        counter = 0
+        while os.path.exists(filename):
+            counter += 1
+            filename = f'mumbojumbo.conf.{counter}'
+
+        # Write config to file
+        config_content = __config_skel__.format(
             client_privkey=client_privkey,
             client_pubkey=client_pubkey,
             server_privkey=server_privkey,
             server_pubkey=server_pubkey
-        ))
+        )
+        with open(filename, 'w') as f:
+            f.write(config_content)
+
+        print(f'Created {filename}')
         sys.exit()
 
     if opt.gen_keys:
@@ -591,13 +604,15 @@ def main():
         print(pub)
         sys.exit()
 
-    if not opt.config:
-        print('Error: No config file specified; you can generate one using', end=' ')
-        print('--generate-conf.')
+    # Default to mumbojumbo.conf if no config specified
+    config_file = opt.config or 'mumbojumbo.conf'
+
+    if not os.path.exists(config_file):
+        print(f'Error: Config file "{config_file}" not found; you can generate one using --generate-conf.')
         sys.exit(1)
 
     config = configparser.ConfigParser(allow_no_value=True)
-    config.read(opt.config)
+    config.read(config_file)
 
     #
     # SMTP forwarding of data?
