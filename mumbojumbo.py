@@ -1,57 +1,4 @@
 #!/usr/bin/env python3
-#
-# Copyright (c) 2016, Krister Hedfors
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# * Redistributions of source code must retain the above copyright notice, this
-#  list of conditions and the following disclaimer.
-#
-# * Redistributions in binary form must reproduce the above copyright notice,
-#  this list of conditions and the following disclaimer in the documentation
-#  and/or other materials provided with the distribution.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-#
-# Enough with that..
-#
-# This is an implementation of the Mumbojumbo protocol. Essentially NaCL
-# public key encrypted (currently) one way communication over DNS.
-#
-# Requirements:
-#   * The python package `pynacl`,
-#   * ability to run `tshark` for DNS packet capturing,
-#   * a Mumbojumbo client,
-#   * a reason for using Mumbojumbo(!)
-#
-# TODO:
-#   * make max_frag_data_len dynamic; long domain names
-#     will otherwise fail to fragment correctly
-#   * distributed transmission over different domains
-#     - encrypt using symmetric key K
-#     - split key into K{0..n} using ssss
-#     - for i in 0..n: send Ki+ciphertext to n different domains
-#     - collect required number of key parts, rebuild, decrypt
-#   * handle blocking SMTP
-#   * respond to DNS-queries
-#   * multiple SMTP recipients
-#   * handle --loglevel correctly
-#   * configurable logfile
-#   * generic forwarder interface, more forwarders
-#   * file-based decryption key for password-encrypted and server-privkey-encrypted
-#
 import base64
 import functools
 import logging
@@ -465,6 +412,9 @@ __config_skel__ = '''\
 domain = .asd.qwe
 # Network interface - macOS: en0, en1; Linux: eth0, wlan0
 network-interface = en0
+# Handler pipeline: comma-separated list of handlers (REQUIRED)
+# Available handlers: stdout, smtp, file, execute
+handlers = stdout
 mumbojumbo-privkey = {mumbojumbo_privkey}
 mumbojumbo-pubkey = {mumbojumbo_pubkey}
 
@@ -476,6 +426,16 @@ username = someuser
 password = yourpasswordhere
 from = someuser@somehost.xy
 to = otheruser@otherhost.xy
+
+[file]
+path = /var/log/mumbojumbo-packets.log
+# Format: raw, hex (default), or base64
+format = hex
+
+[execute]
+command = /usr/local/bin/process-packet.sh
+# Timeout in seconds
+timeout = 5
 '''
 
 
@@ -487,10 +447,10 @@ def option_parser():
                  help='generate and print two NaCL key pairs')
     p.add_option('', '--gen-conf', action='store_true',
                  help='generate config skeleton file (mumbojumbo.conf)')
-    p.add_option('', '--test-smtp', action='store_true',
-                 help='send one mail to test SMTP config')
+    p.add_option('', '--test-handlers', action='store_true',
+                 help='test all configured handlers in the pipeline')
     p.add_option('-v', '--verbose', action='store_true',
-                 help='also print debug logs to stdout (default: logs only to mumbojumbo.log)')
+                 help='also print debug logs to stderr (default: logs only to mumbojumbo.log)')
     return p
 
 
@@ -553,85 +513,253 @@ def get_nacl_keypair_base64():
     return (priv, pub)
 
 
-class SMTPForwarder(object):
+class PacketHandler:
+    '''
+        Base class for packet handlers. All handlers must implement handle() method.
+        Handlers process reassembled packets and should never crash the main loop.
+    '''
+    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+        '''
+            Process a reassembled packet.
 
+            Args:
+                data: The reassembled packet data (bytes)
+                query: The DNS query name that completed the packet
+                timestamp: UTC timestamp when packet was reassembled
+
+            Returns:
+                True on success, False on failure
+        '''
+        raise NotImplementedError('Subclasses must implement handle()')
+
+
+class StdoutHandler(PacketHandler):
+    '''
+        Output packet metadata as JSON to stdout.
+    '''
+    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+        try:
+            # Convert data to string for preview
+            try:
+                data_str = data.decode('utf-8')
+            except UnicodeDecodeError:
+                data_str = data.hex()
+                logger.debug('Data is binary, showing as hex in preview')
+
+            # Prepare data preview
+            data_preview = data_str[:100] + '...' if len(data_str) > 100 else data_str
+
+            # Output JSON
+            output = {
+                'timestamp': timestamp.isoformat(),
+                'event': 'packet_reassembled',
+                'query': query,
+                'data_length': len(data),
+                'data_preview': data_preview
+            }
+            print(json.dumps(output), flush=True)
+            logger.info(f'Stdout handler: JSON output written')
+            return True
+        except Exception as e:
+            logger.error(f'Stdout handler error: {type(e).__name__}: {e}')
+            return False
+
+
+class SMTPHandler(PacketHandler):
+    '''
+        Forward packet via email using SMTP.
+    '''
     def __init__(self, server='', port=587, from_='', to='', starttls=True,
                  username=None, password=None):
         self._server = server
-        self._port = int(port) if port else 587  # Ensure port is int
+        self._port = int(port) if port else 587
         self._from = from_
         self._to = to
         self._starttls = starttls
         self._username = username
         self._password = password
 
-    def sendmail(self, subject='', text='', charset='utf-8'):
-        '''
-            Send email via SMTP. Handles all errors gracefully and logs details.
-            Returns True on success, False on failure.
-        '''
+    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+        '''Send packet data via email.'''
+        # Convert data to string for email
+        try:
+            data_str = data.decode('utf-8')
+        except UnicodeDecodeError:
+            data_str = data.hex()
+            logger.debug('Binary data, sending as hex in email')
+
         smtp = None
         try:
-            msg = MIMEText(text)
-            msg.set_charset(charset)
-            msg['Subject'] = subject
+            msg = MIMEText(data_str)
+            msg.set_charset('utf-8')
+            msg['Subject'] = f'Mumbojumbo Packet from {query}'
             msg['From'] = self._from
             msg['To'] = self._to
 
-            logger.debug(f'Connecting to SMTP server {self._server}:{self._port}')
+            logger.debug(f'SMTP handler: connecting to {self._server}:{self._port}')
             smtp = smtplib.SMTP(self._server, port=self._port, timeout=30)
             smtp.ehlo_or_helo_if_needed()
 
             if self._starttls:
-                logger.debug('Starting TLS')
+                logger.debug('SMTP handler: starting TLS')
                 smtp.starttls()
-                smtp.ehlo()  # Re-identify after STARTTLS
+                smtp.ehlo()
 
             if self._username or self._password:
-                logger.debug(f'Logging in as {self._username}')
+                logger.debug(f'SMTP handler: logging in as {self._username}')
                 smtp.login(self._username, self._password)
 
-            logger.debug(f'Sending email to {self._to}')
+            logger.debug(f'SMTP handler: sending email to {self._to}')
             smtp.sendmail(self._from, [self._to], msg.as_string())
             smtp.quit()
-            logger.info(f'Email sent successfully to {self._to}')
+            logger.info(f'SMTP handler: email sent successfully to {self._to}')
             return True
 
         except (socket.gaierror, socket.herror) as e:
-            logger.error(f'DNS/network error connecting to SMTP server {self._server}:{self._port}: {e}')
+            logger.error(f'SMTP handler DNS/network error: {self._server}:{self._port}: {e}')
             return False
         except socket.timeout as e:
-            logger.error(f'Timeout connecting to SMTP server {self._server}:{self._port}: {e}')
+            logger.error(f'SMTP handler timeout: {self._server}:{self._port}: {e}')
             return False
         except ConnectionRefusedError as e:
-            logger.error(f'Connection refused by SMTP server {self._server}:{self._port}: {e}')
+            logger.error(f'SMTP handler connection refused: {self._server}:{self._port}: {e}')
             return False
         except smtplib.SMTPAuthenticationError as e:
-            logger.error(f'SMTP authentication failed for user {self._username}: {e}')
+            logger.error(f'SMTP handler authentication failed: {self._username}: {e}')
             return False
         except smtplib.SMTPRecipientsRefused as e:
-            logger.error(f'SMTP server rejected recipient {self._to}: {e}')
+            logger.error(f'SMTP handler recipient rejected: {self._to}: {e}')
             return False
         except smtplib.SMTPSenderRefused as e:
-            logger.error(f'SMTP server rejected sender {self._from}: {e}')
+            logger.error(f'SMTP handler sender rejected: {self._from}: {e}')
             return False
         except smtplib.SMTPDataError as e:
-            logger.error(f'SMTP data error: {e}')
+            logger.error(f'SMTP handler data error: {e}')
             return False
         except smtplib.SMTPException as e:
-            logger.error(f'SMTP error: {e}')
+            logger.error(f'SMTP handler error: {e}')
             return False
         except Exception as e:
-            logger.error(f'Unexpected error sending email: {type(e).__name__}: {e}')
+            logger.error(f'SMTP handler unexpected error: {type(e).__name__}: {e}')
             logger.debug(traceback.format_exc())
             return False
         finally:
-            # Always try to close the connection
             if smtp:
                 try:
                     smtp.quit()
                 except:
                     pass
+
+
+class FileHandler(PacketHandler):
+    '''
+        Write packet data to a file. Supports raw, hex, and base64 formats.
+    '''
+    def __init__(self, path: str, format: str = 'hex'):
+        self._path = path
+        if format not in ('raw', 'hex', 'base64'):
+            raise ValueError(f'Invalid format: {format}. Must be raw, hex, or base64')
+        self._format = format
+
+    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+        try:
+            # Format data according to config
+            if self._format == 'hex':
+                output_data = data.hex()
+            elif self._format == 'base64':
+                output_data = base64.b64encode(data).decode('ascii')
+            else:  # raw
+                output_data = data
+
+            # Write to file with metadata header
+            with open(self._path, 'ab') as f:
+                header = f'# {timestamp.isoformat()} - query: {query} - length: {len(data)} - format: {self._format}\n'
+                f.write(header.encode('utf-8'))
+
+                if isinstance(output_data, str):
+                    f.write(output_data.encode('utf-8'))
+                else:
+                    f.write(output_data)
+
+                f.write(b'\n')
+
+            logger.info(f'File handler: wrote {len(data)} bytes to {self._path} (format: {self._format})')
+            return True
+
+        except IOError as e:
+            logger.error(f'File handler I/O error: {self._path}: {e}')
+            return False
+        except Exception as e:
+            logger.error(f'File handler unexpected error: {type(e).__name__}: {e}')
+            logger.debug(traceback.format_exc())
+            return False
+
+
+class ExecuteHandler(PacketHandler):
+    '''
+        Execute a command with packet data as stdin. Passes metadata as environment variables.
+    '''
+    def __init__(self, command: str, timeout: int = 30):
+        self._command = command
+        self._timeout = timeout
+
+    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+        try:
+            # Prepare environment variables with metadata
+            env = os.environ.copy()
+            env['MUMBOJUMBO_QUERY'] = query
+            env['MUMBOJUMBO_TIMESTAMP'] = timestamp.isoformat()
+            env['MUMBOJUMBO_LENGTH'] = str(len(data))
+
+            logger.debug(f'Execute handler: running command: {self._command}')
+
+            # Execute command with data as stdin
+            result = subprocess.run(
+                self._command,
+                input=data,
+                shell=True,
+                capture_output=True,
+                timeout=self._timeout,
+                env=env
+            )
+
+            if result.returncode == 0:
+                logger.info(f'Execute handler: command succeeded (exit code 0)')
+                if result.stdout:
+                    logger.debug(f'Execute handler stdout: {result.stdout.decode("utf-8", errors="replace")}')
+                return True
+            else:
+                logger.error(f'Execute handler: command failed (exit code {result.returncode})')
+                if result.stderr:
+                    logger.error(f'Execute handler stderr: {result.stderr.decode("utf-8", errors="replace")}')
+                return False
+
+        except subprocess.TimeoutExpired:
+            logger.error(f'Execute handler: command timed out after {self._timeout}s')
+            return False
+        except FileNotFoundError as e:
+            logger.error(f'Execute handler: command not found: {e}')
+            return False
+        except Exception as e:
+            logger.error(f'Execute handler unexpected error: {type(e).__name__}: {e}')
+            logger.debug(traceback.format_exc())
+            return False
+
+
+class SMTPForwarder(object):
+    '''
+        DEPRECATED: Legacy SMTP forwarder. Use SMTPHandler instead.
+        Kept for backward compatibility with --test-smtp flag.
+    '''
+    def __init__(self, server='', port=587, from_='', to='', starttls=True,
+                 username=None, password=None):
+        self._handler = SMTPHandler(server, port, from_, to, starttls, username, password)
+
+    def sendmail(self, subject='', text='', charset='utf-8'):
+        '''Send email via SMTP (legacy interface).'''
+        # Convert to handler format - use dummy query and timestamp
+        data = text.encode('utf-8') if isinstance(text, str) else text
+        return self._handler.handle(data, 'test', datetime.datetime.now(datetime.timezone.utc))
 
 
 class SecretBox(nacl.secret.SecretBox):
@@ -764,42 +892,122 @@ def main():
     config.read(config_file)
 
     #
-    # SMTP forwarding of data?
+    # Parse handler pipeline (REQUIRED)
     #
-    smtp_forwarder = None
-    smtp_items = config.items('smtp')
-    smtp_items = dict(smtp_items)
-    if smtp_items:
-        # Convert port to int (ConfigParser returns strings)
+    if not config.has_option('main', 'handlers'):
+        logger.error('Missing required "handlers" option in [main] section')
+        print('ERROR: Config file must specify "handlers" in [main] section.')
+        print('Example: handlers = stdout,smtp,file,execute')
+        sys.exit(1)
+
+    handler_names = config.get('main', 'handlers')
+    handler_names = [h.strip() for h in handler_names.split(',')]
+
+    if not handler_names:
+        logger.error('Handler pipeline is empty')
+        print('ERROR: At least one handler must be specified.')
+        sys.exit(1)
+
+    # Build handler pipeline
+    handlers = []
+    for handler_name in handler_names:
         try:
-            smtp_port = int(smtp_items['port'])
-        except (ValueError, KeyError) as e:
-            logger.error(f'Invalid SMTP port in config: {e}')
-            smtp_port = 587  # Default SMTP submission port
+            if handler_name == 'stdout':
+                handlers.append(StdoutHandler())
+                logger.info('Added stdout handler to pipeline')
 
-        smtp_forwarder = SMTPForwarder(
-            server=smtp_items['server'],
-            port=smtp_port,
-            starttls=config.has_option('smtp', 'start-tls'),
-            from_=smtp_items['from'],
-            to=smtp_items['to'],
-            username=smtp_items['username'],
-            password=smtp_items.get('password', ''))
+            elif handler_name == 'smtp':
+                if not config.has_section('smtp'):
+                    logger.error('smtp handler specified but [smtp] section missing')
+                    print('ERROR: smtp handler requires [smtp] config section.')
+                    sys.exit(1)
 
-    if opt.test_smtp:
-        if not smtp_forwarder:
-            logger.error('No SMTP configuration found in config file')
-            print('ERROR: No SMTP configuration found. Check your config file.')
+                smtp_items = dict(config.items('smtp'))
+                smtp_port = int(smtp_items.get('port', 587))
+
+                smtp_handler = SMTPHandler(
+                    server=smtp_items['server'],
+                    port=smtp_port,
+                    starttls=config.has_option('smtp', 'start-tls'),
+                    from_=smtp_items['from'],
+                    to=smtp_items['to'],
+                    username=smtp_items.get('username', ''),
+                    password=smtp_items.get('password', ''))
+                handlers.append(smtp_handler)
+                logger.info('Added smtp handler to pipeline')
+
+            elif handler_name == 'file':
+                if not config.has_section('file'):
+                    logger.error('file handler specified but [file] section missing')
+                    print('ERROR: file handler requires [file] config section.')
+                    sys.exit(1)
+
+                file_items = dict(config.items('file'))
+                file_path = file_items['path']
+                file_format = file_items.get('format', 'hex')
+
+                file_handler = FileHandler(path=file_path, format=file_format)
+                handlers.append(file_handler)
+                logger.info(f'Added file handler to pipeline (path={file_path}, format={file_format})')
+
+            elif handler_name == 'execute':
+                if not config.has_section('execute'):
+                    logger.error('execute handler specified but [execute] section missing')
+                    print('ERROR: execute handler requires [execute] config section.')
+                    sys.exit(1)
+
+                execute_items = dict(config.items('execute'))
+                command = execute_items['command']
+                timeout = int(execute_items.get('timeout', 30))
+
+                execute_handler = ExecuteHandler(command=command, timeout=timeout)
+                handlers.append(execute_handler)
+                logger.info(f'Added execute handler to pipeline (command={command})')
+
+            else:
+                logger.error(f'Unknown handler type: {handler_name}')
+                print(f'ERROR: Unknown handler type "{handler_name}".')
+                print('Valid handlers: stdout, smtp, file, execute')
+                sys.exit(1)
+
+        except KeyError as e:
+            logger.error(f'Missing required config option for {handler_name} handler: {e}')
+            print(f'ERROR: Missing required config option for {handler_name} handler: {e}')
             sys.exit(1)
-        logger.info('Testing SMTP configuration...')
-        result = smtp_forwarder.sendmail('Mumbojumbo SMTP Test', 'This is a test email from --test-smtp')
-        if result:
-            print('SUCCESS: Test email sent successfully')
-            logger.info('SMTP test successful')
+        except ValueError as e:
+            logger.error(f'Invalid config value for {handler_name} handler: {e}')
+            print(f'ERROR: Invalid config value for {handler_name} handler: {e}')
+            sys.exit(1)
+
+    logger.info(f'Handler pipeline configured: {", ".join(handler_names)}')
+
+    # Test handlers if requested
+    if opt.test_handlers:
+        logger.info('Testing handler pipeline...')
+        print(f'Testing {len(handlers)} handler(s): {", ".join(handler_names)}')
+
+        test_data = b'This is a test packet from --test-handlers'
+        test_query = 'test.example.com'
+        test_timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        all_success = True
+        for i, (handler, name) in enumerate(zip(handlers, handler_names)):
+            print(f'\n[{i+1}/{len(handlers)}] Testing {name} handler...')
+            result = handler.handle(test_data, test_query, test_timestamp)
+            if result:
+                print(f'✓ {name} handler: SUCCESS')
+            else:
+                print(f'✗ {name} handler: FAILED (check mumbojumbo.log for details)')
+                all_success = False
+
+        print('\n' + '='*50)
+        if all_success:
+            print('SUCCESS: All handlers passed')
+            logger.info('Handler pipeline test successful')
             sys.exit(0)
         else:
-            print('FAILED: Could not send test email. Check mumbojumbo.log for details.')
-            logger.error('SMTP test failed')
+            print('FAILED: One or more handlers failed')
+            logger.error('Handler pipeline test failed')
             sys.exit(1)
 
     #
@@ -860,35 +1068,30 @@ def main():
         if not packet_engine.packet_outqueue.empty():
             data = packet_engine.packet_outqueue.get()
 
-            # Convert data to string for logging and display
-            if isinstance(data, bytes):
+            # Ensure data is bytes for handlers
+            if not isinstance(data, bytes):
+                if isinstance(data, str):
+                    data = data.encode('utf-8')
+                else:
+                    data = str(data).encode('utf-8')
+
+            # Get timestamp for this packet
+            timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+            logger.info(f'Packet reassembled from query: {name}, length: {len(data)} bytes')
+            logger.debug(f'Running handler pipeline with {len(handlers)} handler(s)')
+
+            # Run handler pipeline
+            for handler, handler_name in zip(handlers, handler_names):
                 try:
-                    data_str = data.decode('utf-8')
-                except UnicodeDecodeError:
-                    data_str = data.hex()
-                    logger.debug('Data is binary, showing as hex')
-            else:
-                data_str = str(data)
-
-            # Prepare data preview for JSON output
-            data_preview = data_str[:100] + '...' if len(data_str) > 100 else data_str
-
-            # Output JSON to stdout
-            json_output(
-                'packet_reassembled',
-                query=name,
-                data_length=len(data) if isinstance(data, (bytes, str)) else None,
-                data_preview=data_preview,
-                smtp_forwarding=smtp_forwarder is not None
-            )
-
-            logger.info(f'Packet reassembled from query: {name}, length: {len(data) if isinstance(data, (bytes, str)) else "unknown"}')
-            logger.debug(f'Packet contents: {data_str}')
-
-            # Send via SMTP if configured (errors are handled internally)
-            if smtp_forwarder:
-                logger.info('Forwarding packet via SMTP')
-                smtp_forwarder.sendmail(subject='Mumbojumbo Packet', text=data_str)
+                    success = handler.handle(data, name, timestamp)
+                    if success:
+                        logger.debug(f'{handler_name} handler completed successfully')
+                    else:
+                        logger.warning(f'{handler_name} handler reported failure')
+                except Exception as e:
+                    logger.error(f'{handler_name} handler crashed: {type(e).__name__}: {e}')
+                    logger.debug(traceback.format_exc())
 
         sys.stdout.flush()
 

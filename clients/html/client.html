@@ -185,9 +185,9 @@
         <p class="subtitle">Send encrypted messages over DNS queries</p>
 
         <div class="form-group">
-            <label for="mumbojumboPubKey">Mumbojumbo Public Key (base64):</label>
-            <input type="text" id="mumbojumboPubKey" placeholder="base64-encoded mumbojumbo public key">
-            <div class="hint">Copy mumbojumbo_pubkey from server config comments (44 characters, base64-encoded)</div>
+            <label for="mumbojumboPubKey">Mumbojumbo Public Key (hex):</label>
+            <input type="text" id="mumbojumboPubKey" placeholder="mj_pub_...">
+            <div class="hint">Copy mumbojumbo_pubkey from server config comments (starts with mj_pub_)</div>
         </div>
 
         <div class="form-group">
@@ -219,22 +219,39 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tweetnacl-util@0.15.1/nacl-util.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tweetnacl-sealedbox-js@1.2.0/sealedbox.min.js"></script>
+    <script src="tweetnacl/nacl-fast.min.js"></script>
+    <script src="tweetnacl/nacl-util.min.js"></script>
+    <script src="tweetnacl/sealedbox.js"></script>
     <script>
         const MAX_FRAG_DATA_LEN = 80;
 
         // Parse and validate keys (both private and public keys are 32 bytes)
-        function parseKey(base64Key, keyType) {
+        // Accepts hex format with mj_pub_ or mj_priv_ prefix
+        function parseKey(keyStr, keyType) {
             try {
-                const decoded = nacl.util.decodeBase64(base64Key);
+                // Check for mj_pub_ or mj_priv_ prefix
+                let hexKey;
+                if (keyStr.startsWith('mj_pub_')) {
+                    hexKey = keyStr.substring(7); // Remove 'mj_pub_' prefix
+                } else if (keyStr.startsWith('mj_priv_')) {
+                    hexKey = keyStr.substring(8); // Remove 'mj_priv_' prefix
+                } else {
+                    throw new Error('Key must start with "mj_pub_" or "mj_priv_" prefix');
+                }
+
+                // Decode hex to bytes
+                if (hexKey.length !== 64) {
+                    throw new Error(`Invalid hex key length: ${hexKey.length} chars (expected 64)`);
+                }
+
+                const decoded = new Uint8Array(hexKey.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+
                 if (decoded.length !== 32) {
                     throw new Error(`Invalid ${keyType} key length: ${decoded.length} bytes (expected 32)`);
                 }
                 return decoded;
             } catch (e) {
-                throw new Error(`Invalid ${keyType} key base64 encoding: ${e.message}`);
+                throw new Error(`Invalid ${keyType} key format: ${e.message}`);
             }
         }
 
@@ -324,7 +341,7 @@
         // Encrypt fragment using NaCl SealedBox (anonymous, one-way encryption)
         function encryptFragment(plaintext, mumbojumboPubKey) {
             // SealedBox handles nonce internally - no need for manual nonce management
-            const encrypted = nacl.sealedbox.seal(plaintext, mumbojumboPubKey);
+            const encrypted = sealedBox.seal(plaintext, mumbojumboPubKey);
             return encrypted;
         }
 
