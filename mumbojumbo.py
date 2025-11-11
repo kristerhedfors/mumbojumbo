@@ -90,6 +90,78 @@ def b32dec(s):
     return base64.b32decode(s)
 
 
+def encode_domain_key(server_pubkey_bytes, domain):
+    """
+    Encode server public key and domain into a single domain-key string.
+
+    Args:
+        server_pubkey_bytes: 32-byte NaCl public key
+        domain: Domain string (e.g., '.example.com' or 'example.com')
+
+    Returns:
+        Domain-key string in format: <base64url-key>.<domain>
+        Example: 'wP8rZXYzM1uvWxABcD2EfGhIjKlMnOpQrStUvWxYz4M.example.com'
+    """
+    if len(server_pubkey_bytes) != 32:
+        raise ValueError("Server public key must be 32 bytes")
+
+    # Use base64url encoding (DNS-safe: no + or /)
+    encoded_key = base64.urlsafe_b64encode(server_pubkey_bytes).decode('ascii').rstrip('=')
+
+    # Remove leading dot from domain for cleaner format
+    clean_domain = domain.lstrip('.')
+
+    return f"{encoded_key}.{clean_domain}"
+
+
+def parse_domain_key(domain_key):
+    """
+    Parse domain-key string into server public key and domain.
+
+    Args:
+        domain_key: String in format <base64url-key>.<domain>
+
+    Returns:
+        Tuple of (server_pubkey_bytes, domain)
+        Domain will have leading dot restored if needed
+
+    Raises:
+        ValueError: If format is invalid or key is not 32 bytes
+    """
+    if not isinstance(domain_key, str):
+        raise ValueError("Domain-key must be a string")
+
+    # Split on first dot only
+    parts = domain_key.split('.', 1)
+    if len(parts) != 2:
+        raise ValueError("Invalid domain-key format: must contain at least one dot")
+
+    encoded_key, domain = parts
+
+    if not encoded_key:
+        raise ValueError("Invalid domain-key format: empty key part")
+    if not domain:
+        raise ValueError("Invalid domain-key format: empty domain part")
+
+    # Re-add padding if needed for base64url decoding
+    padding = (4 - len(encoded_key) % 4) % 4
+    encoded_key += '=' * padding
+
+    try:
+        server_pubkey_bytes = base64.urlsafe_b64decode(encoded_key)
+    except Exception as e:
+        raise ValueError(f"Invalid base64url encoding in key part: {e}")
+
+    if len(server_pubkey_bytes) != 32:
+        raise ValueError(f"Server public key must be 32 bytes, got {len(server_pubkey_bytes)}")
+
+    # Restore leading dot for domain (Mumbojumbo convention)
+    if not domain.startswith('.'):
+        domain = '.' + domain
+
+    return (server_pubkey_bytes, domain)
+
+
 class MJException(Exception):
     pass
 
@@ -256,6 +328,32 @@ class DnsPublicFragment(PublicFragment):
     def __init__(self, domain=DEFAULT_TLD, **kw):
         self._domain = domain
         super(DnsPublicFragment, self).__init__(**kw)
+
+    @classmethod
+    def from_domain_key(cls, domain_key, private_key):
+        """
+        Create a DnsPublicFragment instance from a domain-key string.
+
+        This is a convenience method for clients that simplifies configuration
+        by combining server public key and domain into a single string.
+
+        Args:
+            domain_key: String in format <base64url-server-pubkey>.<domain>
+                       Example: 'wP8rZXY...Yz4M.example.com'
+            private_key: Client's NaCl private key (nacl.public.PrivateKey instance)
+
+        Returns:
+            DnsPublicFragment instance configured with parsed domain and keys
+
+        Example:
+            >>> client_privkey = nacl.public.PrivateKey.generate()
+            >>> domain_key = 'wP8rZXYzM1uvWxABcD2EfGhIjKlMnOpQrStUvWxYz4M.example.com'
+            >>> frag = DnsPublicFragment.from_domain_key(domain_key, client_privkey)
+        """
+        server_pubkey_bytes, domain = parse_domain_key(domain_key)
+        server_pubkey = nacl.public.PublicKey(server_pubkey_bytes)
+
+        return cls(domain=domain, private_key=private_key, public_key=server_pubkey)
 
     def serialize(self):
         ser = super(DnsPublicFragment, self).serialize()
@@ -455,6 +553,9 @@ __config_skel__ = '''\
 #   client_privkey={client_privkey}
 #   server_pubkey={server_pubkey}
 #
+# OR use single domain-key (combines server_pubkey + domain):
+#   domain_key={domain_key}
+#
 
 [main]
 domain = .xyxyx.xy  # including leading dot
@@ -573,11 +674,19 @@ def main():
     if opt.generate_conf:
         (client_privkey, client_pubkey) = get_nacl_keypair_base64()
         (server_privkey, server_pubkey) = get_nacl_keypair_base64()
+
+        # Generate domain-key for client convenience
+        # Use default domain from config skeleton
+        default_domain = '.xyxyx.xy'
+        server_pubkey_bytes = base64.b64decode(server_pubkey)
+        domain_key = encode_domain_key(server_pubkey_bytes, default_domain)
+
         print(__config_skel__.format(
             client_privkey=client_privkey,
             client_pubkey=client_pubkey,
             server_privkey=server_privkey,
-            server_pubkey=server_pubkey
+            server_pubkey=server_pubkey,
+            domain_key=domain_key
         ))
         sys.exit()
 
