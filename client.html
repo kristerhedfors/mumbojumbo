@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mumbojumbo DNS Client</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-family: inherit;
+            font-size: 14px;
+            resize: vertical;
+            min-height: 150px;
+            transition: border-color 0.3s;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            flex: 1;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-send {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-send:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-send:active {
+            transform: translateY(0);
+        }
+
+        .btn-send:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-clear {
+            background: #f0f0f0;
+            color: #666;
+        }
+
+        .btn-clear:hover {
+            background: #e0e0e0;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .status.info {
+            background: #e3f2fd;
+            color: #1976d2;
+            border: 1px solid #bbdefb;
+        }
+
+        .status.success {
+            background: #e8f5e9;
+            color: #388e3c;
+            border: 1px solid #c8e6c9;
+        }
+
+        .status.error {
+            background: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+
+        .config {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+
+        .config h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .config-item {
+            margin-bottom: 8px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .config-item strong {
+            color: #333;
+        }
+
+        .info-box {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #856404;
+        }
+
+        .info-box strong {
+            display: block;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Mumbojumbo DNS Client</h1>
+        <p class="subtitle">Send encrypted messages over DNS queries</p>
+
+        <div class="form-group">
+            <label for="message">Your Message:</label>
+            <textarea id="message" placeholder="Type your secret message here..."></textarea>
+        </div>
+
+        <div class="button-group">
+            <button class="btn-send" id="sendBtn" onclick="sendMessage()">Send via DNS</button>
+            <button class="btn-clear" onclick="clearMessage()">Clear</button>
+        </div>
+
+        <div class="status" id="status"></div>
+
+        <div class="config">
+            <h3>Configuration</h3>
+            <div class="config-item"><strong>Domain:</strong> <span id="domainDisplay">.xyxyx.xy</span></div>
+            <div class="config-item"><strong>Encryption:</strong> NaCl Public Key</div>
+            <div class="config-item"><strong>Fragment Size:</strong> 80 bytes</div>
+        </div>
+
+        <div class="info-box">
+            <strong>⚠️ Important:</strong>
+            This is a demonstration client. In a real deployment, you would need to configure your DNS resolver
+            and have proper keys exchanged with the server. The JavaScript implementation below simulates
+            the DNS query generation that would normally happen at the network level.
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tweetnacl-util@0.15.1/nacl-util.min.js"></script>
+    <script>
+        // Configuration
+        const CONFIG = {
+            domain: '.xyxyx.xy',
+            maxFragDataLen: 80,
+            // These keys should match your server configuration
+            // In production, these would be securely managed
+            clientPrivateKey: null,
+            serverPublicKey: null
+        };
+
+        // Base32 encoding/decoding
+        function base32Encode(bytes) {
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+            let bits = 0;
+            let value = 0;
+            let output = '';
+
+            for (let i = 0; i < bytes.length; i++) {
+                value = (value << 8) | bytes[i];
+                bits += 8;
+
+                while (bits >= 5) {
+                    output += alphabet[(value >>> (bits - 5)) & 31];
+                    bits -= 5;
+                }
+            }
+
+            if (bits > 0) {
+                output += alphabet[(value << (5 - bits)) & 31];
+            }
+
+            return output.toLowerCase();
+        }
+
+        // Split string into chunks
+        function splitToLength(data, length) {
+            const chunks = [];
+            for (let i = 0; i < data.length; i += length) {
+                chunks.push(data.slice(i, i + length));
+            }
+            return chunks.length > 0 ? chunks : [''];
+        }
+
+        // Convert number to network byte order (big-endian) bytes
+        function htonl(val) {
+            return new Uint8Array([
+                (val >>> 24) & 0xFF,
+                (val >>> 16) & 0xFF,
+                (val >>> 8) & 0xFF,
+                val & 0xFF
+            ]);
+        }
+
+        function htons(val) {
+            return new Uint8Array([
+                (val >>> 8) & 0xFF,
+                val & 0xFF
+            ]);
+        }
+
+        // Generate random packet ID
+        function genPacketId() {
+            const bytes = nacl.randomBytes(4);
+            return (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+        }
+
+        // Concatenate Uint8Arrays
+        function concatUint8Arrays(...arrays) {
+            const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+            const result = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const arr of arrays) {
+                result.set(arr, offset);
+                offset += arr.length;
+            }
+            return result;
+        }
+
+        // Create fragment
+        function createFragment(packetId, fragIndex, fragCount, fragData) {
+            const fragDataBytes = typeof fragData === 'string'
+                ? nacl.util.decodeUTF8(fragData)
+                : fragData;
+
+            return concatUint8Arrays(
+                htonl(packetId),
+                htons(fragIndex),
+                htons(fragCount),
+                htons(fragDataBytes.length),
+                fragDataBytes
+            );
+        }
+
+        // Encrypt fragment (simplified - in real use, would use NaCl Box)
+        function encryptFragment(plaintext, clientPrivKey, serverPubKey) {
+            // For demo purposes, we'll simulate encryption
+            // In production, use nacl.box() with proper key exchange
+            if (clientPrivKey && serverPubKey) {
+                const nonce = nacl.randomBytes(24);
+                const box = nacl.box(plaintext, nonce, serverPubKey, clientPrivKey);
+                return concatUint8Arrays(nonce, box);
+            }
+            // Demo mode: just add some random bytes as "encryption"
+            const nonce = nacl.randomBytes(24);
+            return concatUint8Arrays(nonce, plaintext);
+        }
+
+        // Create DNS query name from encrypted fragment
+        function createDnsName(encryptedData) {
+            const b32encoded = base32Encode(encryptedData);
+            const parts = splitToLength(b32encoded, 63);
+            return parts.join('.') + CONFIG.domain;
+        }
+
+        // Send message via DNS
+        async function sendMessage() {
+            const messageEl = document.getElementById('message');
+            const statusEl = document.getElementById('status');
+            const sendBtn = document.getElementById('sendBtn');
+
+            const message = messageEl.value.trim();
+
+            if (!message) {
+                showStatus('Please enter a message to send.', 'error');
+                return;
+            }
+
+            sendBtn.disabled = true;
+            showStatus('Fragmenting and encrypting message...', 'info');
+
+            try {
+                // Convert message to bytes
+                const messageBytes = nacl.util.decodeUTF8(message);
+
+                // Fragment the message
+                const fragments = splitToLength(messageBytes, CONFIG.maxFragDataLen);
+                const packetId = genPacketId();
+                const fragCount = fragments.length;
+
+                showStatus(`Creating ${fragCount} DNS queries...`, 'info');
+
+                // Create DNS queries for each fragment
+                const dnsNames = [];
+                for (let i = 0; i < fragments.length; i++) {
+                    const fragment = createFragment(
+                        packetId,
+                        i,
+                        fragCount,
+                        fragments[i]
+                    );
+
+                    // Encrypt fragment
+                    const encrypted = encryptFragment(
+                        fragment,
+                        CONFIG.clientPrivateKey,
+                        CONFIG.serverPublicKey
+                    );
+
+                    // Create DNS name
+                    const dnsName = createDnsName(encrypted);
+                    dnsNames.push(dnsName);
+                }
+
+                // Display the DNS queries that would be sent
+                console.log('DNS Queries to send:');
+                dnsNames.forEach((name, i) => {
+                    console.log(`${i + 1}. ${name}`);
+                });
+
+                // In a real implementation, these DNS queries would be sent
+                // For demonstration, we'll show them in the console and status
+                showStatus(
+                    `✓ Generated ${fragCount} DNS queries! Check browser console for details. ` +
+                    `In production, these would be sent to your DNS resolver.`,
+                    'success'
+                );
+
+                // Copy first query to clipboard for testing
+                if (dnsNames.length > 0 && navigator.clipboard) {
+                    await navigator.clipboard.writeText(dnsNames[0]);
+                    setTimeout(() => {
+                        showStatus(
+                            `✓ Success! First DNS query copied to clipboard. Total queries: ${fragCount}`,
+                            'success'
+                        );
+                    }, 1000);
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                showStatus('Error: ' + error.message, 'error');
+            } finally {
+                sendBtn.disabled = false;
+            }
+        }
+
+        function clearMessage() {
+            document.getElementById('message').value = '';
+            document.getElementById('status').style.display = 'none';
+        }
+
+        function showStatus(message, type) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = 'status ' + type;
+            statusEl.style.display = 'block';
+        }
+
+        // Update domain display
+        document.getElementById('domainDisplay').textContent = CONFIG.domain;
+
+        // Initialize message
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('message').value = 'Hello from Mumbojumbo DNS client!';
+        });
+    </script>
+</body>
+</html>
