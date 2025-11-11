@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
 # known attacks:
@@ -56,11 +56,15 @@ class DnsQueryReader(object):
         cmd = 'tshark -li eth0 -T fields -e dns.qry.name udp port 53'
         self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
         line = p.stdout.readline().strip()
+        if isinstance(line, bytes):
+            line = line.decode('utf-8')
         while line:
             logger.debug('parsing ' + line)
             yield line
             logger.debug('reading next query...')
             line = p.stdout.readline().strip()
+            if isinstance(line, bytes):
+                line = line.decode('utf-8')
         p.wait()
 
     def __del__(self):
@@ -70,7 +74,7 @@ class DnsQueryReader(object):
 
 def test_client(packet_engine, rounds=10):
     name_server = DnsQueryWriter()
-    for i in xrange(rounds):
+    for i in range(rounds):
         logger.info('ROUND({0})'.format(i))
         data = nacl.public.random(random.randint(200, 400))
         logger.info('DATA({0}): {1}'.format(len(data), repr(data)))
@@ -80,7 +84,7 @@ def test_client(packet_engine, rounds=10):
         time.sleep(0.1)
         name_server.query_all(packet_engine.to_wire(datahash))
         time.sleep(0.1)
-    print 'SUCCESS sent {0} packets of random data plus hashes'.format(rounds)
+    print('SUCCESS sent {0} packets of random data plus hashes'.format(rounds))
 
 
 def test_server(packet_engine, rounds=10, **kw):
@@ -131,19 +135,19 @@ class DnsQueryWriter(object):
         return s
 
     def _build_query(self, name):
-        s = ''
+        s = b''
         s += nacl.public.random(2)  # query id
-        s += '\x01\x00'  # standard query
-        s += '\x00\x01'  # queries
-        s += '\x00\x00'  # answer rr:s
-        s += '\x00\x00'  # authority rr:s
-        s += '\x00\x00'  # additional rr:s
+        s += b'\x01\x00'  # standard query
+        s += b'\x00\x01'  # queries
+        s += b'\x00\x00'  # answer rr:s
+        s += b'\x00\x00'  # authority rr:s
+        s += b'\x00\x00'  # additional rr:s
         for part in name.split('.'):
-            s += chr(len(part))
-            s += part
-        s += '\x00'
-        s += '\x00\x01'  # type: a, host address
-        s += '\x00\x01'  # class: in
+            s += bytes([len(part)])
+            s += part.encode('ascii')
+        s += b'\x00'
+        s += b'\x00\x01'  # type: a, host address
+        s += b'\x00\x01'  # class: in
         return s
 
     def query(self, name):
@@ -172,7 +176,8 @@ def test_dns_query():
 
 def test_performance():
     _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
-    private_key = nacl.public.PrivateKey(_key.decode('base64'))
+    import base64
+    private_key = nacl.public.PrivateKey(base64.b64decode(_key))
     pfcls = DnsPublicFragment.bind(private_key=private_key,
                                    public_key=private_key.public_key)
     packet_engine = PacketEngine(pfcls)
@@ -181,7 +186,7 @@ def test_performance():
     count = 1024
     lst = []
     t1 = time.time()
-    for i in xrange(count):
+    for i in range(count):
         for item in packet_engine.to_wire(data):
             lst.append(item)
     t2 = time.time()
@@ -194,10 +199,10 @@ def test_performance():
         count -= 1
     assert count == 0
 
-    print 'Offline processing of 1024 messages, 1024 bytes per message:'
-    print 'send time: {0:.2f}s'.format(t2 - t1)
-    print 'recv time: {0:.2f}s'.format(t3 - t2)
-    print 'message fragment count:', len(lst)
+    print('Offline processing of 1024 messages, 1024 bytes per message:')
+    print('send time: {0:.2f}s'.format(t2 - t1))
+    print('recv time: {0:.2f}s'.format(t3 - t2))
+    print('message fragment count:', len(lst))
 
 
 class MyTestMixin(object):
@@ -224,9 +229,9 @@ class MyTestMixin(object):
         '''
         frag_index = random.randint(0, 100)
         frag_count = random.randint(frag_index + 1, frag_index + 100)
-        datalist = ['']
-        datalist += ['a']
-        datalist += [os.urandom(random.randint(0, 4096)) for i in xrange(100)]
+        datalist = [b'']
+        datalist += [b'a']
+        datalist += [os.urandom(random.randint(0, 4096)) for i in range(100)]
         for data in datalist:
             self.serialize_deserialize(frag_cls, frag_index, frag_count, data)
 
@@ -252,10 +257,10 @@ class MyTestMixin(object):
         '''
         frag_index = random.randint(0, 100)
         frag_count = random.randint(frag_index + 1, frag_index + 100)
-        datalist = ['']
-        datalist += ['a']
+        datalist = [b'']
+        datalist += [b'a']
         datalist += [nacl.public.random(random.randint(0, 4096))
-                     for i in xrange(100)]
+                     for i in range(100)]
         for data in datalist:
             self.public_serialize_deserialize(pfcls1, pfcls2, frag_index,
                                               frag_count, data)
@@ -266,7 +271,7 @@ class Test_Fragment(unittest.TestCase):
     def test1(self):
         frag_index = 4
         frag_count = 7
-        frag_data = 'foobar'
+        frag_data = b'foobar'
         fr1 = Fragment(frag_index=frag_index, frag_count=frag_count,
                        frag_data=frag_data)
         fr2 = fr1.deserialize(fr1.serialize())
@@ -291,17 +296,17 @@ class Test_PublicFragment(unittest.TestCase, MyTestMixin):
 
     def test2(self):
         self.serialize_deserialize(Fragment, frag_index=3, frag_count=4,
-                                   frag_data='asdqwe')
+                                   frag_data=b'asdqwe')
         self.multi_serialize_deserialize(Fragment)
 
 
 class Test_PacketEngine(unittest.TestCase, MyTestMixin):
 
     def setUp(self):
-        packet_data_lst = ['']
-        packet_data_lst += ['a']
+        packet_data_lst = [b'']
+        packet_data_lst += [b'a']
         packet_data_lst += [nacl.public.random(random.randint(1, 2048))
-                            for i in xrange(64)]
+                            for i in range(64)]
         k1 = nacl.public.PrivateKey.generate()
         k2 = nacl.public.PrivateKey.generate()
         pfcls1 = DnsPublicFragment.bind(private_key=k1,
@@ -327,10 +332,11 @@ class Test_PacketEngine(unittest.TestCase, MyTestMixin):
 
 
 def main(*args):
+    import base64
     _pk1 = 'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
     _pk2 = 'DGor3Mkdy8Txp4bRMPYURduV7fVXcUCNnaFra1RIums='
-    pk1 = nacl.public.PrivateKey(_pk1.decode('base64'))
-    pk2 = nacl.public.PrivateKey(_pk2.decode('base64'))
+    pk1 = nacl.public.PrivateKey(base64.b64decode(_pk1))
+    pk2 = nacl.public.PrivateKey(base64.b64decode(_pk2))
 
     pfcls_client = DnsPublicFragment.bind(private_key=pk1,
                                           public_key=pk2.public_key)

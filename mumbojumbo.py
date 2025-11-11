@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Copyright (c) 2016, Krister Hedfors
 # All rights reserved.
@@ -55,13 +55,13 @@
 import base64
 import functools
 import logging
-import Queue
+import queue
 import socket
 import struct
 import subprocess
 import sys
 import optparse
-import ConfigParser
+import configparser
 import traceback
 import smtplib
 import hashlib
@@ -80,13 +80,13 @@ logger = logging.getLogger(__name__)
 
 
 def b32enc(s):
-    return base64.b32encode(s).replace('=', '')
+    return base64.b32encode(s).replace(b'=', b'')
 
 
 def b32dec(s):
     r = len(s) % 8
     if r:
-        s += '=' * (8 - r)
+        s += b'=' * (8 - r)
     return base64.b32decode(s)
 
 
@@ -151,7 +151,7 @@ class Fragment(BaseFragment):
         return socket.ntohs(nval)
 
     def serialize(self):
-        ser = ''
+        ser = b''
         ser += self._htonl_pack(self._packet_id)
         ser += self._htons_pack(self._frag_index)
         ser += self._htons_pack(self._frag_count)
@@ -176,8 +176,16 @@ class Fragment(BaseFragment):
         except:
             logger.debug('bad frag_count: %d' % frag_count)
             raise
-        return self.__class__(packet_id=packet_id, frag_index=frag_index,
-                              frag_count=frag_count, frag_data=frag_data)
+        # Pass keys if they exist (for PublicFragment subclasses)
+        kw = {'packet_id': packet_id, 'frag_index': frag_index,
+              'frag_count': frag_count, 'frag_data': frag_data}
+        if hasattr(self, '_private_key'):
+            kw['private_key'] = self._private_key
+        if hasattr(self, '_public_key'):
+            kw['public_key'] = self._public_key
+        if hasattr(self, '_domain'):
+            kw['domain'] = self._domain
+        return self.__class__(**kw)
 
 
 class PublicFragment(Fragment):
@@ -185,7 +193,12 @@ class PublicFragment(Fragment):
         Packet fragment encrypted/decrypted using nacl.public.Box().
     '''
     def __init__(self, private_key=None, public_key=None, **kw):
-        self._box = nacl.public.Box(private_key, public_key)
+        self._private_key = private_key
+        self._public_key = public_key
+        if private_key is not None and public_key is not None:
+            self._box = nacl.public.Box(private_key, public_key)
+        else:
+            self._box = None
         super(PublicFragment, self).__init__(**kw)
 
     def serialize(self):
@@ -195,7 +208,7 @@ class PublicFragment(Fragment):
         return ciphertext
 
     def deserialize(self, ciphertext):
-        plaintext = ''
+        plaintext = b''
         try:
             plaintext = self._box.decrypt(ciphertext=ciphertext)
         except:
@@ -208,8 +221,8 @@ class PublicFragment(Fragment):
 
 def _split2len(s, n):
     assert n > 0
-    if s == '':
-        return ['']
+    if s == b'':
+        return [b'']
 
     def _f(s, n):
         while s:
@@ -256,13 +269,13 @@ class DnsPublicFragment(PublicFragment):
             logger.debug(msg)
 
     def _b32enc(self, s):
-        return base64.b32encode(s).replace('=', '').lower()
+        return base64.b32encode(s).replace(b'=', b'').lower().decode('ascii')
 
     def _b32dec(self, s):
-        s = s.upper()
+        s = s.upper().encode('ascii')
         r = len(s) % 8
         if r:
-            s += '=' * (8 - r)
+            s += b'=' * (8 - r)
         return base64.b32decode(s)
 
 
@@ -284,7 +297,7 @@ class PacketEngine(object):
         self._max_frag_data_len = max_frag_data_len
         self._packet_assembly = {}
         self._packet_assembly_counter = {}
-        self._packet_outqueue = Queue.Queue()
+        self._packet_outqueue = queue.Queue()
 
     @property
     def packet_outqueue(self):
@@ -349,7 +362,7 @@ class PacketEngine(object):
 
     def _finalize_packet(self, packet_id):
         frag_data_lst = self._packet_assembly[packet_id]
-        packet_data = ''.join(frag_data_lst)
+        packet_data = b''.join(frag_data_lst)
         self.packet_outqueue.put(packet_data)
 
 
@@ -368,12 +381,16 @@ class DnsQueryReader(object):
         cmd += ' -li eth0 -T fields -e dns.qry.name -- udp port 53'
         self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
         name = p.stdout.readline().strip()
+        if isinstance(name, bytes):
+            name = name.decode('utf-8')
         while name:
             logger.debug('parsing ' + name)
             if not self._domain or name.lower().endswith(self._domain):
                 yield name
             logger.debug('reading next query...')
             name = p.stdout.readline().strip()
+            if isinstance(name, bytes):
+                name = name.decode('utf-8')
         p.wait()
 
     def __del__(self):
@@ -434,8 +451,8 @@ def option_parser():
 
 def get_nacl_keypair_base64():
     private_key = nacl.public.PrivateKey.generate()
-    priv = private_key.encode().encode('base64').strip()
-    pub = private_key.public_key.encode().encode('base64').strip()
+    priv = base64.b64encode(private_key.encode()).decode('ascii').strip()
+    pub = base64.b64encode(private_key.public_key.encode()).decode('ascii').strip()
     return (priv, pub)
 
 
@@ -472,6 +489,8 @@ class SecretBox(nacl.secret.SecretBox):
         Added key expansion to allow arbitrary key lengths.
     '''
     def __init__(self, key, *args, **kw):
+        if isinstance(key, str):
+            key = key.encode('utf-8')
         key = self.expand(key, 1984)
         super(SecretBox, self).__init__(key, *args, **kw)
 
@@ -481,7 +500,7 @@ class SecretBox(nacl.secret.SecretBox):
 
     def expand(self, key, count):
         origkey = key
-        for _ in xrange(count):
+        for _ in range(count):
             key = self._expand(origkey, key)
         return key
 
@@ -497,7 +516,7 @@ def getpass2(msg):
         sec2 = getpass.getpass(msg + ' again:')
         if sec == sec2:
             break
-        print 'The values do not match, try again'
+        print('The values do not match, try again')
     return sec
 
 
@@ -514,36 +533,38 @@ def main():
     if opt.gen_config_skel:
         (client_privkey, client_pubkey) = get_nacl_keypair_base64()
         (server_privkey, server_pubkey) = get_nacl_keypair_base64()
-        print __config_skel__.format(
+        print(__config_skel__.format(
             client_privkey=client_privkey,
             client_pubkey=client_pubkey,
             server_privkey=server_privkey,
             server_pubkey=server_pubkey
-        )
+        ))
         sys.exit()
 
     if opt.gen_keys:
         (priv, pub) = get_nacl_keypair_base64()
-        print priv
-        print pub
+        print(priv)
+        print(pub)
         sys.exit()
 
     if opt.encrypt:
         key = getpass2('enter encryption key')
         secret = getpass2('enter secret value')
+        if isinstance(secret, str):
+            secret = secret.encode('utf-8')
         nonce = nacl.utils.random(24)
         encval = SecretBox(key).encrypt(secret, nonce)
-        print ''
-        print 'This is your secret value encrypted using the key you typed in:'
-        print encval.encode('base64').strip()
+        print('')
+        print('This is your secret value encrypted using the key you typed in:')
+        print(base64.b64encode(encval).decode('ascii').strip())
         sys.exit()
 
     if not opt.config:
-        print 'Error: No config file specified; you can generate one using',
-        print '--gen-config-skel.'
+        print('Error: No config file specified; you can generate one using', end=' ')
+        print('--gen-config-skel.')
         sys.exit(1)
 
-    config = ConfigParser.SafeConfigParser(allow_no_value=True)
+    config = configparser.SafeConfigParser(allow_no_value=True)
     config.read(opt.config)
 
     #
@@ -555,7 +576,7 @@ def main():
     if smtp_items:
         key = getpass.getpass('Enter SMTP password decryption key:')
         password = SecretBox(key).decrypt(
-            smtp_items['encrypted-password'].decode('base64')
+            base64.b64decode(smtp_items['encrypted-password'])
         )
         smtp_forwarder = SMTPForwarder(
             server=smtp_items['server'],
@@ -575,10 +596,10 @@ def main():
     # parse NaCL keys
     #
     server_privkey = nacl.public.PrivateKey(
-        config.get('main', 'server-privkey').decode('base64')
+        base64.b64decode(config.get('main', 'server-privkey'))
     )
     client_pubkey = nacl.public.PublicKey(
-        config.get('main', 'client-pubkey').decode('base64')
+        base64.b64decode(config.get('main', 'client-pubkey'))
     )
     domain = config.get('main', 'domain')
     network_interface = config.get('main', 'network-interface')
@@ -627,10 +648,14 @@ def main():
             data = packet_engine.packet_outqueue.get()
             if smtp_forwarder:
                 logger.info('sending email')
-                logger.debug('email contents:' + data)
-                smtp_forwarder.sendmail(subject='Hello World!', text=data)
+                if isinstance(data, bytes):
+                    data_str = data.decode('utf-8')
+                else:
+                    data_str = data
+                logger.debug('email contents:' + data_str)
+                smtp_forwarder.sendmail(subject='Hello World!', text=data_str)
             else:
-                print 'GET:', packet_engine.packet_outqueue.get()
+                print('GET:', packet_engine.packet_outqueue.get())
         sys.stdout.flush()
 
 
