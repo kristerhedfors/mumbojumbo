@@ -15,6 +15,8 @@ import subprocess
 import sys
 import time
 import unittest
+import tempfile
+import datetime
 # import pdb
 
 import nacl.public
@@ -22,7 +24,12 @@ from mumbojumbo import (
     PacketEngine,
     Fragment,
     PublicFragment,
-    DnsPublicFragment
+    DnsPublicFragment,
+    PacketHandler,
+    StdoutHandler,
+    SMTPHandler,
+    FileHandler,
+    ExecuteHandler
 )
 
 
@@ -351,8 +358,9 @@ class Test_SMTPErrorHandling(unittest.TestCase):
             from_='test@example.com',
             to='dest@example.com'
         )
-        self.assertIsInstance(forwarder._port, int)
-        self.assertEqual(forwarder._port, 587)
+        # SMTPForwarder now wraps SMTPHandler, check the inner handler
+        self.assertIsInstance(forwarder._handler._port, int)
+        self.assertEqual(forwarder._handler._port, 587)
 
     def test_connection_refused(self):
         """Test handling of connection refused errors."""
@@ -599,6 +607,390 @@ class Test_KeyEncoding(unittest.TestCase):
         pub_encoded = encode_key_hex(pub_bytes, key_type='pub')
         pub_decoded = decode_key_hex(pub_encoded)
         self.assertEqual(pub_bytes, pub_decoded)
+
+
+class Test_PacketHandlers(unittest.TestCase):
+    """Test handler base class and concrete implementations."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.test_data = b'Test packet data'
+        self.test_query = 'test.example.com'
+        self.test_timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+    def test_handler_base_class_not_implemented(self):
+        """Test that PacketHandler base class requires handle() implementation."""
+        handler = PacketHandler()
+        with self.assertRaises(NotImplementedError):
+            handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+    def test_stdout_handler_success(self):
+        """Test StdoutHandler outputs JSON successfully."""
+        from io import StringIO
+        import json
+        import sys
+
+        # Capture stdout
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            handler = StdoutHandler()
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            # Check result
+            self.assertTrue(result)
+
+            # Parse JSON output
+            output = captured_output.getvalue().strip()
+            data = json.loads(output)
+
+            # Verify JSON structure
+            self.assertEqual(data['event'], 'packet_reassembled')
+            self.assertEqual(data['query'], self.test_query)
+            self.assertEqual(data['data_length'], len(self.test_data))
+            self.assertIn('data_preview', data)
+            self.assertIn('timestamp', data)
+
+        finally:
+            sys.stdout = original_stdout
+
+    def test_stdout_handler_binary_data(self):
+        """Test StdoutHandler handles binary data by converting to hex."""
+        from io import StringIO
+        import json
+        import sys
+
+        binary_data = b'\x00\x01\x02\xff'
+
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            handler = StdoutHandler()
+            result = handler.handle(binary_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+            output = captured_output.getvalue().strip()
+            data = json.loads(output)
+
+            # Binary data should be hex-encoded in preview
+            self.assertEqual(data['data_preview'], binary_data.hex())
+
+        finally:
+            sys.stdout = original_stdout
+
+    def test_file_handler_hex_format(self):
+        """Test FileHandler writes data in hex format."""
+        with tempfile.NamedTemporaryFile(mode='r', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            handler = FileHandler(path=tmp_path, format='hex')
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+            # Read and verify file contents
+            with open(tmp_path, 'r') as f:
+                content = f.read()
+
+            # Check header is present
+            self.assertIn('query: test.example.com', content)
+            self.assertIn('length: 16', content)
+            self.assertIn('format: hex', content)
+
+            # Check data is hex-encoded
+            self.assertIn(self.test_data.hex(), content)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_file_handler_base64_format(self):
+        """Test FileHandler writes data in base64 format."""
+        import base64
+
+        with tempfile.NamedTemporaryFile(mode='r', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            handler = FileHandler(path=tmp_path, format='base64')
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+            with open(tmp_path, 'r') as f:
+                content = f.read()
+
+            # Check data is base64-encoded
+            expected_b64 = base64.b64encode(self.test_data).decode('ascii')
+            self.assertIn(expected_b64, content)
+            self.assertIn('format: base64', content)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_file_handler_raw_format(self):
+        """Test FileHandler writes data in raw format."""
+        with tempfile.NamedTemporaryFile(mode='rb', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            handler = FileHandler(path=tmp_path, format='raw')
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+            with open(tmp_path, 'rb') as f:
+                content = f.read()
+
+            # Check raw data is present
+            self.assertIn(self.test_data, content)
+            # Header should also be present (as UTF-8)
+            self.assertIn(b'query: test.example.com', content)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_file_handler_invalid_format(self):
+        """Test FileHandler rejects invalid format."""
+        with self.assertRaises(ValueError) as ctx:
+            FileHandler(path='/tmp/test', format='invalid')
+        self.assertIn('Must be raw, hex, or base64', str(ctx.exception))
+
+    def test_file_handler_append_mode(self):
+        """Test FileHandler appends to existing file."""
+        with tempfile.NamedTemporaryFile(mode='r', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            handler = FileHandler(path=tmp_path, format='hex')
+
+            # Write first packet
+            handler.handle(b'first', 'query1.com', self.test_timestamp)
+
+            # Write second packet
+            handler.handle(b'second', 'query2.com', self.test_timestamp)
+
+            # Verify both packets are in file
+            with open(tmp_path, 'r') as f:
+                content = f.read()
+
+            self.assertIn('first'.encode().hex(), content)
+            self.assertIn('second'.encode().hex(), content)
+            self.assertIn('query1.com', content)
+            self.assertIn('query2.com', content)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_execute_handler_success(self):
+        """Test ExecuteHandler runs command successfully."""
+        # Use a simple echo command that should work on Unix/Mac
+        handler = ExecuteHandler(command='cat', timeout=5)
+        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+        self.assertTrue(result)
+
+    def test_execute_handler_with_env_vars(self):
+        """Test ExecuteHandler passes environment variables."""
+        # Create a script that echoes environment variables
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as tmp:
+            tmp.write('#!/bin/bash\n')
+            tmp.write('echo "Query: $MUMBOJUMBO_QUERY"\n')
+            tmp.write('echo "Length: $MUMBOJUMBO_LENGTH"\n')
+            tmp.write('echo "Timestamp: $MUMBOJUMBO_TIMESTAMP"\n')
+            tmp_path = tmp.name
+
+        try:
+            os.chmod(tmp_path, 0o755)
+
+            handler = ExecuteHandler(command=tmp_path, timeout=5)
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_execute_handler_failure(self):
+        """Test ExecuteHandler handles command failure."""
+        # Use a command that will fail
+        handler = ExecuteHandler(command='false', timeout=5)
+        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+        self.assertFalse(result)
+
+    def test_execute_handler_timeout(self):
+        """Test ExecuteHandler handles timeout."""
+        # Command that sleeps longer than timeout
+        handler = ExecuteHandler(command='sleep 10', timeout=1)
+        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+        self.assertFalse(result)
+
+    def test_execute_handler_stdin(self):
+        """Test ExecuteHandler passes data via stdin."""
+        # Use a script that reads stdin
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as tmp:
+            tmp.write('#!/bin/bash\n')
+            tmp.write('cat > /dev/null && echo "success"\n')  # Read stdin and succeed
+            tmp_path = tmp.name
+
+        try:
+            os.chmod(tmp_path, 0o755)
+
+            handler = ExecuteHandler(command=tmp_path, timeout=5)
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_smtp_handler_with_mock(self):
+        """Test SMTPHandler with mocked SMTP connection."""
+        from unittest.mock import Mock, patch
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com',
+            starttls=True,
+            username='user',
+            password='pass'
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = Mock()
+            mock_smtp_class.return_value = mock_smtp
+
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+            mock_smtp.sendmail.assert_called_once()
+            mock_smtp.quit.assert_called()
+
+    def test_smtp_handler_connection_error(self):
+        """Test SMTPHandler handles connection errors gracefully."""
+        from unittest.mock import patch
+        import socket
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=9999,
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp:
+            mock_smtp.side_effect = ConnectionRefusedError('Connection refused')
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertFalse(result)
+
+
+class Test_HandlerPipeline(unittest.TestCase):
+    """Test handler pipeline integration."""
+
+    def test_multiple_handlers_in_sequence(self):
+        """Test running multiple handlers in sequence."""
+        from io import StringIO
+        import sys
+        import json
+
+        test_data = b'Pipeline test'
+        test_query = 'test.example.com'
+        test_timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Create temp file for FileHandler
+        with tempfile.NamedTemporaryFile(mode='r', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            # Create handler pipeline
+            handlers = [
+                StdoutHandler(),
+                FileHandler(path=tmp_path, format='hex'),
+                ExecuteHandler(command='cat > /dev/null', timeout=5)
+            ]
+
+            # Capture stdout for StdoutHandler
+            captured_output = StringIO()
+            original_stdout = sys.stdout
+            sys.stdout = captured_output
+
+            try:
+                # Run all handlers
+                results = []
+                for handler in handlers:
+                    result = handler.handle(test_data, test_query, test_timestamp)
+                    results.append(result)
+
+                # All should succeed
+                self.assertTrue(all(results))
+
+                # Verify stdout handler output
+                output = captured_output.getvalue().strip()
+                data = json.loads(output)
+                self.assertEqual(data['event'], 'packet_reassembled')
+
+                # Verify file handler wrote data
+                with open(tmp_path, 'r') as f:
+                    file_content = f.read()
+                self.assertIn(test_data.hex(), file_content)
+
+            finally:
+                sys.stdout = original_stdout
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_handler_failure_does_not_stop_pipeline(self):
+        """Test that one handler failure doesn't stop other handlers."""
+        from io import StringIO
+        import sys
+        import json
+
+        test_data = b'Test data'
+        test_query = 'test.example.com'
+        test_timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Create handler pipeline with a failing handler in the middle
+        handlers = [
+            StdoutHandler(),
+            ExecuteHandler(command='false', timeout=5),  # This will fail
+            ExecuteHandler(command='true', timeout=5)    # This should still run
+        ]
+
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            results = []
+            for handler in handlers:
+                result = handler.handle(test_data, test_query, test_timestamp)
+                results.append(result)
+
+            # First should succeed, second should fail, third should succeed
+            self.assertTrue(results[0])
+            self.assertFalse(results[1])
+            self.assertTrue(results[2])
+
+        finally:
+            sys.stdout = original_stdout
 
 
 def main(*args):
