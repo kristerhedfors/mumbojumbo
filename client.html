@@ -185,15 +185,21 @@
         <p class="subtitle">Send encrypted messages over DNS queries</p>
 
         <div class="form-group">
+            <label for="clientPrivKey">Client Private Key (base64):</label>
+            <input type="text" id="clientPrivKey" placeholder="base64-encoded client private key">
+            <div class="hint">Copy client_privkey from server config comments (44 characters, base64-encoded)</div>
+        </div>
+
+        <div class="form-group">
             <label for="serverPubKey">Server Public Key (base64):</label>
             <input type="text" id="serverPubKey" placeholder="base64-encoded server public key">
-            <div class="hint">Copy server_pubkey from server config (44 characters, base64-encoded)</div>
+            <div class="hint">Copy server_pubkey from server config comments (44 characters, base64-encoded)</div>
         </div>
 
         <div class="form-group">
             <label for="domain">Domain Suffix:</label>
             <input type="text" id="domain" placeholder=".example.com">
-            <div class="hint">Domain with leading dot (e.g., .xyxyx.xy)</div>
+            <div class="hint">Domain with leading dot (e.g., .gilgame.sh)</div>
         </div>
 
         <div class="form-group">
@@ -211,10 +217,11 @@
         <div class="info-box">
             <strong>📋 How to use:</strong>
             1. Run <code>./venv/bin/python3 mumbojumbo.py --generate-conf</code> on the server<br>
-            2. Copy the <code>server_pubkey</code> and <code>domain</code> values from the generated config<br>
-            3. Paste them into the fields above<br>
-            4. Type your message and click "Send via DNS"<br>
-            5. Check browser console (F12) to see the generated DNS queries
+            2. Open the generated config file and find the comment section at the top<br>
+            3. Copy <code>client_privkey</code>, <code>server_pubkey</code>, and <code>domain</code> from the comments<br>
+            4. Paste them into the fields above<br>
+            5. Type your message and click "Send via DNS"<br>
+            6. Check browser console (F12) to see the generated DNS queries
         </div>
     </div>
 
@@ -223,16 +230,16 @@
     <script>
         const MAX_FRAG_DATA_LEN = 80;
 
-        // Parse and validate server public key
-        function parseServerPubKey(base64Key) {
+        // Parse and validate keys (both private and public keys are 32 bytes)
+        function parseKey(base64Key, keyType) {
             try {
                 const decoded = nacl.util.decodeBase64(base64Key);
                 if (decoded.length !== 32) {
-                    throw new Error(`Invalid key length: ${decoded.length} bytes (expected 32)`);
+                    throw new Error(`Invalid ${keyType} key length: ${decoded.length} bytes (expected 32)`);
                 }
                 return decoded;
             } catch (e) {
-                throw new Error(`Invalid base64 encoding: ${e.message}`);
+                throw new Error(`Invalid ${keyType} key base64 encoding: ${e.message}`);
             }
         }
 
@@ -341,15 +348,22 @@
 
         // Send message via DNS
         async function sendMessage() {
+            const clientPrivKeyEl = document.getElementById('clientPrivKey');
             const serverPubKeyEl = document.getElementById('serverPubKey');
             const domainEl = document.getElementById('domain');
             const messageEl = document.getElementById('message');
             const statusEl = document.getElementById('status');
             const sendBtn = document.getElementById('sendBtn');
 
+            const clientPrivKeyStr = clientPrivKeyEl.value.trim();
             const serverPubKeyStr = serverPubKeyEl.value.trim();
             const domain = domainEl.value.trim();
             const message = messageEl.value.trim();
+
+            if (!clientPrivKeyStr) {
+                showStatus('Please enter the client private key.', 'error');
+                return;
+            }
 
             if (!serverPubKeyStr) {
                 showStatus('Please enter the server public key.', 'error');
@@ -367,18 +381,14 @@
             }
 
             sendBtn.disabled = true;
-            showStatus('Parsing server public key...', 'info');
+            showStatus('Parsing keys...', 'info');
 
             try {
-                // Parse server public key
-                const serverPubKey = parseServerPubKey(serverPubKeyStr);
+                // Parse client private key and server public key
+                const clientPrivKey = parseKey(clientPrivKeyStr, 'client private');
+                const serverPubKey = parseKey(serverPubKeyStr, 'server public');
 
-                showStatus(`✓ Parsed domain: ${domain}`, 'info');
-                await new Promise(resolve => setTimeout(resolve, 300));
-
-                // Generate client keypair
-                showStatus('Generating client keypair...', 'info');
-                const clientKeyPair = nacl.box.keyPair();
+                showStatus(`✓ Parsed keys and domain: ${domain}`, 'info');
                 await new Promise(resolve => setTimeout(resolve, 300));
 
                 // Convert message to bytes
@@ -404,7 +414,7 @@
                     // Encrypt fragment
                     const encrypted = encryptFragment(
                         fragment,
-                        clientKeyPair.secretKey,
+                        clientPrivKey,
                         serverPubKey
                     );
 
@@ -462,6 +472,7 @@
         }
 
         function clearAll() {
+            document.getElementById('clientPrivKey').value = '';
             document.getElementById('serverPubKey').value = '';
             document.getElementById('domain').value = '';
             document.getElementById('message').value = '';
