@@ -375,9 +375,14 @@ class DnsQueryReader(object):
     def __init__(self, iff='', domain=''):
         self._iff = iff
         self._domain = domain
+        self._p = None
 
     def __iter__(self):
-        cmd = self.TSHARK
+        # Try to find tshark in common locations
+        import shutil
+        tshark = shutil.which('tshark') or self.TSHARK
+
+        cmd = tshark
         cmd += ' -li eth0 -T fields -e dns.qry.name -- udp port 53'
         self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
         name = p.stdout.readline().strip()
@@ -394,8 +399,9 @@ class DnsQueryReader(object):
         p.wait()
 
     def __del__(self):
-        self._p.terminate()
-        self._p.wait()
+        if self._p is not None:
+            self._p.terminate()
+            self._p.wait()
 
 
 __usage__ = '''
@@ -564,7 +570,7 @@ def main():
         print('--gen-config-skel.')
         sys.exit(1)
 
-    config = configparser.SafeConfigParser(allow_no_value=True)
+    config = configparser.ConfigParser(allow_no_value=True)
     config.read(opt.config)
 
     #
