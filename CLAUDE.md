@@ -142,6 +142,186 @@ class Test_MyFeature(unittest.TestCase):
 - Assume hostile network environment
 - Log security-relevant events
 
+## Running & Debugging
+
+### Running Mumbojumbo
+
+#### Basic Operation
+```bash
+# Run mumbojumbo (requires sudo for packet capture)
+sudo ./venv/bin/python3 mumbojumbo.py
+```
+
+#### With Timeout
+```bash
+# Run with 30-second timeout
+timeout 30 sudo ./venv/bin/python3 mumbojumbo.py
+```
+
+#### Verbose Mode
+```bash
+# Show logs to stderr in addition to stdout JSON
+sudo ./venv/bin/python3 mumbojumbo.py --verbose
+sudo ./venv/bin/python3 mumbojumbo.py -v
+```
+
+### Logging Behavior
+
+Mumbojumbo uses a **simple, clean logging strategy**:
+
+#### Default Mode (No Flags)
+- **stdout**: Clean, parseable JSON for DNS events only
+- **mumbojumbo.log**: All DEBUG+ logging goes here
+- No log pollution in stdout - perfect for piping to other tools
+
+#### Verbose Mode (`-v` or `--verbose`)
+- **stdout**: JSON events (same as default)
+- **stderr**: All DEBUG+ log messages
+- **mumbojumbo.log**: All DEBUG+ logging (same as default)
+- Use when troubleshooting to see logs in real-time
+
+#### Log File Details
+- **Location**: `mumbojumbo.log` in current working directory
+- **Rotation**: Automatically rotates at 10MB (keeps 5 backups)
+- **Format**: `YYYY-MM-DD HH:MM:SS - logger - LEVEL - message`
+- **Level**: Always DEBUG (comprehensive diagnostics)
+
+#### Viewing Logs
+```bash
+# Follow log file in real-time
+tail -f mumbojumbo.log
+
+# View last 50 lines
+tail -50 mumbojumbo.log
+
+# Search for errors
+grep ERROR mumbojumbo.log
+
+# Search for SMTP-related events
+grep SMTP mumbojumbo.log
+```
+
+### JSON Output Format
+
+When packets are successfully reassembled, mumbojumbo outputs JSON to stdout:
+
+```json
+{
+  "timestamp": "2025-11-11T18:32:01.123456+00:00",
+  "event": "packet_reassembled",
+  "query": "subdomain.example.com",
+  "data_length": 1234,
+  "data_preview": "First 100 characters of packet data...",
+  "smtp_forwarding": true
+}
+```
+
+**Fields:**
+- `timestamp`: ISO 8601 UTC timestamp
+- `event`: Event type (`packet_reassembled`)
+- `query`: DNS query name that completed the packet
+- `data_length`: Size of reassembled packet in bytes
+- `data_preview`: First 100 chars of data (or full data if < 100 chars)
+- `smtp_forwarding`: Whether SMTP forwarding is configured
+
+**Processing JSON:**
+```bash
+# Parse with jq
+./mumbojumbo.py | jq '.data_preview'
+
+# Save JSON to file
+./mumbojumbo.py > events.json
+
+# Filter by event type
+./mumbojumbo.py | jq 'select(.event == "packet_reassembled")'
+```
+
+### SMTP Configuration & Error Handling
+
+Mumbojumbo is **robust against SMTP failures** - SMTP errors will NOT crash the program.
+
+#### Testing SMTP Configuration
+```bash
+# Test SMTP settings without running the full server
+./venv/bin/python3 mumbojumbo.py --test-smtp
+```
+
+**Possible outcomes:**
+- `SUCCESS: Test email sent successfully` - SMTP is working
+- `FAILED: Could not send test email. Check mumbojumbo.log for details.` - SMTP failed, check logs
+
+#### Common SMTP Errors
+
+All SMTP errors are logged but **do not stop DNS packet processing**:
+
+1. **Connection Refused** (port closed or wrong server)
+   ```
+   ERROR: Connection refused by SMTP server 127.0.0.1:587
+   ```
+   - Fix: Check server is running and port is correct
+
+2. **Authentication Failed** (bad username/password)
+   ```
+   ERROR: SMTP authentication failed for user someuser
+   ```
+   - Fix: Verify credentials in config file
+
+3. **DNS/Network Error** (can't resolve hostname)
+   ```
+   ERROR: DNS/network error connecting to SMTP server mail.example.com:587
+   ```
+   - Fix: Check server hostname and network connectivity
+
+4. **Timeout** (server not responding)
+   ```
+   ERROR: Timeout connecting to SMTP server 127.0.0.1:587
+   ```
+   - Fix: Check network connectivity and server status
+
+5. **Recipient Refused** (invalid recipient email)
+   ```
+   ERROR: SMTP server rejected recipient user@example.com
+   ```
+   - Fix: Verify recipient email address
+
+#### SMTP Behavior During Operation
+
+- **SMTP failures are non-fatal**: DNS processing continues even if email sending fails
+- **Each failure is logged**: Check `mumbojumbo.log` for detailed error messages
+- **No retries**: Failed emails are logged but not queued for retry
+- **Graceful degradation**: If SMTP is misconfigured, packets are still processed and logged
+
+### Troubleshooting Guide
+
+#### Problem: No packets being received
+1. Check `mumbojumbo.log` for DNS query events
+2. Verify network interface is correct in config
+3. Ensure tshark is installed and accessible
+4. Run with `--verbose` to see real-time logs
+
+#### Problem: SMTP not working
+1. Run `./venv/bin/python3 mumbojumbo.py --test-smtp`
+2. Check `mumbojumbo.log` for specific error
+3. Verify SMTP server is running: `telnet server_address 587`
+4. Check credentials and recipient addresses
+
+#### Problem: Log file growing too large
+- Logs auto-rotate at 10MB
+- Check for disk space issues
+- Consider cleaning old `.log.1`, `.log.2` backup files
+
+#### Problem: Can't find log file
+- Log file is created in current working directory
+- Check with `ls -la | grep mumbojumbo.log`
+- Run `pwd` to confirm working directory
+
+#### Debug Checklist
+1. ✅ Run tests: `./venv/bin/python3 test.py`
+2. ✅ Test SMTP: `./venv/bin/python3 mumbojumbo.py --test-smtp`
+3. ✅ Check logs: `tail -f mumbojumbo.log`
+4. ✅ Run verbose: `sudo ./venv/bin/python3 mumbojumbo.py --verbose`
+5. ✅ Verify config: Check `mumbojumbo.conf` for syntax errors
+
 ## When in Doubt
 - Keep it simple
 - Keep it in one file

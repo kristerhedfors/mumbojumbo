@@ -331,6 +331,129 @@ class Test_PacketEngine(unittest.TestCase, MyTestMixin):
         self.do_test_cls(PacketEngine, max_frag_data_len=100)
 
 
+class Test_SMTPErrorHandling(unittest.TestCase):
+    """Test SMTP error handling to ensure robustness."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        from unittest.mock import Mock, patch
+        from mumbojumbo import SMTPForwarder
+        self.Mock = Mock
+        self.patch = patch
+        self.SMTPForwarder = SMTPForwarder
+
+    def test_port_type_conversion(self):
+        """Test that port is converted to int."""
+        forwarder = self.SMTPForwarder(
+            server='localhost',
+            port='587',  # String port
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+        self.assertIsInstance(forwarder._port, int)
+        self.assertEqual(forwarder._port, 587)
+
+    def test_connection_refused(self):
+        """Test handling of connection refused errors."""
+        import socket
+        forwarder = self.SMTPForwarder(
+            server='localhost',
+            port=9999,  # Non-existent port
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with self.patch('smtplib.SMTP') as mock_smtp:
+            mock_smtp.side_effect = ConnectionRefusedError('Connection refused')
+            result = forwarder.sendmail('Test', 'Test body')
+            self.assertFalse(result)
+
+    def test_timeout_error(self):
+        """Test handling of timeout errors."""
+        import socket
+        forwarder = self.SMTPForwarder(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with self.patch('smtplib.SMTP') as mock_smtp:
+            mock_smtp.side_effect = socket.timeout('Connection timed out')
+            result = forwarder.sendmail('Test', 'Test body')
+            self.assertFalse(result)
+
+    def test_auth_error(self):
+        """Test handling of authentication errors."""
+        import smtplib
+        forwarder = self.SMTPForwarder(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com',
+            username='baduser',
+            password='badpass'
+        )
+
+        with self.patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = self.Mock()
+            mock_smtp_class.return_value = mock_smtp
+            mock_smtp.login.side_effect = smtplib.SMTPAuthenticationError(535, 'Authentication failed')
+            result = forwarder.sendmail('Test', 'Test body')
+            self.assertFalse(result)
+
+    def test_recipient_refused(self):
+        """Test handling of recipient refused errors."""
+        import smtplib
+        forwarder = self.SMTPForwarder(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='bad@example.com'
+        )
+
+        with self.patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = self.Mock()
+            mock_smtp_class.return_value = mock_smtp
+            mock_smtp.sendmail.side_effect = smtplib.SMTPRecipientsRefused({'bad@example.com': (550, 'User unknown')})
+            result = forwarder.sendmail('Test', 'Test body')
+            self.assertFalse(result)
+
+    def test_successful_send(self):
+        """Test successful email sending."""
+        forwarder = self.SMTPForwarder(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com',
+            username='user',
+            password='pass'
+        )
+
+        with self.patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = self.Mock()
+            mock_smtp_class.return_value = mock_smtp
+            result = forwarder.sendmail('Test Subject', 'Test body')
+            self.assertTrue(result)
+            mock_smtp.sendmail.assert_called_once()
+            mock_smtp.quit.assert_called()
+
+    def test_dns_error(self):
+        """Test handling of DNS resolution errors."""
+        import socket
+        forwarder = self.SMTPForwarder(
+            server='nonexistent.invalid.domain.example',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with self.patch('smtplib.SMTP') as mock_smtp:
+            mock_smtp.side_effect = socket.gaierror('Name or service not known')
+            result = forwarder.sendmail('Test', 'Test body')
+            self.assertFalse(result)
+
+
 def main(*args):
     import base64
     _pk1 = 'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='

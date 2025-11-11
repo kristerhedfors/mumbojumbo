@@ -55,6 +55,7 @@
 import base64
 import functools
 import logging
+import logging.handlers
 import os
 import queue
 import socket
@@ -68,13 +69,15 @@ import smtplib
 import hashlib
 import hmac
 import getpass
+import json
+import datetime
 from email.mime.text import MIMEText
 
 import nacl.public
 import nacl.secret
 
 
-# logging.basicConfig(level=logging.INFO)
+# Global logger - initialize with basic config, will be reconfigured in main()
 logging.basicConfig(level=logging.DEBUG)
 global logger
 logger = logging.getLogger(__name__)
@@ -487,9 +490,8 @@ def option_parser():
                  help='generate config skeleton file (mumbojumbo.conf)')
     p.add_option('', '--test-smtp', action='store_true',
                  help='send one mail to test SMTP config')
-    # p.add_option('-L', '--loglevel', metavar='INFO|DEBUG|..',
-    #              help='set debug log level')
-    # p.add_option('-v', '--verbose', action='count', help='increase verbosity')
+    p.add_option('-v', '--verbose', action='store_true',
+                 help='also print debug logs to stdout (default: logs only to mumbojumbo.log)')
     return p
 
 
@@ -502,10 +504,10 @@ def get_nacl_keypair_base64():
 
 class SMTPForwarder(object):
 
-    def __init__(self, server='', port='', from_='', to='', starttls=True,
+    def __init__(self, server='', port=587, from_='', to='', starttls=True,
                  username=None, password=None):
         self._server = server
-        self._port = port
+        self._port = int(port) if port else 587  # Ensure port is int
         self._from = from_
         self._to = to
         self._starttls = starttls
@@ -513,19 +515,72 @@ class SMTPForwarder(object):
         self._password = password
 
     def sendmail(self, subject='', text='', charset='utf-8'):
-        msg = MIMEText(text)  # utf8 haer med?
-        msg.set_charset(charset)
-        msg['Subject'] = subject
-        msg['From'] = self._from
-        msg['To'] = self._to
-        smtp = smtplib.SMTP(self._server, port=self._port)
-        smtp.ehlo_or_helo_if_needed()
-        if self._starttls:
-            smtp.starttls()
-        if self._username or self._password:
-            smtp.login(self._username, self._password)
-        smtp.sendmail(self._from, [self._to], msg.as_string())
-        smtp.quit()
+        '''
+            Send email via SMTP. Handles all errors gracefully and logs details.
+            Returns True on success, False on failure.
+        '''
+        smtp = None
+        try:
+            msg = MIMEText(text)
+            msg.set_charset(charset)
+            msg['Subject'] = subject
+            msg['From'] = self._from
+            msg['To'] = self._to
+
+            logger.debug(f'Connecting to SMTP server {self._server}:{self._port}')
+            smtp = smtplib.SMTP(self._server, port=self._port, timeout=30)
+            smtp.ehlo_or_helo_if_needed()
+
+            if self._starttls:
+                logger.debug('Starting TLS')
+                smtp.starttls()
+                smtp.ehlo()  # Re-identify after STARTTLS
+
+            if self._username or self._password:
+                logger.debug(f'Logging in as {self._username}')
+                smtp.login(self._username, self._password)
+
+            logger.debug(f'Sending email to {self._to}')
+            smtp.sendmail(self._from, [self._to], msg.as_string())
+            smtp.quit()
+            logger.info(f'Email sent successfully to {self._to}')
+            return True
+
+        except (socket.gaierror, socket.herror) as e:
+            logger.error(f'DNS/network error connecting to SMTP server {self._server}:{self._port}: {e}')
+            return False
+        except socket.timeout as e:
+            logger.error(f'Timeout connecting to SMTP server {self._server}:{self._port}: {e}')
+            return False
+        except ConnectionRefusedError as e:
+            logger.error(f'Connection refused by SMTP server {self._server}:{self._port}: {e}')
+            return False
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error(f'SMTP authentication failed for user {self._username}: {e}')
+            return False
+        except smtplib.SMTPRecipientsRefused as e:
+            logger.error(f'SMTP server rejected recipient {self._to}: {e}')
+            return False
+        except smtplib.SMTPSenderRefused as e:
+            logger.error(f'SMTP server rejected sender {self._from}: {e}')
+            return False
+        except smtplib.SMTPDataError as e:
+            logger.error(f'SMTP data error: {e}')
+            return False
+        except smtplib.SMTPException as e:
+            logger.error(f'SMTP error: {e}')
+            return False
+        except Exception as e:
+            logger.error(f'Unexpected error sending email: {type(e).__name__}: {e}')
+            logger.debug(traceback.format_exc())
+            return False
+        finally:
+            # Always try to close the connection
+            if smtp:
+                try:
+                    smtp.quit()
+                except:
+                    pass
 
 
 class SecretBox(nacl.secret.SecretBox):
@@ -564,15 +619,61 @@ def getpass2(msg):
     return sec
 
 
+def setup_logging(verbose=False, logfile='mumbojumbo.log'):
+    '''
+        Configure logging based on verbose flag:
+        - Always log DEBUG+ to rotating file (mumbojumbo.log)
+        - If verbose: also log DEBUG+ to console stderr
+        - If not verbose: only JSON output to stdout
+    '''
+    # Get the global logger
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False  # Don't propagate to root logger
+
+    # Remove any existing handlers (including basicConfig handlers)
+    logger.handlers.clear()
+
+    # Also clear root logger handlers to prevent duplicate output
+    logging.getLogger().handlers.clear()
+
+    # File handler: always log DEBUG and above to file with rotation
+    file_handler = logging.handlers.RotatingFileHandler(
+        logfile, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+    # Console handler: only if verbose flag is set
+    if verbose:
+        console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.setLevel(logging.DEBUG)
+        console_formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(console_formatter)
+        logger.addHandler(console_handler)
+
+
+def json_output(event_type, **kwargs):
+    '''
+        Output parseable JSON to stdout for DNS events.
+        Always includes timestamp and event type.
+    '''
+    output = {
+        'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        'event': event_type
+    }
+    output.update(kwargs)
+    print(json.dumps(output), flush=True)
+
+
 def main():
-    global logger
     (opt, args) = option_parser().parse_args()
 
-    # if opt.loglevel:
-    #     global logger
-    #     level = getattr(logging, opt.loglevel.upper())
-    #     logging.basicConfig(level=level)
-    #     logger = logging.getLogger(__name__)
+    # Setup logging: file always, console only if --verbose
+    setup_logging(verbose=opt.verbose)
 
     if opt.generate_conf:
         (client_privkey, client_pubkey) = get_nacl_keypair_base64()
@@ -621,19 +722,37 @@ def main():
     smtp_items = config.items('smtp')
     smtp_items = dict(smtp_items)
     if smtp_items:
+        # Convert port to int (ConfigParser returns strings)
+        try:
+            smtp_port = int(smtp_items['port'])
+        except (ValueError, KeyError) as e:
+            logger.error(f'Invalid SMTP port in config: {e}')
+            smtp_port = 587  # Default SMTP submission port
+
         smtp_forwarder = SMTPForwarder(
             server=smtp_items['server'],
-            port=smtp_items['port'],
+            port=smtp_port,
             starttls=config.has_option('smtp', 'start-tls'),
             from_=smtp_items['from'],
             to=smtp_items['to'],
             username=smtp_items['username'],
             password=smtp_items.get('password', ''))
-        # smtp_forwarder.sendmail('test', 'testtest')
 
     if opt.test_smtp:
-        smtp_forwarder.sendmail('doing --test-smtp', 'body of --test-smtp')
-        sys.exit()
+        if not smtp_forwarder:
+            logger.error('No SMTP configuration found in config file')
+            print('ERROR: No SMTP configuration found. Check your config file.')
+            sys.exit(1)
+        logger.info('Testing SMTP configuration...')
+        result = smtp_forwarder.sendmail('Mumbojumbo SMTP Test', 'This is a test email from --test-smtp')
+        if result:
+            print('SUCCESS: Test email sent successfully')
+            logger.info('SMTP test successful')
+            sys.exit(0)
+        else:
+            print('FAILED: Could not send test email. Check mumbojumbo.log for details.')
+            logger.error('SMTP test failed')
+            sys.exit(1)
 
     #
     # parse NaCL keys
@@ -690,16 +809,37 @@ def main():
         #
         if not packet_engine.packet_outqueue.empty():
             data = packet_engine.packet_outqueue.get()
-            if smtp_forwarder:
-                logger.info('sending email')
-                if isinstance(data, bytes):
+
+            # Convert data to string for logging and display
+            if isinstance(data, bytes):
+                try:
                     data_str = data.decode('utf-8')
-                else:
-                    data_str = data
-                logger.debug('email contents:' + data_str)
-                smtp_forwarder.sendmail(subject='Hello World!', text=data_str)
+                except UnicodeDecodeError:
+                    data_str = data.hex()
+                    logger.debug('Data is binary, showing as hex')
             else:
-                print('GET:', packet_engine.packet_outqueue.get())
+                data_str = str(data)
+
+            # Prepare data preview for JSON output
+            data_preview = data_str[:100] + '...' if len(data_str) > 100 else data_str
+
+            # Output JSON to stdout
+            json_output(
+                'packet_reassembled',
+                query=name,
+                data_length=len(data) if isinstance(data, (bytes, str)) else None,
+                data_preview=data_preview,
+                smtp_forwarding=smtp_forwarder is not None
+            )
+
+            logger.info(f'Packet reassembled from query: {name}, length: {len(data) if isinstance(data, (bytes, str)) else "unknown"}')
+            logger.debug(f'Packet contents: {data_str}')
+
+            # Send via SMTP if configured (errors are handled internally)
+            if smtp_forwarder:
+                logger.info('Forwarding packet via SMTP')
+                smtp_forwarder.sendmail(subject='Mumbojumbo Packet', text=data_str)
+
         sys.stdout.flush()
 
 
