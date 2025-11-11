@@ -458,8 +458,10 @@ __config_skel__ = '''\
 #
 
 [main]
-domain = .xyxyx.xy  # including leading dot
-network-interface = en0  # macOS: en0, en1; Linux: eth0, wlan0
+# Domain including leading dot
+domain = .xyxyx.xy
+# Network interface - macOS: en0, en1; Linux: eth0, wlan0
+network-interface = en0
 client-pubkey = {client_pubkey}
 server-privkey = {server_privkey}
 
