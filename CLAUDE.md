@@ -25,22 +25,30 @@ The project uses a **domain-key** concept for maximum simplicity in client confi
 
 ### Format
 ```
-<server-pubkey-alphanumeric>.<configured-domain>
+<server-pubkey-base64url>.<configured-domain>
 ```
 
 ### Purpose
 This single string contains everything a client needs:
-- **Server public key** (encoded as alphanumeric subdomain)
+- **Server public key** (encoded as base64url, 43 characters)
 - **Domain destination** (the actual domain to connect to)
 
 ### Example
 ```
-a1b2c3d4e5f6g7h8.example.com
+RKoLeTKGMx9k6lvObpi1OQswh9nN9521pbb9cP7mz1k.example.com
 ```
 
 Where:
-- `a1b2c3d4e5f6g7h8` = base32/base64url encoded server public key
+- `RKoLeTKGMx9k6lvObpi1OQswh9nN9521pbb9cP7mz1k` = base64url-encoded 32-byte NaCl server public key
 - `example.com` = configured domain from server config
+
+### Implementation Details
+- Uses `base64.urlsafe_b64encode` for DNS-safe encoding
+- 32-byte NaCl public key → 43 characters (without padding)
+- Encoding removes leading dot from domain for cleaner format
+- Parsing restores leading dot (Mumbojumbo convention)
+- Available functions: `encode_domain_key()` and `parse_domain_key()`
+- Class method: `DnsPublicFragment.from_domain_key(domain_key, private_key)`
 
 ### Benefits
 - **One copy-paste configuration** - Client only needs this single string
@@ -56,8 +64,8 @@ Where:
 3. Consider impact on single-file constraint
 
 ### After Making Changes
-1. Run full test suite: `python -m pytest`
-2. Verify test coverage remains 100%
+1. Run full test suite: `./venv/bin/python3 test.py`
+2. Verify all tests pass (tests use unittest, not pytest)
 3. Check no new dependencies added
 4. Ensure code remains compact and readable
 
@@ -69,11 +77,103 @@ Where:
 - Use type hints where they add clarity
 
 ## Testing Requirements
-- **100% test coverage** mandatory
-- Test happy paths AND edge cases
-- Test error conditions and recovery
-- Use pytest for all tests
-- Mock external dependencies (network, filesystem)
+
+### Test Framework
+- **Framework**: Python unittest (standard library)
+- **Location**: All tests in `test.py`
+- **Command**: `./venv/bin/python3 test.py`
+- **Coverage**: 100% test coverage is mandatory
+
+### Running Tests
+```bash
+# Run all tests
+./venv/bin/python3 test.py
+
+# Run with verbose output
+./venv/bin/python3 test.py -v
+
+# Run specific test class
+./venv/bin/python3 test.py Test_DomainKey
+
+# Run specific test method
+./venv/bin/python3 test.py Test_DomainKey.test_encode_decode_round_trip
+```
+
+### Test Structure
+Tests are organized into unittest.TestCase classes:
+- `Test_Fragment` - Basic fragment serialization/deserialization
+- `Test_PublicFragment` - Encrypted fragment operations
+- `Test_PacketEngine` - Packet assembly and fragment handling
+- `Test_DomainKey` - Domain-key encoding, parsing, and integration
+
+### Test Patterns
+```python
+class Test_MyFeature(unittest.TestCase):
+    """Test description."""
+
+    def test_happy_path(self):
+        """Test normal operation."""
+        # Arrange
+        input_data = b'test'
+
+        # Act
+        result = my_function(input_data)
+
+        # Assert
+        self.assertEqual(result, expected)
+
+    def test_edge_case(self):
+        """Test boundary conditions."""
+        # Test with empty data
+        # Test with maximum length
+        # Test with special characters
+
+    def test_error_handling(self):
+        """Test error conditions."""
+        with self.assertRaises(ValueError) as ctx:
+            my_function(invalid_input)
+        self.assertIn('expected message', str(ctx.exception))
+```
+
+### Testing Best Practices
+1. **Test Coverage**: Every new function must have comprehensive tests
+2. **Happy Path**: Test normal expected behavior first
+3. **Edge Cases**: Test boundaries (empty, zero, max length, special chars)
+4. **Error Conditions**: Test invalid inputs with `assertRaises`
+5. **Integration**: Test how components work together
+6. **Round-trip**: For encoders/decoders, verify encode→decode returns original
+7. **Assertions**: Use specific assertions (`assertEqual`, `assertIn`, `assertIsNone`)
+8. **Descriptive Names**: Test method names should describe what they test
+9. **Docstrings**: Add docstrings explaining test purpose
+10. **Mock Externals**: Mock network, filesystem, and external dependencies
+
+### Example: Testing a New Feature
+When adding a new feature like domain-key encoding:
+
+```python
+class Test_DomainKey(unittest.TestCase):
+    def test_encode_decode_round_trip(self):
+        """Verify encoding and decoding are inverses."""
+        key = nacl.public.PrivateKey.generate().public_key.encode()
+        domain = '.example.com'
+
+        domain_key = encode_domain_key(key, domain)
+        decoded_key, decoded_domain = parse_domain_key(domain_key)
+
+        self.assertEqual(key, decoded_key)
+        self.assertEqual(domain, decoded_domain)
+
+    def test_invalid_input(self):
+        """Verify proper error handling."""
+        with self.assertRaises(ValueError):
+            parse_domain_key('invalid-format')
+```
+
+### Test Organization
+- Keep tests in `test.py` (single test file)
+- Group related tests in TestCase classes
+- Use mixin pattern for reusable test logic (see `MyTestMixin`)
+- Order tests logically: basic → complex → edge cases → errors
 
 ## Security Considerations
 - Validate all inputs
