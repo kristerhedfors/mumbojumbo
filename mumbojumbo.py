@@ -553,8 +553,11 @@ __config_skel__ = '''\
 #   client_privkey={client_privkey}
 #   server_pubkey={server_pubkey}
 #
-# OR use single domain-key (combines server_pubkey + domain):
+# OR use single domain-key (combines server_pubkey_urlsafe + domain):
 #   domain_key={domain_key}
+#
+# To recreate domain-key manually:
+#   {server_pubkey_urlsafe}.xyxyx.xy
 #
 
 [main]
@@ -681,11 +684,15 @@ def main():
         server_pubkey_bytes = base64.b64decode(server_pubkey)
         domain_key = encode_domain_key(server_pubkey_bytes, default_domain)
 
+        # Also provide base64url version for manual domain-key creation
+        server_pubkey_urlsafe = base64.urlsafe_b64encode(server_pubkey_bytes).decode('ascii').rstrip('=')
+
         print(__config_skel__.format(
             client_privkey=client_privkey,
             client_pubkey=client_pubkey,
             server_privkey=server_privkey,
             server_pubkey=server_pubkey,
+            server_pubkey_urlsafe=server_pubkey_urlsafe,
             domain_key=domain_key
         ))
         sys.exit()
