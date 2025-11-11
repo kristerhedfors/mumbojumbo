@@ -44,22 +44,24 @@ def split_to_labels(data, max_len=DNS_LABEL_MAX_LEN):
 
 def create_fragment(packet_id, frag_index, frag_count, frag_data):
     """
-    Create fragment with 8-byte header.
+    Create fragment with 12-byte header.
 
-    Header format (big-endian u16 fields):
+    Header format (big-endian):
     - packet_id: u16 (0-65535)
-    - frag_index: u16 (0-based fragment index)
-    - frag_count: u16 (total fragments in packet)
-    - frag_data_len: u16 (length of fragment data)
+    - frag_index: u32 (0-based fragment index, up to 4.3 billion)
+    - frag_count: u32 (total fragments in packet, up to 4.3 billion)
+    - frag_data_len: u16 (length of fragment data, 0-65535)
     """
     if not (0 <= packet_id <= 0xFFFF):
         raise ValueError(f'packet_id out of range: {packet_id}')
     if not (0 <= frag_index < frag_count):
         raise ValueError(f'Invalid frag_index {frag_index} for frag_count {frag_count}')
+    if not (0 <= frag_count <= 0xFFFFFFFF):
+        raise ValueError(f'frag_count out of u32 range: {frag_count}')
     if len(frag_data) > MAX_FRAG_DATA_LEN:
         raise ValueError(f'Fragment data too large: {len(frag_data)} > {MAX_FRAG_DATA_LEN}')
 
-    header = struct.pack('!HHHH', packet_id, frag_index, frag_count, len(frag_data))
+    header = struct.pack('!HIIH', packet_id, frag_index, frag_count, len(frag_data))
     return header + frag_data
 
 
@@ -308,8 +310,8 @@ examples:
 
             # Calculate sizes for display
             frag_data_len = len(data[frag_index * MAX_FRAG_DATA_LEN:(frag_index + 1) * MAX_FRAG_DATA_LEN])
-            plaintext_len = 8 + frag_data_len
-            encrypted_len = plaintext_len + 48
+            plaintext_len = 12 + frag_data_len  # 12-byte header (u16 + u32 + u32 + u16)
+            encrypted_len = plaintext_len + 48  # SealedBox adds ~48 bytes overhead
 
             print(f"  Data length: {frag_data_len} bytes", file=sys.stderr)
             print(f"  Plaintext length: {plaintext_len} bytes", file=sys.stderr)
