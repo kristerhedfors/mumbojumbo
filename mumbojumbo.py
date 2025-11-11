@@ -382,8 +382,28 @@ class DnsQueryReader(object):
         import shutil
         tshark = shutil.which('tshark') or self.TSHARK
 
-        cmd = tshark
-        cmd += ' -li eth0 -T fields -e dns.qry.name -- udp port 53'
+        # Use the interface from config, or try to auto-detect
+        interface = self._iff
+        if not interface or interface == 'eth0':
+            # Try to find a suitable interface on macOS/Linux
+            import platform
+            if platform.system() == 'Darwin':  # macOS
+                # Common macOS interfaces
+                for iface in ['en0', 'en1', 'en2', 'lo0']:
+                    try:
+                        # Check if interface exists
+                        result = subprocess.run(['ifconfig', iface],
+                                              capture_output=True,
+                                              timeout=1)
+                        if result.returncode == 0:
+                            interface = iface
+                            break
+                    except:
+                        continue
+            else:
+                interface = interface or 'eth0'
+
+        cmd = f'{tshark} -li {interface} -T fields -e dns.qry.name -- udp port 53'
         self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE)
         name = p.stdout.readline().strip()
         if isinstance(name, bytes):
@@ -420,7 +440,7 @@ __config_skel__ = '''\
 
 [main]
 domain = .xyxyx.xy  # including leading dot
-network-interface = eth0
+network-interface = en0  # macOS: en0, en1; Linux: eth0, wlan0
 client-pubkey = {client_pubkey}
 server-privkey = {server_privkey}
 
