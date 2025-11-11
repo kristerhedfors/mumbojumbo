@@ -25,24 +25,28 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 ## HTML Client
 
 I've created `client.html` - a single-page web application that:
+- Takes a **domain-key** (one field, copy-paste from config)
 - Has a textarea for your message
-- Has a "Send via DNS" button
-- Encrypts and fragments the message
+- Encrypts and fragments the message using NaCl
 - Generates DNS queries (shows them in browser console)
 - Works entirely in the browser with no backend needed
 
 **To use:**
 ```bash
-# Open in your browser
+# 1. Generate config and get domain-key
+./venv/bin/python3 mumbojumbo.py --generate-conf | grep domain_key
+
+# 2. Open client in browser
 open client.html   # macOS
 xdg-open client.html   # Linux
 ```
 
 Then:
-1. Type your message in the textarea
-2. Click "Send via DNS"
-3. Open browser console (F12) to see the DNS queries that would be sent
-4. The first query is automatically copied to your clipboard
+1. Paste the `domain_key` value into the Domain-Key field
+2. Type your message in the textarea
+3. Click "Send via DNS"
+4. Open browser console (F12) to see the DNS queries that would be sent
+5. The first query is automatically copied to your clipboard
 
 ## Exact Commands to Run
 

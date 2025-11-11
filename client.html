@@ -54,26 +54,39 @@
             font-size: 14px;
         }
 
+        input[type="text"],
         textarea {
             width: 100%;
             padding: 12px;
             border: 2px solid #e0e0e0;
             border-radius: 6px;
-            font-family: inherit;
-            font-size: 14px;
-            resize: vertical;
-            min-height: 150px;
+            font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+            font-size: 13px;
             transition: border-color 0.3s;
         }
 
+        input[type="text"]:focus,
         textarea:focus {
             outline: none;
             border-color: #667eea;
         }
 
+        textarea {
+            resize: vertical;
+            min-height: 120px;
+            font-family: inherit;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: #999;
+            margin-top: 4px;
+        }
+
         .button-group {
             display: flex;
             gap: 10px;
+            margin-top: 20px;
         }
 
         button {
@@ -142,30 +155,6 @@
             border: 1px solid #ffcdd2;
         }
 
-        .config {
-            margin-top: 30px;
-            padding: 20px;
-            background: #f9f9f9;
-            border-radius: 6px;
-            border-left: 4px solid #667eea;
-        }
-
-        .config h3 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 16px;
-        }
-
-        .config-item {
-            margin-bottom: 8px;
-            font-size: 13px;
-            color: #666;
-        }
-
-        .config-item strong {
-            color: #333;
-        }
-
         .info-box {
             margin-top: 20px;
             padding: 15px;
@@ -180,6 +169,14 @@
             display: block;
             margin-bottom: 5px;
         }
+
+        .info-box code {
+            background: rgba(0,0,0,0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+        }
     </style>
 </head>
 <body>
@@ -188,46 +185,69 @@
         <p class="subtitle">Send encrypted messages over DNS queries</p>
 
         <div class="form-group">
-            <label for="message">Your Message:</label>
-            <textarea id="message" placeholder="Type your secret message here..."></textarea>
+            <label for="domainKey">Domain-Key:</label>
+            <input type="text" id="domainKey" placeholder="server-pubkey-base64url.domain.com">
+            <div class="hint">Copy from mumbojumbo.conf (e.g., RKoLeTKGMx9k6lvObpi1OQswh9nN9521pbb9cP7mz1k.xyxyx.xy)</div>
+        </div>
+
+        <div class="form-group">
+            <label for="message">Message:</label>
+            <textarea id="message" placeholder="Type your message here..."></textarea>
         </div>
 
         <div class="button-group">
             <button class="btn-send" id="sendBtn" onclick="sendMessage()">Send via DNS</button>
-            <button class="btn-clear" onclick="clearMessage()">Clear</button>
+            <button class="btn-clear" onclick="clearAll()">Clear</button>
         </div>
 
         <div class="status" id="status"></div>
 
-        <div class="config">
-            <h3>Configuration</h3>
-            <div class="config-item"><strong>Domain:</strong> <span id="domainDisplay">.xyxyx.xy</span></div>
-            <div class="config-item"><strong>Encryption:</strong> NaCl Public Key</div>
-            <div class="config-item"><strong>Fragment Size:</strong> 80 bytes</div>
-        </div>
-
         <div class="info-box">
-            <strong>⚠️ Important:</strong>
-            This is a demonstration client. In a real deployment, you would need to configure your DNS resolver
-            and have proper keys exchanged with the server. The JavaScript implementation below simulates
-            the DNS query generation that would normally happen at the network level.
+            <strong>📋 How to use:</strong>
+            1. Run <code>./venv/bin/python3 mumbojumbo.py --generate-conf</code> on the server<br>
+            2. Copy the <code>domain_key</code> value from the generated config<br>
+            3. Paste it into the Domain-Key field above<br>
+            4. Type your message and click "Send via DNS"<br>
+            5. Check browser console (F12) to see the generated DNS queries
         </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/tweetnacl-util@0.15.1/nacl-util.min.js"></script>
     <script>
-        // Configuration
-        const CONFIG = {
-            domain: '.xyxyx.xy',
-            maxFragDataLen: 80,
-            // These keys should match your server configuration
-            // In production, these would be securely managed
-            clientPrivateKey: null,
-            serverPublicKey: null
-        };
+        const MAX_FRAG_DATA_LEN = 80;
 
-        // Base32 encoding/decoding
+        // Base64url decoding
+        function base64urlDecode(str) {
+            // Add padding
+            const padding = '='.repeat((4 - (str.length % 4)) % 4);
+            const base64 = str.replace(/-/g, '+').replace(/_/g, '/') + padding;
+            return nacl.util.decodeBase64(base64);
+        }
+
+        // Parse domain-key format: <base64url-key>.<domain>
+        function parseDomainKey(domainKey) {
+            const dotIndex = domainKey.indexOf('.');
+            if (dotIndex === -1 || dotIndex === 0) {
+                throw new Error('Invalid domain-key format. Expected: <key>.<domain>');
+            }
+
+            const keyPart = domainKey.substring(0, dotIndex);
+            const domainPart = domainKey.substring(dotIndex); // includes leading dot
+
+            // Decode base64url key
+            const serverPubKey = base64urlDecode(keyPart);
+            if (serverPubKey.length !== 32) {
+                throw new Error(`Invalid key length: ${serverPubKey.length} bytes (expected 32)`);
+            }
+
+            return {
+                serverPubKey: serverPubKey,
+                domain: domainPart
+            };
+        }
+
+        // Base32 encoding
         function base32Encode(bytes) {
             const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
             let bits = 0;
@@ -310,34 +330,34 @@
             );
         }
 
-        // Encrypt fragment (simplified - in real use, would use NaCl Box)
+        // Encrypt fragment using NaCl Box
         function encryptFragment(plaintext, clientPrivKey, serverPubKey) {
-            // For demo purposes, we'll simulate encryption
-            // In production, use nacl.box() with proper key exchange
-            if (clientPrivKey && serverPubKey) {
-                const nonce = nacl.randomBytes(24);
-                const box = nacl.box(plaintext, nonce, serverPubKey, clientPrivKey);
-                return concatUint8Arrays(nonce, box);
-            }
-            // Demo mode: just add some random bytes as "encryption"
             const nonce = nacl.randomBytes(24);
-            return concatUint8Arrays(nonce, plaintext);
+            const box = nacl.box(plaintext, nonce, serverPubKey, clientPrivKey);
+            return concatUint8Arrays(nonce, box);
         }
 
         // Create DNS query name from encrypted fragment
-        function createDnsName(encryptedData) {
+        function createDnsName(encryptedData, domain) {
             const b32encoded = base32Encode(encryptedData);
             const parts = splitToLength(b32encoded, 63);
-            return parts.join('.') + CONFIG.domain;
+            return parts.join('.') + domain;
         }
 
         // Send message via DNS
         async function sendMessage() {
+            const domainKeyEl = document.getElementById('domainKey');
             const messageEl = document.getElementById('message');
             const statusEl = document.getElementById('status');
             const sendBtn = document.getElementById('sendBtn');
 
+            const domainKeyStr = domainKeyEl.value.trim();
             const message = messageEl.value.trim();
+
+            if (!domainKeyStr) {
+                showStatus('Please enter a domain-key.', 'error');
+                return;
+            }
 
             if (!message) {
                 showStatus('Please enter a message to send.', 'error');
@@ -345,18 +365,29 @@
             }
 
             sendBtn.disabled = true;
-            showStatus('Fragmenting and encrypting message...', 'info');
+            showStatus('Parsing domain-key...', 'info');
 
             try {
+                // Parse domain-key
+                const { serverPubKey, domain } = parseDomainKey(domainKeyStr);
+
+                showStatus(`✓ Parsed domain: ${domain}`, 'info');
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                // Generate client keypair
+                showStatus('Generating client keypair...', 'info');
+                const clientKeyPair = nacl.box.keyPair();
+                await new Promise(resolve => setTimeout(resolve, 300));
+
                 // Convert message to bytes
                 const messageBytes = nacl.util.decodeUTF8(message);
 
                 // Fragment the message
-                const fragments = splitToLength(messageBytes, CONFIG.maxFragDataLen);
+                const fragments = splitToLength(messageBytes, MAX_FRAG_DATA_LEN);
                 const packetId = genPacketId();
                 const fragCount = fragments.length;
 
-                showStatus(`Creating ${fragCount} DNS queries...`, 'info');
+                showStatus(`Creating ${fragCount} encrypted DNS queries...`, 'info');
 
                 // Create DNS queries for each fragment
                 const dnsNames = [];
@@ -371,26 +402,32 @@
                     // Encrypt fragment
                     const encrypted = encryptFragment(
                         fragment,
-                        CONFIG.clientPrivateKey,
-                        CONFIG.serverPublicKey
+                        clientKeyPair.secretKey,
+                        serverPubKey
                     );
 
                     // Create DNS name
-                    const dnsName = createDnsName(encrypted);
+                    const dnsName = createDnsName(encrypted, domain);
                     dnsNames.push(dnsName);
                 }
 
                 // Display the DNS queries that would be sent
+                console.log('='.repeat(80));
                 console.log('DNS Queries to send:');
+                console.log('='.repeat(80));
                 dnsNames.forEach((name, i) => {
                     console.log(`${i + 1}. ${name}`);
                 });
+                console.log('='.repeat(80));
+                console.log(`Total queries: ${fragCount}`);
+                console.log(`Message size: ${messageBytes.length} bytes`);
+                console.log(`Domain: ${domain}`);
+                console.log('='.repeat(80));
 
                 // In a real implementation, these DNS queries would be sent
                 // For demonstration, we'll show them in the console and status
                 showStatus(
-                    `✓ Generated ${fragCount} DNS queries! Check browser console for details. ` +
-                    `In production, these would be sent to your DNS resolver.`,
+                    `✓ Success! Generated ${fragCount} encrypted DNS queries. Check browser console (F12) for details.`,
                     'success'
                 );
 
@@ -413,7 +450,8 @@
             }
         }
 
-        function clearMessage() {
+        function clearAll() {
+            document.getElementById('domainKey').value = '';
             document.getElementById('message').value = '';
             document.getElementById('status').style.display = 'none';
         }
@@ -424,14 +462,6 @@
             statusEl.className = 'status ' + type;
             statusEl.style.display = 'block';
         }
-
-        // Update domain display
-        document.getElementById('domainDisplay').textContent = CONFIG.domain;
-
-        // Initialize message
-        document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('message').value = 'Hello from Mumbojumbo DNS client!';
-        });
     </script>
 </body>
 </html>
