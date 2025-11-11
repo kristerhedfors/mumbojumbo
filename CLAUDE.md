@@ -19,43 +19,6 @@
 - **Robust** - Handle edge cases and failures gracefully
 - **Full test coverage** - All functionality must be tested
 
-## Domain-Key Variable
-
-The project uses a **domain-key** concept for maximum simplicity in client configuration:
-
-### Format
-```
-<server-pubkey-base64url>.<configured-domain>
-```
-
-### Purpose
-This single string contains everything a client needs:
-- **Server public key** (encoded as base64url, 43 characters)
-- **Domain destination** (the actual domain to connect to)
-
-### Example
-```
-RKoLeTKGMx9k6lvObpi1OQswh9nN9521pbb9cP7mz1k.example.com
-```
-
-Where:
-- `RKoLeTKGMx9k6lvObpi1OQswh9nN9521pbb9cP7mz1k` = base64url-encoded 32-byte NaCl server public key
-- `example.com` = configured domain from server config
-
-### Implementation Details
-- Uses `base64.urlsafe_b64encode` for DNS-safe encoding
-- 32-byte NaCl public key → 43 characters (without padding)
-- Encoding removes leading dot from domain for cleaner format
-- Parsing restores leading dot (Mumbojumbo convention)
-- Available functions: `encode_domain_key()` and `parse_domain_key()`
-- Class method: `DnsPublicFragment.from_domain_key(domain_key, private_key)`
-
-### Benefits
-- **One copy-paste configuration** - Client only needs this single string
-- **Embedded authentication** - Public key is part of the address
-- **No separate key distribution** - Key and domain are unified
-- **Simple UX** - Users can't misconfigure domain vs key mismatch
-
 ## Development Workflow
 
 ### Before Making Changes
@@ -93,10 +56,10 @@ Where:
 ./venv/bin/python3 test.py -v
 
 # Run specific test class
-./venv/bin/python3 test.py Test_DomainKey
+./venv/bin/python3 test.py Test_Fragment
 
 # Run specific test method
-./venv/bin/python3 test.py Test_DomainKey.test_encode_decode_round_trip
+./venv/bin/python3 test.py Test_Fragment.test_basic
 ```
 
 ### Test Structure
@@ -104,7 +67,6 @@ Tests are organized into unittest.TestCase classes:
 - `Test_Fragment` - Basic fragment serialization/deserialization
 - `Test_PublicFragment` - Encrypted fragment operations
 - `Test_PacketEngine` - Packet assembly and fragment handling
-- `Test_DomainKey` - Domain-key encoding, parsing, and integration
 
 ### Test Patterns
 ```python
@@ -148,25 +110,23 @@ class Test_MyFeature(unittest.TestCase):
 10. **Mock Externals**: Mock network, filesystem, and external dependencies
 
 ### Example: Testing a New Feature
-When adding a new feature like domain-key encoding:
+When adding a new feature:
 
 ```python
-class Test_DomainKey(unittest.TestCase):
+class Test_MyFeature(unittest.TestCase):
     def test_encode_decode_round_trip(self):
         """Verify encoding and decoding are inverses."""
-        key = nacl.public.PrivateKey.generate().public_key.encode()
-        domain = '.example.com'
+        data = b'test data'
 
-        domain_key = encode_domain_key(key, domain)
-        decoded_key, decoded_domain = parse_domain_key(domain_key)
+        encoded = encode_function(data)
+        decoded = decode_function(encoded)
 
-        self.assertEqual(key, decoded_key)
-        self.assertEqual(domain, decoded_domain)
+        self.assertEqual(data, decoded)
 
     def test_invalid_input(self):
         """Verify proper error handling."""
         with self.assertRaises(ValueError):
-            parse_domain_key('invalid-format')
+            decode_function('invalid-format')
 ```
 
 ### Test Organization
@@ -187,4 +147,3 @@ class Test_DomainKey(unittest.TestCase):
 - Keep it in one file
 - Keep dependencies minimal
 - Keep tests comprehensive
-- Keep the domain-key concept central to UX

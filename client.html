@@ -185,9 +185,15 @@
         <p class="subtitle">Send encrypted messages over DNS queries</p>
 
         <div class="form-group">
-            <label for="domainKey">Domain-Key:</label>
-            <input type="text" id="domainKey" placeholder="server-pubkey-base64url.domain.com">
-            <div class="hint">Copy from mumbojumbo.conf (e.g., RKoLeTKGMx9k6lvObpi1OQswh9nN9521pbb9cP7mz1k.xyxyx.xy)</div>
+            <label for="serverPubKey">Server Public Key (base64):</label>
+            <input type="text" id="serverPubKey" placeholder="base64-encoded server public key">
+            <div class="hint">Copy server_pubkey from server config (44 characters, base64-encoded)</div>
+        </div>
+
+        <div class="form-group">
+            <label for="domain">Domain Suffix:</label>
+            <input type="text" id="domain" placeholder=".example.com">
+            <div class="hint">Domain with leading dot (e.g., .xyxyx.xy)</div>
         </div>
 
         <div class="form-group">
@@ -205,8 +211,8 @@
         <div class="info-box">
             <strong>📋 How to use:</strong>
             1. Run <code>./venv/bin/python3 mumbojumbo.py --generate-conf</code> on the server<br>
-            2. Copy the <code>domain_key</code> value from the generated config<br>
-            3. Paste it into the Domain-Key field above<br>
+            2. Copy the <code>server_pubkey</code> and <code>domain</code> values from the generated config<br>
+            3. Paste them into the fields above<br>
             4. Type your message and click "Send via DNS"<br>
             5. Check browser console (F12) to see the generated DNS queries
         </div>
@@ -217,34 +223,17 @@
     <script>
         const MAX_FRAG_DATA_LEN = 80;
 
-        // Base64url decoding
-        function base64urlDecode(str) {
-            // Add padding
-            const padding = '='.repeat((4 - (str.length % 4)) % 4);
-            const base64 = str.replace(/-/g, '+').replace(/_/g, '/') + padding;
-            return nacl.util.decodeBase64(base64);
-        }
-
-        // Parse domain-key format: <base64url-key>.<domain>
-        function parseDomainKey(domainKey) {
-            const dotIndex = domainKey.indexOf('.');
-            if (dotIndex === -1 || dotIndex === 0) {
-                throw new Error('Invalid domain-key format. Expected: <key>.<domain>');
+        // Parse and validate server public key
+        function parseServerPubKey(base64Key) {
+            try {
+                const decoded = nacl.util.decodeBase64(base64Key);
+                if (decoded.length !== 32) {
+                    throw new Error(`Invalid key length: ${decoded.length} bytes (expected 32)`);
+                }
+                return decoded;
+            } catch (e) {
+                throw new Error(`Invalid base64 encoding: ${e.message}`);
             }
-
-            const keyPart = domainKey.substring(0, dotIndex);
-            const domainPart = domainKey.substring(dotIndex); // includes leading dot
-
-            // Decode base64url key
-            const serverPubKey = base64urlDecode(keyPart);
-            if (serverPubKey.length !== 32) {
-                throw new Error(`Invalid key length: ${serverPubKey.length} bytes (expected 32)`);
-            }
-
-            return {
-                serverPubKey: serverPubKey,
-                domain: domainPart
-            };
         }
 
         // Base32 encoding
@@ -346,16 +335,23 @@
 
         // Send message via DNS
         async function sendMessage() {
-            const domainKeyEl = document.getElementById('domainKey');
+            const serverPubKeyEl = document.getElementById('serverPubKey');
+            const domainEl = document.getElementById('domain');
             const messageEl = document.getElementById('message');
             const statusEl = document.getElementById('status');
             const sendBtn = document.getElementById('sendBtn');
 
-            const domainKeyStr = domainKeyEl.value.trim();
+            const serverPubKeyStr = serverPubKeyEl.value.trim();
+            const domain = domainEl.value.trim();
             const message = messageEl.value.trim();
 
-            if (!domainKeyStr) {
-                showStatus('Please enter a domain-key.', 'error');
+            if (!serverPubKeyStr) {
+                showStatus('Please enter the server public key.', 'error');
+                return;
+            }
+
+            if (!domain) {
+                showStatus('Please enter the domain suffix.', 'error');
                 return;
             }
 
@@ -365,11 +361,11 @@
             }
 
             sendBtn.disabled = true;
-            showStatus('Parsing domain-key...', 'info');
+            showStatus('Parsing server public key...', 'info');
 
             try {
-                // Parse domain-key
-                const { serverPubKey, domain } = parseDomainKey(domainKeyStr);
+                // Parse server public key
+                const serverPubKey = parseServerPubKey(serverPubKeyStr);
 
                 showStatus(`✓ Parsed domain: ${domain}`, 'info');
                 await new Promise(resolve => setTimeout(resolve, 300));
@@ -451,7 +447,8 @@
         }
 
         function clearAll() {
-            document.getElementById('domainKey').value = '';
+            document.getElementById('serverPubKey').value = '';
+            document.getElementById('domain').value = '';
             document.getElementById('message').value = '';
             document.getElementById('status').style.display = 'none';
         }

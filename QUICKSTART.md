@@ -25,7 +25,7 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 ## HTML Client
 
 I've created `client.html` - a single-page web application that:
-- Takes a **domain-key** (one field, copy-paste from config)
+- Takes server public key and domain suffix as separate inputs
 - Has a textarea for your message
 - Encrypts and fragments the message using NaCl
 - Generates DNS queries (shows them in browser console)
@@ -33,8 +33,8 @@ I've created `client.html` - a single-page web application that:
 
 **To use:**
 ```bash
-# 1. Generate config and get domain-key
-./venv/bin/python3 mumbojumbo.py --generate-conf | grep domain_key
+# 1. Generate config
+./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
 
 # 2. Open client in browser
 open client.html   # macOS
@@ -42,11 +42,12 @@ xdg-open client.html   # Linux
 ```
 
 Then:
-1. Paste the `domain_key` value into the Domain-Key field
-2. Type your message in the textarea
-3. Click "Send via DNS"
-4. Open browser console (F12) to see the DNS queries that would be sent
-5. The first query is automatically copied to your clipboard
+1. Copy the `server_pubkey` value from the config comments and paste into "Server Public Key" field
+2. Copy the `domain` value (e.g., `.xyxyx.xy`) and paste into "Domain Suffix" field
+3. Type your message in the textarea
+4. Click "Send via DNS"
+5. Open browser console (F12) to see the DNS queries that would be sent
+6. The first query is automatically copied to your clipboard
 
 ## Exact Commands to Run
 

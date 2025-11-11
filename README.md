@@ -30,21 +30,16 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 
 ## Configuration
 
-The generated `mumbojumbo.conf` includes a **domain-key** for easy client setup:
+The generated `mumbojumbo.conf` includes the configuration needed for both server and client:
 
 ```
 #
 # !! remember to `chmod 0600` this file !!
 #
 # for use on client-side:
-#   client_privkey=yCqIMzFFEvtC95gNXjvmvVumUIJDoia7Yq1UzCf/sGs=
-#   server_pubkey=sdcn50krReeK+tcKyodfWhUEkv5/HEu58e1LsfrXTms=
-#
-# OR use single domain-key (combines server_pubkey_urlsafe + domain):
-#   domain_key=sdcn50krReeK-tcKyodfWhUEkv5_HEu58e1LsfrXTms.xyxyx.xy
-#
-# To recreate domain-key manually:
-#   sdcn50krReeK-tcKyodfWhUEkv5_HEu58e1LsfrXTms.xyxyx.xy
+#   domain = .xyxyx.xy
+#   client_privkey = yCqIMzFFEvtC95gNXjvmvVumUIJDoia7Yq1UzCf/sGs=
+#   server_pubkey = sdcn50krReeK+tcKyodfWhUEkv5/HEu58e1LsfrXTms=
 #
 
 [main]
@@ -63,7 +58,7 @@ from = user@gmail.com
 to = recipient@example.com
 ```
 
-**For clients:** Just copy the `domain_key` value - it contains both the server public key and domain!
+**For clients:** Copy the `domain`, `client_privkey`, and `server_pubkey` values from the config comments.
 
 ## Requirements
 
