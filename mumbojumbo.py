@@ -120,7 +120,7 @@ class BaseFragment(Bindable):
 class Fragment(BaseFragment):
     '''
         Packet format:
-            u32 packet_id
+            u16 packet_id (changed from u32)
             u16 frag_index
             u16 frag_count
             u16 len(frag_data)
@@ -152,7 +152,7 @@ class Fragment(BaseFragment):
 
     def serialize(self):
         ser = b''
-        ser += self._htonl_pack(self._packet_id)
+        ser += self._htons_pack(self._packet_id)  # Changed from _htonl_pack (u32) to _htons_pack (u16)
         ser += self._htons_pack(self._frag_index)
         ser += self._htons_pack(self._frag_count)
         ser += self._htons_pack(len(self._frag_data))
@@ -160,11 +160,11 @@ class Fragment(BaseFragment):
         return ser
 
     def deserialize(self, raw):
-        packet_id = self._unpack_ntohl(raw[:4])
-        frag_index = self._unpack_ntohs(raw[4:6])
-        frag_count = self._unpack_ntohs(raw[6:8])
-        frag_data_len = self._unpack_ntohs(raw[8:10])
-        frag_data = raw[10:]
+        packet_id = self._unpack_ntohs(raw[:2])  # Changed from _unpack_ntohl(raw[:4]) to read u16
+        frag_index = self._unpack_ntohs(raw[2:4])  # Shifted from 4:6 to 2:4
+        frag_count = self._unpack_ntohs(raw[4:6])  # Shifted from 6:8 to 4:6
+        frag_data_len = self._unpack_ntohs(raw[6:8])  # Shifted from 8:10 to 6:8
+        frag_data = raw[8:]  # Shifted from 10: to 8:
         try:
             assert frag_data_len == len(frag_data)
         except:
@@ -203,14 +203,26 @@ class PublicFragment(Fragment):
 
     def serialize(self):
         plaintext = super(PublicFragment, self).serialize()
-        nonce = nacl.public.random(24)
-        ciphertext = self._box.encrypt(plaintext=plaintext, nonce=nonce)
-        return ciphertext
+        # Use 4-byte nonce, pad to 24 bytes for NaCl compatibility
+        nonce_short = nacl.public.random(4)
+        nonce_padded = nonce_short + (b'\x00' * 20)
+        ciphertext = self._box.encrypt(plaintext=plaintext, nonce=nonce_padded)
+        # Return only the 4-byte nonce + encrypted data (strip padding from nonce)
+        # NaCl prepends the full 24-byte nonce, so we need to replace it
+        # ciphertext format: nonce(24) + encrypted_data
+        encrypted_only = ciphertext[24:]  # Skip the 24-byte nonce
+        return nonce_short + encrypted_only
 
     def deserialize(self, ciphertext):
         plaintext = b''
         try:
-            plaintext = self._box.decrypt(ciphertext=ciphertext)
+            # Extract 4-byte nonce and pad to 24 bytes for NaCl
+            nonce_short = ciphertext[:4]
+            nonce_padded = nonce_short + (b'\x00' * 20)
+            encrypted_data = ciphertext[4:]
+            # Reconstruct full NaCl ciphertext format: nonce(24) + encrypted_data
+            full_ciphertext = nonce_padded + encrypted_data
+            plaintext = self._box.decrypt(ciphertext=full_ciphertext)
         except:
             logger.debug('decrypt exception:' + traceback.format_exc())
             raise
@@ -290,7 +302,9 @@ class PacketEngine(object):
 
     @classmethod
     def gen_packet_id(cls):
-        return struct.unpack('I', nacl.public.random(4))[0]
+        # Sequential packet IDs are now managed per-instance
+        # This method kept for compatibility but should use instance counter
+        return 0
 
     def __init__(self, frag_cls=None, max_frag_data_len=MAX_FRAG_DATA_LEN):
         self._frag_cls = frag_cls
@@ -298,6 +312,8 @@ class PacketEngine(object):
         self._packet_assembly = {}
         self._packet_assembly_counter = {}
         self._packet_outqueue = queue.Queue()
+        # Sequential packet ID counter (u16: 0-65535, wraps around)
+        self._next_packet_id = 0
 
     @property
     def packet_outqueue(self):
@@ -308,7 +324,9 @@ class PacketEngine(object):
             Generator yielding zero or more fragments from data.
         '''
         logger.debug('to_wire() len(packet_data)==' + str(len(packet_data)))
-        packet_id = self.__class__.gen_packet_id()
+        # Use sequential packet ID and increment counter
+        packet_id = self._next_packet_id
+        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFF  # Wrap at 65535 (u16)
         frag_data_lst = _split2len(packet_data, self._max_frag_data_len)
         frag_count = len(frag_data_lst)
         frag_index = 0
