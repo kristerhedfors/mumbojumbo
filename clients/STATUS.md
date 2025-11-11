@@ -88,13 +88,13 @@ Building clean, minimal reference implementations of mumbojumbo clients across 5
 **Location:** `clients/go/`
 
 ### Implementation
-- **File:** `mumbojumbo-client.go` (410 lines, modular, clean)
+- **File:** `mumbojumbo-client.go` (~430 lines, modular, clean)
 - **Struct:** `MumbojumboClient` with internal packet ID management
 - **API:**
   - `SendData(data, sendQueries)` → `[]QueryResult`
   - `GenerateQueries(data)` → `[]string`
 - **CLI:** `-k`, `-d`, `-f`, `-v` flags
-- **Dependencies:** `golang.org/x/crypto`
+- **Dependencies:** `golang.org/x/crypto` (nacl/box + blake2b)
 - **Protocol:** 12-byte header (u16 + u32 + u32 + u16)
 
 ### Testing
@@ -116,10 +116,17 @@ Building clean, minimal reference implementations of mumbojumbo clients across 5
 - ✅ Clean API (packet ID hidden from users)
 - ✅ Auto-incrementing packet IDs
 - ✅ Domain auto-fix (prepends dot if missing)
-- ✅ SealedBox encryption implementation
+- ✅ **libsodium-compatible SealedBox:** Uses BLAKE2b-derived nonce (48-byte overhead)
+- ✅ **Full Python/Node.js compatibility:** Compatible with all other client implementations
 - ✅ Verbose mode for debugging
 - ✅ Comprehensive error handling
 - ✅ Static binary compilation
+
+### Encryption Format (libsodium crypto_box_seal compatible)
+- **Format:** `ephemeral_pubkey(32) || box(plaintext)` with nonce = `BLAKE2b-192(ephemeral_pubkey || recipient_pubkey)`
+- **Overhead:** 48 bytes (32-byte ephemeral pubkey + 16-byte auth tag)
+- **Implementation:** Custom SealedBox implementation matching libsodium's crypto_box_seal
+- **Rationale:** While blake2b is required for protocol compatibility, it's only used for nonce derivation (not for bulk data)
 
 ---
 

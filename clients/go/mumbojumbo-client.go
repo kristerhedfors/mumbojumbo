@@ -22,7 +22,7 @@ const (
 	MaxFragDataLen  = 80
 	DNSLabelMaxLen  = 63
 	HeaderSize      = 12
-	SealedBoxOH     = 48 // SealedBox overhead: 32-byte ephemeral pubkey + 16-byte tag
+	SealedBoxOH     = 48 // SealedBox overhead: 32-byte ephemeral pubkey + 16-byte tag (libsodium compatible)
 	PublicKeySize   = 32
 	PrivateKeySize  = 32
 )
@@ -143,7 +143,9 @@ func CreateFragment(packetID uint16, fragIndex, fragCount uint32, fragData []byt
 	return append(header, fragData...), nil
 }
 
-// EncryptSealedBox encrypts plaintext using NaCl SealedBox
+// EncryptSealedBox encrypts plaintext using libsodium-compatible SealedBox
+// Format: ephemeral_pubkey(32) || box(plaintext) with nonce derived from BLAKE2b
+// This matches libsodium's crypto_box_seal implementation
 func EncryptSealedBox(plaintext []byte, recipientPubkey *[32]byte) ([]byte, error) {
 	// Generate ephemeral keypair
 	ephemeralPub, ephemeralPriv, err := box.GenerateKey(rand.Reader)
@@ -161,7 +163,7 @@ func EncryptSealedBox(plaintext []byte, recipientPubkey *[32]byte) ([]byte, erro
 	// Encrypt using box.Seal with derived nonce
 	encrypted := box.Seal(nil, plaintext, nonce, recipientPubkey, ephemeralPriv)
 
-	// Prepend ephemeral public key
+	// Prepend ephemeral public key (libsodium SealedBox format)
 	result := make([]byte, 0, 32+len(encrypted))
 	result = append(result, ephemeralPub[:]...)
 	result = append(result, encrypted...)
@@ -169,7 +171,7 @@ func EncryptSealedBox(plaintext []byte, recipientPubkey *[32]byte) ([]byte, erro
 	return result, nil
 }
 
-// deriveNonce derives a nonce from two public keys using BLAKE2b
+// deriveNonce derives a nonce from two public keys using BLAKE2b-192
 // This matches libsodium's crypto_box_seal nonce derivation
 func deriveNonce(ephemeralPub, recipientPub *[32]byte) (*[24]byte, error) {
 	// Concatenate ephemeral_pubkey || recipient_pubkey
@@ -177,7 +179,7 @@ func deriveNonce(ephemeralPub, recipientPub *[32]byte) (*[24]byte, error) {
 	copy(combined[0:32], ephemeralPub[:])
 	copy(combined[32:64], recipientPub[:])
 
-	// Hash with BLAKE2b-24 (24 bytes = 192 bits)
+	// Hash with BLAKE2b-192 (24 bytes = 192 bits)
 	hash, err := blake2b.New(24, nil)
 	if err != nil {
 		return nil, err

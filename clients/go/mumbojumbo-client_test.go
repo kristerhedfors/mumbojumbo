@@ -17,12 +17,14 @@ var (
 )
 
 // Helper: Decrypt SealedBox
+// Format: ephemeral_pubkey(32) || box(plaintext) with BLAKE2b-derived nonce
+// This matches libsodium's crypto_box_seal_open
 func decryptSealedBox(ciphertext []byte, recipientPub, recipientPriv *[32]byte) ([]byte, error) {
 	if len(ciphertext) < 48 {
 		return nil, errors.New("ciphertext too short")
 	}
 
-	// Extract ephemeral public key
+	// Extract ephemeral public key (first 32 bytes)
 	var ephemeralPub [32]byte
 	copy(ephemeralPub[:], ciphertext[:32])
 
@@ -32,7 +34,7 @@ func decryptSealedBox(ciphertext []byte, recipientPub, recipientPriv *[32]byte) 
 		return nil, err
 	}
 
-	// Decrypt
+	// Decrypt the rest (starting at byte 32)
 	plaintext, ok := box.Open(nil, ciphertext[32:], nonce, &ephemeralPub, recipientPriv)
 	if !ok {
 		return nil, errors.New("decryption failed")
