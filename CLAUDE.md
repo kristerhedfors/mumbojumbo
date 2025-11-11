@@ -12,12 +12,23 @@
 - Reduces portability
 - Must be strongly justified
 
+### NO Backwards Compatibility
+**We do NOT maintain backwards compatibility. EVER.**
+- Always use the latest Python features and idioms
+- Always use the purest, most modern implementation approach
+- Remove deprecated code immediately - no compatibility shims
+- Break interfaces without hesitation if it improves code quality
+- Upgrade dependencies aggressively to latest versions
+- Old code/configs/clients must be updated - we don't support legacy versions
+- This is a cutting-edge project, not enterprise software
+
 ### Code Philosophy
 - **Do NOT overgeneralize** - Keep implementations specific and practical
 - **Compact and effective** - Every line should have clear purpose
 - **Fool-proof** - Design for reliability and error prevention
 - **Robust** - Handle edge cases and failures gracefully
 - **Full test coverage** - All functionality must be tested
+- **Latest and greatest** - Use modern Python features, no legacy support
 
 ## Development Workflow
 

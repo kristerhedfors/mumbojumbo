@@ -9,7 +9,7 @@ Mumbojumbo is a DNS tunnel that sends encrypted data via DNS queries. It uses Na
 ### Terminal 1 - Server
 ```bash
 # Generate config (do this once)
-./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
+./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 chmod 600 mumbojumbo.conf
 
 # Start server (requires sudo for packet capture)
@@ -34,7 +34,7 @@ I've created `client.html` - a single-page web application that:
 **To use:**
 ```bash
 # 1. Generate config
-./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
+./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 
 # 2. Open client in browser
 open client.html   # macOS
@@ -60,7 +60,7 @@ python3 -m venv venv
 ./venv/bin/pip install pynacl
 
 # 3. Generate configuration with keys
-./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
+./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 
 # 4. Secure the config file
 chmod 600 mumbojumbo.conf
@@ -260,7 +260,7 @@ This is a **demonstration implementation** with known vulnerabilities:
 ./venv/bin/python3 mumbojumbo.py --gen-keys
 
 # Generate full config skeleton
-./venv/bin/python3 mumbojumbo.py --generate-conf
+./venv/bin/python3 mumbojumbo.py --gen-conf
 
 # Test SMTP settings
 ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf --test-smtp
@@ -284,7 +284,7 @@ python3 setup_and_run.py
 # Complete workflow:
 
 # 1. Setup (one time)
-./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
+./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 chmod 600 mumbojumbo.conf
 
 # 2. Run server

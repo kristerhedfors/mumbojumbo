@@ -455,6 +455,10 @@ __config_skel__ = '''\
 #   domain = .asd.qwe
 #   mumbojumbo_pubkey = {mumbojumbo_pubkey}
 #
+# Keys are in hex format with mj_priv_ or mj_pub_ prefix for easy identification.
+# Format: mj_priv_<64_hex_chars> for private keys
+#         mj_pub_<64_hex_chars> for public keys
+#
 
 [main]
 # Domain including leading dot
@@ -481,7 +485,7 @@ def option_parser():
                  help='use this config file')
     p.add_option('', '--gen-keys', action='store_true',
                  help='generate and print two NaCL key pairs')
-    p.add_option('', '--generate-conf', action='store_true',
+    p.add_option('', '--gen-conf', action='store_true',
                  help='generate config skeleton file (mumbojumbo.conf)')
     p.add_option('', '--test-smtp', action='store_true',
                  help='send one mail to test SMTP config')
@@ -490,7 +494,59 @@ def option_parser():
     return p
 
 
+def encode_key_hex(key_bytes, key_type='pub'):
+    '''
+        Encode NaCL key bytes to hex format with mj_priv_ or mj_pub_ prefix.
+        Format: mj_priv_<hex_encoded_key> or mj_pub_<hex_encoded_key>
+
+        Args:
+            key_bytes: Raw key bytes to encode
+            key_type: Either 'priv' for private keys or 'pub' for public keys
+
+        Returns:
+            Hex-encoded key with appropriate prefix
+    '''
+    if key_type not in ('priv', 'pub'):
+        raise ValueError('key_type must be "priv" or "pub"')
+    hex_key = key_bytes.hex()
+    return f'mj_{key_type}_{hex_key}'
+
+
+def decode_key_hex(key_str):
+    '''
+        Decode hex-formatted key with mj_priv_ or mj_pub_ prefix to bytes.
+        Accepts: mj_priv_<hex_encoded_key> or mj_pub_<hex_encoded_key>
+        Returns: raw key bytes
+    '''
+    if key_str.startswith('mj_priv_'):
+        hex_key = key_str[8:]  # Remove 'mj_priv_' prefix
+    elif key_str.startswith('mj_pub_'):
+        hex_key = key_str[7:]  # Remove 'mj_pub_' prefix
+    else:
+        raise ValueError('Key must start with "mj_priv_" or "mj_pub_" prefix')
+
+    try:
+        return bytes.fromhex(hex_key)
+    except ValueError as e:
+        raise ValueError(f'Invalid hex key format: {e}')
+
+
+def get_nacl_keypair_hex():
+    '''
+        Generate NaCL keypair and return as hex strings with mj_priv_ and mj_pub_ prefixes.
+        Returns: (private_key_string, public_key_string)
+    '''
+    private_key = nacl.public.PrivateKey.generate()
+    priv = encode_key_hex(private_key.encode(), key_type='priv')
+    pub = encode_key_hex(private_key.public_key.encode(), key_type='pub')
+    return (priv, pub)
+
+
 def get_nacl_keypair_base64():
+    '''
+        DEPRECATED: Use get_nacl_keypair_hex() instead.
+        Generate NaCL keypair and return as base64 strings.
+    '''
     private_key = nacl.public.PrivateKey.generate()
     priv = base64.b64encode(private_key.encode()).decode('ascii').strip()
     pub = base64.b64encode(private_key.public_key.encode()).decode('ascii').strip()
@@ -670,8 +726,8 @@ def main():
     # Setup logging: file always, console only if --verbose
     setup_logging(verbose=opt.verbose)
 
-    if opt.generate_conf:
-        (mumbojumbo_privkey, mumbojumbo_pubkey) = get_nacl_keypair_base64()
+    if opt.gen_conf:
+        (mumbojumbo_privkey, mumbojumbo_pubkey) = get_nacl_keypair_hex()
 
         # Find available filename: mumbojumbo.conf, mumbojumbo.conf.1, etc.
         filename = 'mumbojumbo.conf'
@@ -692,7 +748,7 @@ def main():
         sys.exit()
 
     if opt.gen_keys:
-        (priv, pub) = get_nacl_keypair_base64()
+        (priv, pub) = get_nacl_keypair_hex()
         print(priv)
         print(pub)
         sys.exit()
@@ -701,7 +757,7 @@ def main():
     config_file = opt.config or 'mumbojumbo.conf'
 
     if not os.path.exists(config_file):
-        print(f'Error: Config file "{config_file}" not found; you can generate one using --generate-conf.')
+        print(f'Error: Config file "{config_file}" not found; you can generate one using --gen-conf.')
         sys.exit(1)
 
     config = configparser.ConfigParser(allow_no_value=True)
@@ -747,15 +803,17 @@ def main():
             sys.exit(1)
 
     #
-    # parse NaCL keys
+    # parse NaCL keys (hex format with mj_priv_ or mj_pub_ prefix)
     #
-    mumbojumbo_privkey = nacl.public.PrivateKey(
-        base64.b64decode(config.get('main', 'mumbojumbo-privkey'))
-    )
+    privkey_str = config.get('main', 'mumbojumbo-privkey')
+    pubkey_str = config.get('main', 'mumbojumbo-pubkey')
 
-    mumbojumbo_pubkey = nacl.public.PublicKey(
-        base64.b64decode(config.get('main', 'mumbojumbo-pubkey'))
-    )
+    # Decode keys
+    privkey_bytes = decode_key_hex(privkey_str)
+    mumbojumbo_privkey = nacl.public.PrivateKey(privkey_bytes)
+
+    pubkey_bytes = decode_key_hex(pubkey_str)
+    mumbojumbo_pubkey = nacl.public.PublicKey(pubkey_bytes)
     domain = config.get('main', 'domain')
     network_interface = config.get('main', 'network-interface')
 

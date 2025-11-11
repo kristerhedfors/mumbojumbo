@@ -173,7 +173,7 @@ Mumbojumbo uses NaCl (libsodium) public-key anonymous encryption via `nacl.publi
 │                                                               │
 │  Server Side:                                                 │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │ $ ./mumbojumbo.py --generate-conf > mumbojumbo.conf   │ │
+│  │ $ ./mumbojumbo.py --gen-conf > mumbojumbo.conf   │ │
 │  │                                                          │ │
 │  │ Generates:                                               │ │
 │  │   • Mumbojumbo Private Key (32 bytes)                   │ │
@@ -638,7 +638,7 @@ to = recipient@example.com
 
 ```bash
 # Generate configuration with fresh keys
-$ ./mumbojumbo.py --generate-conf > mumbojumbo.conf
+$ ./mumbojumbo.py --gen-conf > mumbojumbo.conf
 $ chmod 600 mumbojumbo.conf
 
 # The config file contains comments showing which keys to give to client:
@@ -790,7 +790,7 @@ Compare to direct TCP: ~1-100 MB/s (1000-100000× faster)
 
 ```bash
 # 1. Generate config
-$ ./mumbojumbo.py --generate-conf > mumbojumbo.conf
+$ ./mumbojumbo.py --gen-conf > mumbojumbo.conf
 $ chmod 600 mumbojumbo.conf
 
 # 2. Edit config (set network interface, domain, SMTP if desired)

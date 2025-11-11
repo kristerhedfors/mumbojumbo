@@ -19,7 +19,7 @@ def main():
     # Step 1: Generate config
     print_section("STEP 1: Generate Configuration File")
     print("Run this command to generate a configuration skeleton with keys:\n")
-    print("  ./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf\n")
+    print("  ./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf\n")
     print("Then edit mumbojumbo.conf and set:")
     print("  - domain: Your domain (e.g., .example.com)")
     print("  - network-interface: Your network interface (e.g., eth0)")
@@ -74,7 +74,7 @@ def main():
     print_section("Quick Start (Minimal Setup)")
     print("For a quick test without SMTP:\n")
     print("1. Generate config:")
-    print("   ./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf\n")
+    print("   ./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf\n")
 
     print("2. Edit mumbojumbo.conf and remove or comment out the [smtp] section\n")
 

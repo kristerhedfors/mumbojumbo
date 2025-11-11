@@ -10,7 +10,7 @@ python3 -m venv venv
 ./venv/bin/pip install pynacl
 
 # 2. Generate config
-./venv/bin/python3 mumbojumbo.py --generate-conf > mumbojumbo.conf
+./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 chmod 600 mumbojumbo.conf
 
 # 3. Run server (requires sudo for packet capture)

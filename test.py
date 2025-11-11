@@ -455,6 +455,152 @@ class Test_SMTPErrorHandling(unittest.TestCase):
             self.assertFalse(result)
 
 
+class Test_KeyEncoding(unittest.TestCase):
+    """Test key encoding/decoding with mj_priv_ and mj_pub_ prefixes."""
+
+    def test_encode_public_key(self):
+        """Test encoding public key with mj_pub_ prefix."""
+        from mumbojumbo import encode_key_hex
+        import nacl.public
+
+        private_key = nacl.public.PrivateKey.generate()
+        pub_key_bytes = private_key.public_key.encode()
+
+        encoded = encode_key_hex(pub_key_bytes, key_type='pub')
+
+        # Check prefix
+        self.assertTrue(encoded.startswith('mj_pub_'))
+
+        # Check length (mj_pub_ = 7 chars + 64 hex chars = 71 total)
+        self.assertEqual(len(encoded), 71)
+
+        # Check hex encoding
+        hex_part = encoded[7:]
+        self.assertEqual(pub_key_bytes.hex(), hex_part)
+
+    def test_encode_private_key(self):
+        """Test encoding private key with mj_priv_ prefix."""
+        from mumbojumbo import encode_key_hex
+        import nacl.public
+
+        private_key = nacl.public.PrivateKey.generate()
+        priv_key_bytes = private_key.encode()
+
+        encoded = encode_key_hex(priv_key_bytes, key_type='priv')
+
+        # Check prefix
+        self.assertTrue(encoded.startswith('mj_priv_'))
+
+        # Check length (mj_priv_ = 8 chars + 64 hex chars = 72 total)
+        self.assertEqual(len(encoded), 72)
+
+        # Check hex encoding
+        hex_part = encoded[8:]
+        self.assertEqual(priv_key_bytes.hex(), hex_part)
+
+    def test_encode_invalid_key_type(self):
+        """Test that invalid key_type raises ValueError."""
+        from mumbojumbo import encode_key_hex
+        import nacl.public
+
+        private_key = nacl.public.PrivateKey.generate()
+        key_bytes = private_key.encode()
+
+        with self.assertRaises(ValueError) as ctx:
+            encode_key_hex(key_bytes, key_type='invalid')
+        self.assertIn('must be "priv" or "pub"', str(ctx.exception))
+
+    def test_decode_public_key(self):
+        """Test decoding public key with mj_pub_ prefix."""
+        from mumbojumbo import encode_key_hex, decode_key_hex
+        import nacl.public
+
+        private_key = nacl.public.PrivateKey.generate()
+        pub_key_bytes = private_key.public_key.encode()
+
+        encoded = encode_key_hex(pub_key_bytes, key_type='pub')
+        decoded = decode_key_hex(encoded)
+
+        self.assertEqual(pub_key_bytes, decoded)
+
+    def test_decode_private_key(self):
+        """Test decoding private key with mj_priv_ prefix."""
+        from mumbojumbo import encode_key_hex, decode_key_hex
+        import nacl.public
+
+        private_key = nacl.public.PrivateKey.generate()
+        priv_key_bytes = private_key.encode()
+
+        encoded = encode_key_hex(priv_key_bytes, key_type='priv')
+        decoded = decode_key_hex(encoded)
+
+        self.assertEqual(priv_key_bytes, decoded)
+
+    def test_decode_invalid_prefix(self):
+        """Test that keys without proper prefix raise ValueError."""
+        from mumbojumbo import decode_key_hex
+
+        # Test completely invalid prefix
+        with self.assertRaises(ValueError) as ctx:
+            decode_key_hex('invalid_prefix_1234567890abcdef')
+        self.assertIn('must start with "mj_priv_" or "mj_pub_"', str(ctx.exception))
+
+        # Test legacy mj_ prefix (no longer supported)
+        with self.assertRaises(ValueError) as ctx:
+            decode_key_hex('mj_1234567890abcdef')
+        self.assertIn('must start with "mj_priv_" or "mj_pub_"', str(ctx.exception))
+
+    def test_decode_invalid_hex(self):
+        """Test that invalid hex raises ValueError."""
+        from mumbojumbo import decode_key_hex
+
+        with self.assertRaises(ValueError) as ctx:
+            decode_key_hex('mj_pub_GGGGGG')  # G is not valid hex
+        self.assertIn('Invalid hex key format', str(ctx.exception))
+
+    def test_get_nacl_keypair_hex(self):
+        """Test keypair generation with new prefixes."""
+        from mumbojumbo import get_nacl_keypair_hex, decode_key_hex
+        import nacl.public
+
+        priv_str, pub_str = get_nacl_keypair_hex()
+
+        # Check prefixes
+        self.assertTrue(priv_str.startswith('mj_priv_'))
+        self.assertTrue(pub_str.startswith('mj_pub_'))
+
+        # Check lengths
+        self.assertEqual(len(priv_str), 72)
+        self.assertEqual(len(pub_str), 71)
+
+        # Decode and verify they form a valid keypair
+        priv_bytes = decode_key_hex(priv_str)
+        pub_bytes = decode_key_hex(pub_str)
+
+        # Reconstruct keypair and verify public key matches
+        private_key = nacl.public.PrivateKey(priv_bytes)
+        self.assertEqual(private_key.public_key.encode(), pub_bytes)
+
+    def test_round_trip_encoding(self):
+        """Test encode->decode round trip for both key types."""
+        from mumbojumbo import encode_key_hex, decode_key_hex
+        import nacl.public
+
+        private_key = nacl.public.PrivateKey.generate()
+
+        # Test private key round trip
+        priv_bytes = private_key.encode()
+        priv_encoded = encode_key_hex(priv_bytes, key_type='priv')
+        priv_decoded = decode_key_hex(priv_encoded)
+        self.assertEqual(priv_bytes, priv_decoded)
+
+        # Test public key round trip
+        pub_bytes = private_key.public_key.encode()
+        pub_encoded = encode_key_hex(pub_bytes, key_type='pub')
+        pub_decoded = decode_key_hex(pub_encoded)
+        self.assertEqual(pub_bytes, pub_decoded)
+
+
 def main(*args):
     import base64
     # For SealedBox: Only need one keypair (server keypair)
