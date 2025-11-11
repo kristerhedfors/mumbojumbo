@@ -683,6 +683,61 @@ class Test_PacketHandlers(unittest.TestCase):
         finally:
             sys.stdout = original_stdout
 
+    def test_stdout_handler_empty_data(self):
+        """Test StdoutHandler handles empty data."""
+        from io import StringIO
+        import json
+        import sys
+
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            handler = StdoutHandler()
+            result = handler.handle(b'', self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+            output = captured_output.getvalue().strip()
+            data = json.loads(output)
+
+            self.assertEqual(data['data_length'], 0)
+            self.assertEqual(data['data_preview'], '')
+
+        finally:
+            sys.stdout = original_stdout
+
+    def test_stdout_handler_large_data_truncation(self):
+        """Test StdoutHandler truncates large data preview."""
+        from io import StringIO
+        import json
+        import sys
+
+        # Create data longer than 100 characters
+        large_data = b'A' * 200
+
+        captured_output = StringIO()
+        original_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            handler = StdoutHandler()
+            result = handler.handle(large_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+            output = captured_output.getvalue().strip()
+            data = json.loads(output)
+
+            # Preview should be truncated to 100 chars + '...'
+            self.assertEqual(len(data['data_preview']), 103)
+            self.assertTrue(data['data_preview'].endswith('...'))
+            self.assertEqual(data['data_length'], 200)
+
+        finally:
+            sys.stdout = original_stdout
+
     def test_file_handler_hex_format(self):
         """Test FileHandler writes data in hex format."""
         with tempfile.NamedTemporaryFile(mode='r', delete=False) as tmp:
@@ -791,6 +846,57 @@ class Test_PacketHandlers(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    def test_file_handler_empty_data(self):
+        """Test FileHandler handles empty data."""
+        with tempfile.NamedTemporaryFile(mode='r', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            handler = FileHandler(path=tmp_path, format='hex')
+            result = handler.handle(b'', self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+            with open(tmp_path, 'r') as f:
+                content = f.read()
+
+            self.assertIn('length: 0', content)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_file_handler_permission_error(self):
+        """Test FileHandler handles file permission errors."""
+        # Try to write to a read-only directory (that doesn't exist)
+        handler = FileHandler(path='/nonexistent/path/file.txt', format='hex')
+        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+        self.assertFalse(result)
+
+    def test_file_handler_large_data(self):
+        """Test FileHandler handles large data."""
+        with tempfile.NamedTemporaryFile(mode='r', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            # Create 10MB of data
+            large_data = b'X' * (10 * 1024 * 1024)
+
+            handler = FileHandler(path=tmp_path, format='hex')
+            result = handler.handle(large_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+            with open(tmp_path, 'r') as f:
+                content = f.read()
+
+            self.assertIn('length: 10485760', content)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
     def test_execute_handler_success(self):
         """Test ExecuteHandler runs command successfully."""
         # Use a simple echo command that should work on Unix/Mac
@@ -857,6 +963,53 @@ class Test_PacketHandlers(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    def test_execute_handler_empty_data(self):
+        """Test ExecuteHandler handles empty data."""
+        handler = ExecuteHandler(command='cat', timeout=5)
+        result = handler.handle(b'', self.test_query, self.test_timestamp)
+
+        self.assertTrue(result)
+
+    def test_execute_handler_command_not_found(self):
+        """Test ExecuteHandler handles command not found."""
+        handler = ExecuteHandler(command='nonexistent_command_12345', timeout=5)
+        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+        self.assertFalse(result)
+
+    def test_execute_handler_large_stdin_data(self):
+        """Test ExecuteHandler handles large data via stdin."""
+        # Create 1MB of data
+        large_data = b'Z' * (1024 * 1024)
+
+        handler = ExecuteHandler(command='wc -c', timeout=10)
+        result = handler.handle(large_data, self.test_query, self.test_timestamp)
+
+        self.assertTrue(result)
+
+    def test_execute_handler_shell_special_chars(self):
+        """Test ExecuteHandler handles shell special characters safely."""
+        # Create script that echoes the data length from environment
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as tmp:
+            tmp.write('#!/bin/bash\n')
+            tmp.write('test -n "$MUMBOJUMBO_LENGTH" && exit 0 || exit 1\n')
+            tmp_path = tmp.name
+
+        try:
+            os.chmod(tmp_path, 0o755)
+
+            # Use data with special characters
+            special_data = b'test; echo "injected"; #'
+
+            handler = ExecuteHandler(command=tmp_path, timeout=5)
+            result = handler.handle(special_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
     def test_smtp_handler_with_mock(self):
         """Test SMTPHandler with mocked SMTP connection."""
         from unittest.mock import Mock, patch
@@ -898,6 +1051,150 @@ class Test_PacketHandlers(unittest.TestCase):
             result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
 
             self.assertFalse(result)
+
+    def test_smtp_handler_sender_refused(self):
+        """Test SMTPHandler handles sender refused errors."""
+        from unittest.mock import Mock, patch
+        import smtplib
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=587,
+            from_='invalid@example.com',
+            to='dest@example.com'
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = Mock()
+            mock_smtp_class.return_value = mock_smtp
+            mock_smtp.sendmail.side_effect = smtplib.SMTPSenderRefused(550, 'Sender refused', 'invalid@example.com')
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertFalse(result)
+
+    def test_smtp_handler_data_error(self):
+        """Test SMTPHandler handles data errors."""
+        from unittest.mock import Mock, patch
+        import smtplib
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = Mock()
+            mock_smtp_class.return_value = mock_smtp
+            mock_smtp.sendmail.side_effect = smtplib.SMTPDataError(550, 'Message too large')
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertFalse(result)
+
+    def test_smtp_handler_general_smtp_exception(self):
+        """Test SMTPHandler handles general SMTP exceptions."""
+        from unittest.mock import Mock, patch
+        import smtplib
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = Mock()
+            mock_smtp_class.return_value = mock_smtp
+            mock_smtp.sendmail.side_effect = smtplib.SMTPException('General SMTP error')
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertFalse(result)
+
+    def test_smtp_handler_binary_data(self):
+        """Test SMTPHandler handles binary data by converting to hex."""
+        from unittest.mock import Mock, patch
+
+        binary_data = b'\x00\x01\x02\xff'
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = Mock()
+            mock_smtp_class.return_value = mock_smtp
+            result = handler.handle(binary_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+            # Verify sendmail was called with hex-encoded data
+            call_args = mock_smtp.sendmail.call_args
+            message_body = call_args[0][2]
+            self.assertIn(binary_data.hex(), message_body)
+
+    def test_smtp_handler_empty_data(self):
+        """Test SMTPHandler handles empty data."""
+        from unittest.mock import Mock, patch
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=587,
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = Mock()
+            mock_smtp_class.return_value = mock_smtp
+            result = handler.handle(b'', self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+            mock_smtp.sendmail.assert_called_once()
+
+    def test_smtp_handler_no_starttls(self):
+        """Test SMTPHandler works without STARTTLS."""
+        from unittest.mock import Mock, patch
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=25,
+            from_='test@example.com',
+            to='dest@example.com',
+            starttls=False
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = Mock()
+            mock_smtp_class.return_value = mock_smtp
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+            # Verify starttls was not called
+            mock_smtp.starttls.assert_not_called()
+
+    def test_smtp_handler_no_auth(self):
+        """Test SMTPHandler works without authentication."""
+        from unittest.mock import Mock, patch
+
+        handler = SMTPHandler(
+            server='localhost',
+            port=25,
+            from_='test@example.com',
+            to='dest@example.com'
+        )
+
+        with patch('smtplib.SMTP') as mock_smtp_class:
+            mock_smtp = Mock()
+            mock_smtp_class.return_value = mock_smtp
+            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+
+            self.assertTrue(result)
+            # Verify login was not called
+            mock_smtp.login.assert_not_called()
 
 
 class Test_HandlerPipeline(unittest.TestCase):
