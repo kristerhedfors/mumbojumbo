@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Test Sealedbox</title>
+</head>
+<body>
+    <h1>Testing TweetNaCl Sealedbox</h1>
+    <pre id="output"></pre>
+
+    <script src="tweetnacl/nacl-fast.min.js"></script>
+    <script src="tweetnacl/nacl-util.min.js"></script>
+    <script src="tweetnacl/sealedbox.js"></script>
+    <script>
+        let output = '';
+
+        try {
+            // Test 1: Check nacl is loaded
+            output += 'Test 1: nacl loaded - ' + (typeof nacl !== 'undefined' ? 'PASS' : 'FAIL') + '\n';
+
+            // Test 2: Check nacl.util is loaded
+            output += 'Test 2: nacl.util loaded - ' + (typeof nacl.util !== 'undefined' ? 'PASS' : 'FAIL') + '\n';
+
+            // Test 3: Check sealedBox is loaded
+            output += 'Test 3: sealedBox loaded - ' + (typeof sealedBox !== 'undefined' ? 'PASS' : 'FAIL') + '\n';
+            output += '  sealedBox.seal = ' + (typeof sealedBox.seal) + '\n';
+            output += '  sealedBox.open = ' + (typeof sealedBox.open) + '\n';
+
+            // Test 4: Test hex key parsing with mj_pub_ prefix
+            const testKey = 'mj_pub_a2a339d31b459be076e41c366cfc4c5da694258ab884ca8d22d37dda6f9e6a44';
+            output += '\nTest 4: Parse hex key with mj_pub_ prefix\n';
+            output += '  Input: ' + testKey + '\n';
+
+            let hexKey = testKey.substring(7); // Remove 'mj_pub_'
+            const keyBytes = new Uint8Array(hexKey.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+            output += '  Parsed length: ' + keyBytes.length + ' bytes ' + (keyBytes.length === 32 ? 'PASS' : 'FAIL') + '\n';
+
+            // Test 5: Test seal/open roundtrip
+            output += '\nTest 5: Seal/Open roundtrip\n';
+            const keypair = nacl.box.keyPair();
+            const message = nacl.util.decodeUTF8('Hello, World!');
+
+            const sealed = sealedBox.seal(message, keypair.publicKey);
+            output += '  Sealed length: ' + sealed.length + ' bytes\n';
+            output += '  Expected overhead: ' + sealedBox.overheadLength + ' bytes\n';
+
+            const opened = sealedBox.open(sealed, keypair.publicKey, keypair.secretKey);
+            const decrypted = nacl.util.encodeUTF8(opened);
+            output += '  Decrypted: "' + decrypted + '"\n';
+            output += '  Roundtrip: ' + (decrypted === 'Hello, World!' ? 'PASS' : 'FAIL') + '\n';
+
+            output += '\n✅ All tests passed!';
+
+        } catch (e) {
+            output += '\n❌ ERROR: ' + e.message + '\n';
+            output += e.stack;
+        }
+
+        document.getElementById('output').textContent = output;
+        console.log(output);
+    </script>
+</body>
+</html>
