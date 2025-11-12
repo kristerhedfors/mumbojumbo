@@ -60,17 +60,18 @@ echo "test" | ./target/release/mumbojumbo-client \
 The client can be used as a library:
 
 ```rust
-use mumbojumbo_client::{MumbojumboClient, parse_key_hex, MAX_FRAG_DATA_LEN};
+use mumbojumbo_client::{MumbojumboClient, MAX_FRAG_DATA_LEN};
 
 fn main() -> Result<(), String> {
-    // Parse server public key
-    let server_key = parse_key_hex("mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e")?;
-
-    // Initialize client
-    let mut client = MumbojumboClient::new(server_key, ".asd.qwe".to_string(), MAX_FRAG_DATA_LEN);
+    // Initialize client with mj_cli_ format key (auto-parsed)
+    let mut client = MumbojumboClient::new(
+        "mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e",
+        ".asd.qwe".to_string(),
+        MAX_FRAG_DATA_LEN
+    )?;
 
     // Send data (actually sends DNS queries)
-    let results = client.send_data(b"Hello World", true)?;
+    let results = client.send_data(b"Hello World")?;
 
     for result in results {
         println!("{}: {}", result.query, result.success);
@@ -89,33 +90,23 @@ fn main() -> Result<(), String> {
 
 ### API Reference
 
-#### `parse_key_hex(key_str: &str) -> Result<[u8; 32], String>`
-
-Parses a server public key in `mj_cli_<hex>` format.
-
-**Parameters:**
-- `key_str` - Key string in mj_cli_ format
-
-**Returns:** 32-byte array or error
-
-#### `MumbojumboClient::new(server_client_key: [u8; 32], domain: String, max_fragment_size: usize) -> Self`
+#### `MumbojumboClient::new(server_client_key_input: &str, domain: String, max_fragment_size: usize) -> Result<Self, String>`
 
 Creates a new client instance.
 
 **Parameters:**
-- `server_client_key` - Server's public key (32 bytes)
+- `server_client_key_input` - Server's public key (mj_cli_ hex string, or raw 64-char hex)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `max_fragment_size` - Maximum bytes per fragment (default: 80)
 
-**Returns:** MumbojumboClient instance
+**Returns:** MumbojumboClient instance or error
 
-#### `client.send_data(&mut self, data: &[u8], send_queries: bool) -> Result<Vec<QueryResult>, String>`
+#### `client.send_data(&mut self, data: &[u8]) -> Result<Vec<QueryResult>, String>`
 
 Send data via DNS queries.
 
 **Parameters:**
 - `data` - Data to send
-- `send_queries` - If true, actually sends DNS queries (default: true)
 
 **Returns:** Vector of QueryResult or error
 
@@ -132,14 +123,14 @@ Generate DNS queries without sending them.
 
 ### Fragment Structure
 
-Each message is split into 80-byte fragments with a 12-byte header:
+Each message is split into 80-byte fragments with an 18-byte header:
 
 ```
-Bytes 0-1:   packet_id (u16 big-endian)
-Bytes 2-5:   frag_index (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 6-9:   frag_count (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 10-11: data_length (u16 big-endian)
-Bytes 12+:   fragment data (max 80 bytes)
+Bytes 0-7:   packet_id (u64 big-endian) - 64-bit packet ID
+Bytes 8-11:  frag_index (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 12-15: frag_count (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 16-17: data_length (u16 big-endian)
+Bytes 18+:   fragment data (max 80 bytes)
 ```
 
 ### Protocol Capacity
@@ -167,10 +158,10 @@ Bytes 12+:   fragment data (max 80 bytes)
 
 ```
 Input: "Hello World" (11 bytes)
-→ Fragment: 12-byte header + 11 bytes = 23 bytes
-→ Encrypt: 23 + 48 = 71 bytes (SealedBox overhead)
-→ Base32: ~114 characters
-→ DNS: <114-char-base32>.asd.qwe
+→ Fragment: 18-byte header + 11 bytes = 29 bytes
+→ Encrypt: 29 + 48 = 77 bytes (SealedBox overhead)
+→ Base32: ~124 characters
+→ DNS: <124-char-base32>.asd.qwe
 ```
 
 ## Testing

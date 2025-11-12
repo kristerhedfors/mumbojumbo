@@ -36,7 +36,30 @@ type MumbojumboClient struct {
 }
 
 // NewMumbojumboClient creates a new client instance
-func NewMumbojumboClient(serverClientKey [32]byte, domain string, maxFragmentSize int) *MumbojumboClient {
+// Accepts either a string key (mj_cli_<hex>) or raw [32]byte
+func NewMumbojumboClient(serverClientKeyInput interface{}, domain string, maxFragmentSize int) (*MumbojumboClient, error) {
+	var serverClientKey [32]byte
+
+	// Handle both string and byte array inputs
+	switch v := serverClientKeyInput.(type) {
+	case string:
+		// Parse hex format key
+		parsed, err := parseKeyHex(v)
+		if err != nil {
+			return nil, err
+		}
+		serverClientKey = parsed
+	case [32]byte:
+		serverClientKey = v
+	case []byte:
+		if len(v) != 32 {
+			return nil, fmt.Errorf("invalid key length: expected 32, got %d", len(v))
+		}
+		copy(serverClientKey[:], v)
+	default:
+		return nil, errors.New("serverClientKey must be string, [32]byte, or []byte")
+	}
+
 	if !strings.HasPrefix(domain, ".") {
 		domain = "." + domain
 	}
@@ -52,7 +75,7 @@ func NewMumbojumboClient(serverClientKey [32]byte, domain string, maxFragmentSiz
 	rand.Read(randomBytes[:])
 	client.nextPacketID = binary.BigEndian.Uint64(randomBytes[:])
 
-	return client
+	return client, nil
 }
 
 // getNextPacketID returns the next packet ID and increments counter (wraps at 2^64-1)
@@ -62,8 +85,8 @@ func (c *MumbojumboClient) getNextPacketID() uint64 {
 	return packetID
 }
 
-// ParseKeyHex parses a key in mj_cli_<hex> format
-func ParseKeyHex(keyStr string) ([32]byte, error) {
+// parseKeyHex parses a key in mj_cli_<hex> format (internal use only)
+func parseKeyHex(keyStr string) ([32]byte, error) {
 	var key [32]byte
 
 	if !strings.HasPrefix(keyStr, "mj_cli_") {
@@ -233,14 +256,14 @@ type QueryResult struct {
 	Success bool
 }
 
-// SendData sends data via DNS queries
-func (c *MumbojumboClient) SendData(data []byte, sendQueries bool) ([]QueryResult, error) {
+// generateDNSQueries generates DNS queries from data without sending them
+func (c *MumbojumboClient) generateDNSQueries(data []byte) ([]string, error) {
 	packetID := c.getNextPacketID()
 
 	fragments := FragmentData(data, c.maxFragmentSize)
 	fragCount := uint32(len(fragments))
 
-	var results []QueryResult
+	var queries []string
 
 	for fragIndex, fragData := range fragments {
 		// Create fragment with header
@@ -257,13 +280,22 @@ func (c *MumbojumboClient) SendData(data []byte, sendQueries bool) ([]QueryResul
 
 		// Create DNS query name
 		dnsName := CreateDNSQuery(encrypted, c.domain)
+		queries = append(queries, dnsName)
+	}
 
-		// Optionally send query
-		success := true
-		if sendQueries {
-			success = SendDNSQuery(dnsName)
-		}
+	return queries, nil
+}
 
+// SendData sends data via DNS queries
+func (c *MumbojumboClient) SendData(data []byte) ([]QueryResult, error) {
+	queries, err := c.generateDNSQueries(data)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []QueryResult
+	for _, dnsName := range queries {
+		success := SendDNSQuery(dnsName)
 		results = append(results, QueryResult{
 			Query:   dnsName,
 			Success: success,
@@ -275,16 +307,7 @@ func (c *MumbojumboClient) SendData(data []byte, sendQueries bool) ([]QueryResul
 
 // GenerateQueries generates DNS queries without sending them
 func (c *MumbojumboClient) GenerateQueries(data []byte) ([]string, error) {
-	results, err := c.SendData(data, false)
-	if err != nil {
-		return nil, err
-	}
-
-	queries := make([]string, len(results))
-	for i, result := range results {
-		queries[i] = result.Query
-	}
-	return queries, nil
+	return c.generateDNSQueries(data)
 }
 
 // CLI implementation
@@ -335,13 +358,6 @@ Examples:
 		os.Exit(1)
 	}
 
-	// Parse server public key
-	serverClientKeyBytes, err := ParseKeyHex(key)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing key: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Validate domain
 	if !strings.HasPrefix(domain, ".") {
 		fmt.Fprintf(os.Stderr, "Warning: domain should start with '.', got '%s'\n", domain)
@@ -351,6 +367,7 @@ Examples:
 
 	// Read input data
 	var data []byte
+	var err error
 	if file == "-" {
 		data, err = io.ReadAll(os.Stdin)
 	} else {
@@ -365,8 +382,12 @@ Examples:
 		fmt.Fprintf(os.Stderr, "Read %d bytes of input\n", len(data))
 	}
 
-	// Create client
-	client := NewMumbojumboClient(serverClientKeyBytes, domain, MaxFragDataLen)
+	// Create client - key parsing happens transparently in constructor
+	client, err := NewMumbojumboClient(key, domain, MaxFragDataLen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing client: %v\n", err)
+		os.Exit(1)
+	}
 
 	if verbose {
 		fragments := FragmentData(data, MaxFragDataLen)
@@ -375,7 +396,7 @@ Examples:
 	}
 
 	// Send data
-	results, err := client.SendData(data, true)
+	results, err := client.SendData(data)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error sending data: %v\n", err)
 		os.Exit(1)

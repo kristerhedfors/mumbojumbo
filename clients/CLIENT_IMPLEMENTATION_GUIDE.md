@@ -82,8 +82,8 @@ MumbojumboClient(server_public_key, domain, [max_fragment_size=80])
 ```
 
 **Methods:**
-1. `send_data(data, [send_queries=true])` → `[(query, success), ...]`
-2. `generate_queries(data)` → `[query1, query2, ...]`
+1. `send_data(data)` → `[(query, success), ...]` - Send data via DNS queries
+2. `generate_queries(data)` → `[query1, query2, ...]` - Generate queries without sending
 
 **Internal State:**
 - `_next_packet_id` - Auto-incrementing u16 counter (wraps at 0xFFFF)

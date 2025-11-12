@@ -15,7 +15,6 @@ const fs = require('fs');
 const path = require('path');
 
 const {
-  parseKeyHex,
   base32Encode,
   splitToLabels,
   createFragment,
@@ -96,34 +95,34 @@ async function runCli(args, stdinData = null) {
 }
 
 // ============================================================================
-// Test: Key Parsing
+// Test: Key Parsing (via MumbojumboClient constructor)
 // ============================================================================
 
 describe('Key Parsing', () => {
-  test('parse valid hex key', () => {
+  test('parse valid hex key via constructor', () => {
     const validKey = 'mj_cli_' + 'a'.repeat(64);
-    const result = parseKeyHex(validKey);
+    const client = new MumbojumboClient(validKey, TEST_DOMAIN);
 
-    assert.ok(result instanceof Uint8Array);
-    assert.equal(result.length, 32);
-    assert.equal(result[0], 0xaa);
+    assert.ok(client.serverPubkey instanceof Uint8Array);
+    assert.equal(client.serverPubkey.length, 32);
+    assert.equal(client.serverPubkey[0], 0xaa);
   });
 
   test('reject key without mj_cli_ prefix', () => {
     assert.throws(() => {
-      parseKeyHex('a'.repeat(64));
+      new MumbojumboClient('a'.repeat(64), TEST_DOMAIN);
     }, /must start with "mj_cli_"/);
   });
 
   test('reject key with wrong hex length', () => {
     assert.throws(() => {
-      parseKeyHex('mj_cli_' + 'a'.repeat(32));
+      new MumbojumboClient('mj_cli_' + 'a'.repeat(32), TEST_DOMAIN);
     }, /Invalid hex key length/);
   });
 
   test('reject key with invalid hex characters', () => {
     assert.throws(() => {
-      parseKeyHex('mj_cli_' + 'z'.repeat(64));
+      new MumbojumboClient('mj_cli_' + 'z'.repeat(64), TEST_DOMAIN);
     }, /Invalid hex characters/);
   });
 });
@@ -437,16 +436,13 @@ describe('MumbojumboClient Class', () => {
     assert.ok(queries[0].endsWith(TEST_DOMAIN));
   });
 
-  test('send data dry-run', async () => {
+  test('generate queries only', async () => {
     const client = new MumbojumboClient(TEST_SERVER_PUBKEY, TEST_DOMAIN);
-    const results = await client.sendData(Buffer.from('test'), false);
+    const queries = await client.generateQueries(Buffer.from('test'));
 
-    assert.ok(Array.isArray(results));
-    assert.equal(results.length, 1);
-
-    const [query, success] = results[0];
-    assert.ok(query.endsWith(TEST_DOMAIN));
-    assert.equal(success, true);
+    assert.ok(Array.isArray(queries));
+    assert.equal(queries.length, 1);
+    assert.ok(queries[0].endsWith(TEST_DOMAIN));
   });
 
   test('packet ID increments', async () => {

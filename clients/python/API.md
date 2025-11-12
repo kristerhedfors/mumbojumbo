@@ -50,20 +50,19 @@ Initialize a new client instance.
 - Auto-prepends dot to domain if missing
 - Accepts public key as bytes or NaCl PublicKey object
 
-#### `send_data(data, send_queries=True)`
+#### `send_data(data)`
 
 Send data via DNS queries.
 
 **Parameters:**
 - `data`: Bytes to send
-- `send_queries`: If `True`, actually send DNS queries; if `False`, just generate them
 
 **Returns:**
 - `list`: List of `(dns_query, success)` tuples
 
 **Example:**
 ```python
-results = client.send_data(b"My message", send_queries=True)
+results = client.send_data(b"My message")
 
 # Check if all fragments sent successfully
 all_success = all(success for _, success in results)
@@ -131,11 +130,11 @@ with open('message.txt', 'rb') as f:
 
 # Send via DNS
 client = MumbojumboClient(parse_key_hex(SERVER_KEY), DOMAIN)
-packet_id, results = client.send_data(data)
+results = client.send_data(data)
 
 # Report
 success_count = sum(1 for _, success in results if success)
-print(f"Sent {success_count}/{len(results)} fragments (packet 0x{packet_id:04x})")
+print(f"Sent {success_count}/{len(results)} fragments")
 ```
 
 ### Send Multiple Messages

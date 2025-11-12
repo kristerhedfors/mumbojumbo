@@ -6,8 +6,8 @@
 #include <ctype.h>
 #include <sodium.h>
 
-// Parse key in mj_cli_<hex> format
-int parse_key_hex(const char *key_str, uint8_t key[32]) {
+// Parse key in mj_cli_<hex> format (internal use only)
+static int parse_key_hex(const char *key_str, uint8_t key[32]) {
     if (strncmp(key_str, "mj_cli_", 7) != 0) {
         fprintf(stderr, "Error: key must start with \"mj_cli_\"\n");
         return -1;
@@ -306,6 +306,19 @@ MumbojumboClient *mumbojumbo_client_new(const uint8_t server_client_key[32],
     return client;
 }
 
+MumbojumboClient *mumbojumbo_client_new_from_hex(const char *server_client_key_hex,
+                                                  const char *domain,
+                                                  size_t max_fragment_size) {
+    uint8_t key[32];
+
+    // Parse hex key transparently
+    if (parse_key_hex(server_client_key_hex, key) != 0) {
+        return NULL;
+    }
+
+    return mumbojumbo_client_new(key, domain, max_fragment_size);
+}
+
 void mumbojumbo_client_free(MumbojumboClient *client) {
     if (!client) return;
     free(client->domain);
@@ -444,6 +457,7 @@ static void print_usage(void) {
     );
 }
 
+#ifndef MUMBOJUMBO_TEST_BUILD
 int main(int argc, char *argv[]) {
     if (sodium_init() < 0) {
         fprintf(stderr, "Error: failed to initialize libsodium\n");
@@ -483,12 +497,6 @@ int main(int argc, char *argv[]) {
     if (!key_str || !domain) {
         fprintf(stderr, "Error: -k and -d are required\n");
         fprintf(stderr, "Use -h for usage information\n");
-        return 1;
-    }
-
-    // Parse server public key
-    uint8_t server_client_key[32];
-    if (parse_key_hex(key_str, server_client_key) != 0) {
         return 1;
     }
 
@@ -541,8 +549,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Read %zu bytes of input\n", data_len);
     }
 
-    // Create client
-    MumbojumboClient *client = mumbojumbo_client_new(server_client_key, domain, MAX_FRAG_DATA_LEN);
+    // Create client - key parsing happens transparently in constructor
+    MumbojumboClient *client = mumbojumbo_client_new_from_hex(key_str, domain, MAX_FRAG_DATA_LEN);
     if (!client) {
         fprintf(stderr, "Error: failed to create client\n");
         free(data);
@@ -615,3 +623,4 @@ int main(int argc, char *argv[]) {
 
     return exit_code;
 }
+#endif // MUMBOJUMBO_TEST_BUILD

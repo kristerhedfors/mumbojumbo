@@ -15,27 +15,6 @@ const MAX_FRAG_DATA_LEN = 80;
 const DNS_LABEL_MAX_LEN = 63;
 
 /**
- * Parse mj_cli_<hex> format key to Uint8Array
- */
-function parseKeyHex(keyStr) {
-  if (!keyStr.startsWith('mj_cli_')) {
-    throw new Error('Key must start with "mj_cli_"');
-  }
-  const hexKey = keyStr.substring(7);
-  if (hexKey.length !== 64) {
-    throw new Error(`Invalid hex key length: expected 64, got ${hexKey.length}`);
-  }
-  if (!/^[0-9a-fA-F]{64}$/.test(hexKey)) {
-    throw new Error('Invalid hex characters in key');
-  }
-  const bytes = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    bytes[i] = parseInt(hexKey.substring(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
-}
-
-/**
  * Base32 encode data (lowercase, no padding)
  */
 function base32Encode(data) {
@@ -166,12 +145,15 @@ class MumbojumboClient {
   /**
    * Initialize client
    *
-   * @param {Uint8Array|Buffer} serverPublicKey - Server's public key (32 bytes)
+   * @param {string|Uint8Array|Buffer} serverPublicKey - Server's public key (mj_cli_ hex string, Uint8Array, or Buffer)
    * @param {string} domain - DNS domain suffix (e.g., '.asd.qwe')
    * @param {number} maxFragmentSize - Maximum bytes per fragment (default: 80)
    */
   constructor(serverPublicKey, domain, maxFragmentSize = MAX_FRAG_DATA_LEN) {
-    if (Buffer.isBuffer(serverPublicKey)) {
+    // Auto-parse hex key format if string is provided
+    if (typeof serverPublicKey === 'string') {
+      this.serverPubkey = this._parseKeyHex(serverPublicKey);
+    } else if (Buffer.isBuffer(serverPublicKey)) {
       this.serverPubkey = new Uint8Array(serverPublicKey);
     } else {
       this.serverPubkey = serverPublicKey;
@@ -180,6 +162,27 @@ class MumbojumboClient {
     this.domain = domain.startsWith('.') ? domain : '.' + domain;
     this.maxFragmentSize = maxFragmentSize;
     this._nextPacketId = Math.floor(Math.random() * 0x10000);
+  }
+
+  /**
+   * Parse mj_cli_<hex> format key to Uint8Array (internal use)
+   */
+  _parseKeyHex(keyStr) {
+    if (!keyStr.startsWith('mj_cli_')) {
+      throw new Error('Key must start with "mj_cli_"');
+    }
+    const hexKey = keyStr.substring(7);
+    if (hexKey.length !== 64) {
+      throw new Error(`Invalid hex key length: expected 64, got ${hexKey.length}`);
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(hexKey)) {
+      throw new Error('Invalid hex characters in key');
+    }
+    const bytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) {
+      bytes[i] = parseInt(hexKey.substring(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
   }
 
   /**
@@ -192,20 +195,19 @@ class MumbojumboClient {
   }
 
   /**
-   * Send data via DNS queries
+   * Internal method to generate DNS queries from data
    *
    * @param {Buffer} data - Bytes to send
-   * @param {boolean} sendQueries - If true, actually send DNS queries
-   * @returns {Promise<Array>} List of [dns_query, success] tuples
+   * @returns {Promise<Array>} List of DNS query strings
    */
-  async sendData(data, sendQueries = true) {
+  async _generateDnsQueries(data) {
     const packetId = this._getNextPacketId();
 
     // Fragment data
     const fragments = fragmentData(data, this.maxFragmentSize);
     const fragCount = fragments.length;
 
-    const results = [];
+    const queries = [];
     for (let fragIndex = 0; fragIndex < fragments.length; fragIndex++) {
       const fragData = fragments[fragIndex];
 
@@ -217,12 +219,25 @@ class MumbojumboClient {
 
       // Create DNS query name
       const dnsName = createDnsQuery(encrypted, this.domain);
-
-      // Optionally send query
-      const success = sendQueries ? await sendDnsQuery(dnsName) : true;
-      results.push([dnsName, success]);
+      queries.push(dnsName);
     }
 
+    return queries;
+  }
+
+  /**
+   * Send data via DNS queries
+   *
+   * @param {Buffer} data - Bytes to send
+   * @returns {Promise<Array>} List of [dns_query, success] tuples
+   */
+  async sendData(data) {
+    const queries = await this._generateDnsQueries(data);
+    const results = [];
+    for (const dnsName of queries) {
+      const success = await sendDnsQuery(dnsName);
+      results.push([dnsName, success]);
+    }
     return results;
   }
 
@@ -233,8 +248,7 @@ class MumbojumboClient {
    * @returns {Promise<Array>} List of DNS query strings
    */
   async generateQueries(data) {
-    const results = await this.sendData(data, false);
-    return results.map(([dnsName, _]) => dnsName);
+    return await this._generateDnsQueries(data);
   }
 }
 
@@ -288,15 +302,6 @@ Examples:
     process.exit(1);
   }
 
-  // Parse server public key
-  let serverPubkeyBytes;
-  try {
-    serverPubkeyBytes = parseKeyHex(key);
-  } catch (err) {
-    console.error(`Error parsing key: ${err.message}`);
-    process.exit(1);
-  }
-
   // Validate domain
   if (!domain.startsWith('.')) {
     console.error(`Warning: domain should start with '.', got '${domain}'`);
@@ -321,10 +326,10 @@ Examples:
     console.error(`Read ${data.length} bytes of input`);
   }
 
-  // Create client
+  // Create client - key parsing happens transparently in constructor
   let client;
   try {
-    client = new MumbojumboClient(serverPubkeyBytes, domain);
+    client = new MumbojumboClient(key, domain);
   } catch (err) {
     console.error(`Error initializing client: ${err.message}`);
     process.exit(1);
@@ -339,7 +344,7 @@ Examples:
   // Send data
   let results;
   try {
-    results = await client.sendData(data, true);
+    results = await client.sendData(data);
   } catch (err) {
     console.error(`Error sending data: ${err.message}`);
     if (verbose) {
@@ -406,7 +411,6 @@ function readStdin() {
 
 // Export for testing
 module.exports = {
-  parseKeyHex,
   base32Encode,
   splitToLabels,
   createFragment,

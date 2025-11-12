@@ -153,10 +153,33 @@ Thumbs.db
 # Backup files
 *.bak
 
-# Go binaries (clients/go/)
+# Client build artifacts
+# C client
+clients/c/*.o
+clients/c/*.a
+clients/c/*.so
+clients/c/*.dylib
+clients/c/*.dll
+clients/c/mumbojumbo-client
+clients/c/test-mumbojumbo-client
+clients/c/*-test
+
+# Go client
 clients/go/mumbojumbo-client
 clients/go/mumbojumbo-client-*
 clients/go/*.test
+clients/go/*.exe
 
-# Node.js dependencies (clients/nodejs/)
+# Node.js client
 clients/nodejs/node_modules/
+clients/nodejs/package-lock.json
+
+# Rust client (if added in future)
+clients/rust/target/
+clients/rust/Cargo.lock
+
+# Python client (if added in future)
+clients/python/__pycache__/
+clients/python/*.pyc
+clients/python/*.pyo
+clients/python/*.egg-info/

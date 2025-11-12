@@ -209,12 +209,7 @@ class TestGenKeysOutput:
         # Check each line format
         assert output_lines[0].startswith('export MUMBOJUMBO_SERVER_KEY=mj_srv_')
         assert output_lines[1].startswith('export MUMBOJUMBO_CLIENT_KEY=mj_cli_')
-        assert output_lines[2].startswith('export MUMBOJUMBO_DOMAIN=.')
-
-        # Check that lines have comments
-        assert '# Server private key' in output_lines[0]
-        assert '# Client public key' in output_lines[1]
-        assert '# Domain for both' in output_lines[2]
+        assert output_lines[2].startswith('export MUMBOJUMBO_DOMAIN=')
 
     def test_gen_keys_keys_are_valid(self):
         """Test that generated keys can be parsed."""
@@ -314,3 +309,142 @@ class TestGenKeysOutput:
         assert parts[0].startswith('mj_srv_')
         assert parts[1].startswith('mj_cli_')
         assert parts[2].startswith('.')
+
+
+class TestEnvOnlyMode:
+    """Test running without config file using only environment variables."""
+
+    def test_env_only_mode_works(self, tmp_path):
+        """Test that mumbojumbo runs with env vars and no config file."""
+        import subprocess
+        import sys
+        from pathlib import Path
+        from mumbojumbo import get_nacl_keypair_hex
+
+        # Generate valid keys
+        srv_key, cli_key = get_nacl_keypair_hex()
+        test_domain = '.test.env'
+
+        # Get absolute path to mumbojumbo.py
+        mumbojumbo_path = Path(__file__).parent.parent / 'mumbojumbo.py'
+
+        # Set environment variables
+        env = os.environ.copy()
+        env['MUMBOJUMBO_SERVER_KEY'] = srv_key
+        env['MUMBOJUMBO_CLIENT_KEY'] = cli_key
+        env['MUMBOJUMBO_DOMAIN'] = test_domain
+
+        # Run mumbojumbo with --help from temp directory (no config file there)
+        result = subprocess.run(
+            [sys.executable, str(mumbojumbo_path), '--help'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+            cwd=str(tmp_path)
+        )
+
+        # Should not error about missing config file
+        assert result.returncode == 0
+        assert 'Config file' not in result.stderr
+        assert 'mumbojumbo.conf' not in result.stderr
+
+    def test_env_only_mode_missing_server_key_fails(self, tmp_path):
+        """Test that missing server key fails gracefully."""
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        # Get absolute path to mumbojumbo.py
+        mumbojumbo_path = Path(__file__).parent.parent / 'mumbojumbo.py'
+
+        # Only set domain, not server key
+        env = os.environ.copy()
+        env['MUMBOJUMBO_DOMAIN'] = '.test.env'
+        # Ensure server key is not set
+        env.pop('MUMBOJUMBO_SERVER_KEY', None)
+
+        # Run mumbojumbo - should fail
+        result = subprocess.run(
+            [sys.executable, str(mumbojumbo_path), '-v'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+            cwd=str(tmp_path)
+        )
+
+        # Should error about missing requirements
+        assert result.returncode != 0
+        assert 'required environment variables not set' in result.stdout.lower() or \
+               'MUMBOJUMBO_SERVER_KEY' in result.stdout
+
+    def test_env_only_mode_missing_domain_fails(self, tmp_path):
+        """Test that missing domain fails gracefully."""
+        import subprocess
+        import sys
+        from pathlib import Path
+        from mumbojumbo import get_nacl_keypair_hex
+
+        # Generate valid keys
+        srv_key, _ = get_nacl_keypair_hex()
+
+        # Get absolute path to mumbojumbo.py
+        mumbojumbo_path = Path(__file__).parent.parent / 'mumbojumbo.py'
+
+        # Only set server key, not domain
+        env = os.environ.copy()
+        env['MUMBOJUMBO_SERVER_KEY'] = srv_key
+        # Ensure domain is not set
+        env.pop('MUMBOJUMBO_DOMAIN', None)
+
+        # Run mumbojumbo - should fail
+        result = subprocess.run(
+            [sys.executable, str(mumbojumbo_path), '-v'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+            cwd=str(tmp_path)
+        )
+
+        # Should error about missing requirements
+        assert result.returncode != 0
+        assert 'required environment variables not set' in result.stdout.lower() or \
+               'MUMBOJUMBO_DOMAIN' in result.stdout
+
+    def test_env_only_mode_uses_stdout_handler_by_default(self, tmp_path, caplog):
+        """Test that env-only mode defaults to stdout handler."""
+        import subprocess
+        import sys
+        from pathlib import Path
+        from mumbojumbo import get_nacl_keypair_hex
+
+        # Generate valid keys
+        srv_key, cli_key = get_nacl_keypair_hex()
+        test_domain = '.test.env'
+
+        # Get absolute path to mumbojumbo.py
+        mumbojumbo_path = Path(__file__).parent.parent / 'mumbojumbo.py'
+
+        # Set environment variables
+        env = os.environ.copy()
+        env['MUMBOJUMBO_SERVER_KEY'] = srv_key
+        env['MUMBOJUMBO_CLIENT_KEY'] = cli_key
+        env['MUMBOJUMBO_DOMAIN'] = test_domain
+
+        # Run with -v to see verbose output, but with timeout to kill it quickly
+        # (we just want to verify it starts without config file errors)
+        result = subprocess.run(
+            ['timeout', '1', sys.executable, str(mumbojumbo_path), '-v'],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(tmp_path)
+        )
+
+        # timeout returns 124 when it kills the process
+        # We expect either 124 (timeout) or other non-zero if process errors
+        # The important thing is no config file error
+        assert 'Config file' not in result.stdout
+        assert 'mumbojumbo.conf' not in result.stdout

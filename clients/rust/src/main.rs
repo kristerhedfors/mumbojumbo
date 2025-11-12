@@ -14,6 +14,39 @@ const DNS_LABEL_MAX_LEN: usize = 63;
 const HEADER_SIZE: usize = 18; // 18-byte header: u64 + u32 + u32 + u16
 const SEALED_BOX_OH: usize = 48; // 32-byte ephemeral pubkey + 16-byte tag
 
+/// Key input type to support both string and byte array
+pub enum KeyInput {
+    String(String),
+    Bytes([u8; 32]),
+}
+
+impl KeyInput {
+    fn parse(self) -> Result<[u8; 32], String> {
+        match self {
+            KeyInput::String(s) => parse_key_hex(&s),
+            KeyInput::Bytes(b) => Ok(b),
+        }
+    }
+}
+
+impl From<String> for KeyInput {
+    fn from(s: String) -> Self {
+        KeyInput::String(s)
+    }
+}
+
+impl From<&str> for KeyInput {
+    fn from(s: &str) -> Self {
+        KeyInput::String(s.to_string())
+    }
+}
+
+impl From<[u8; 32]> for KeyInput {
+    fn from(b: [u8; 32]) -> Self {
+        KeyInput::Bytes(b)
+    }
+}
+
 /// MumbojumboClient handles DNS tunneling operations
 pub struct MumbojumboClient {
     server_client_key: [u8; 32],
@@ -24,7 +57,10 @@ pub struct MumbojumboClient {
 
 impl MumbojumboClient {
     /// Creates a new client instance
-    pub fn new(server_client_key: [u8; 32], domain: String, max_fragment_size: usize) -> Self {
+    /// Accepts either a string key (mj_cli_<hex>) or raw [u8; 32]
+    pub fn new<K: Into<KeyInput>>(server_client_key: K, domain: String, max_fragment_size: usize) -> Result<Self, String> {
+        let server_client_key = server_client_key.into().parse()?;
+
         let domain = if domain.starts_with('.') {
             domain
         } else {
@@ -36,12 +72,12 @@ impl MumbojumboClient {
         getrandom(&mut random_bytes).expect("Failed to generate random bytes");
         let next_packet_id = u64::from_be_bytes(random_bytes);
 
-        Self {
+        Ok(Self {
             server_client_key,
             domain,
             max_fragment_size,
             next_packet_id,
-        }
+        })
     }
 
     /// Returns the next packet ID and increments counter (wraps at 2^64-1)
@@ -99,8 +135,8 @@ pub struct QueryResult {
     pub success: bool,
 }
 
-/// Parses a key in mj_cli_<hex> format
-pub fn parse_key_hex(key_str: &str) -> Result<[u8; 32], String> {
+/// Parses a key in mj_cli_<hex> format (internal use)
+fn parse_key_hex(key_str: &str) -> Result<[u8; 32], String> {
     if !key_str.starts_with("mj_cli_") {
         return Err("key must start with \"mj_cli_\"".to_string());
     }
@@ -335,15 +371,6 @@ fn main() {
         exit(1);
     }
 
-    // Parse server public key
-    let server_client_key = match parse_key_hex(&key_str) {
-        Ok(key) => key,
-        Err(e) => {
-            eprintln!("Error parsing key: {}", e);
-            exit(1);
-        }
-    };
-
     // Validate domain
     if !domain.starts_with('.') {
         eprintln!("Warning: domain should start with '.', got '{}'", domain);
@@ -365,8 +392,14 @@ fn main() {
         eprintln!("Read {} bytes of input", data.len());
     }
 
-    // Create client
-    let mut client = MumbojumboClient::new(server_client_key, domain, MAX_FRAG_DATA_LEN);
+    // Create client - key parsing happens transparently in constructor
+    let mut client = match MumbojumboClient::new(key_str, domain, MAX_FRAG_DATA_LEN) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error initializing client: {}", e);
+            exit(1);
+        }
+    };
 
     if verbose {
         let fragments = fragment_data(&data, MAX_FRAG_DATA_LEN);

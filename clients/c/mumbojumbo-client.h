@@ -25,9 +25,6 @@ typedef struct {
     uint16_t next_packet_id;
 } MumbojumboClient;
 
-// Key parsing
-int parse_key_hex(const char *key_str, uint8_t key[32]);
-
 // Base32 encoding
 char *base32_encode(const uint8_t *data, size_t len);
 
@@ -60,6 +57,10 @@ void free_fragments(uint8_t **fragments, size_t *frag_lens, size_t count);
 MumbojumboClient *mumbojumbo_client_new(const uint8_t server_client_key[32],
                                         const char *domain,
                                         size_t max_fragment_size);
+// Create client from hex key string (mj_cli_<hex>) - recommended interface
+MumbojumboClient *mumbojumbo_client_new_from_hex(const char *server_client_key_hex,
+                                                  const char *domain,
+                                                  size_t max_fragment_size);
 void mumbojumbo_client_free(MumbojumboClient *client);
 
 int mumbojumbo_send_data(MumbojumboClient *client, const uint8_t *data, size_t data_len,

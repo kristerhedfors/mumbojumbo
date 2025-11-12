@@ -97,22 +97,19 @@ int main(void) {
         return 1;
     }
 
-    // Parse server public key
-    uint8_t server_key[32];
-    if (parse_key_hex("mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e",
-                      server_key) != 0) {
-        return 1;
-    }
-
-    // Initialize client
-    MumbojumboClient *client = mumbojumbo_client_new(server_key, ".asd.qwe", MAX_FRAG_DATA_LEN);
+    // Initialize client with mj_cli_ format key (auto-parsed)
+    MumbojumboClient *client = mumbojumbo_client_new(
+        "mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e",
+        ".asd.qwe",
+        MAX_FRAG_DATA_LEN
+    );
 
     // Send data (actually sends DNS queries)
     QueryResult *results;
     size_t count;
 
     const uint8_t data[] = "Hello World";
-    if (mumbojumbo_send_data(client, data, sizeof(data) - 1, true, &results, &count) != 0) {
+    if (mumbojumbo_send_data(client, data, sizeof(data) - 1, &results, &count) != 0) {
         mumbojumbo_client_free(client);
         return 1;
     }
@@ -148,22 +145,12 @@ gcc -o myapp myapp.c mumbojumbo-client.c -lsodium
 
 ### API Reference
 
-#### `int parse_key_hex(const char *key_str, uint8_t key[32])`
-
-Parses a server public key in `mj_cli_<hex>` format.
-
-**Parameters:**
-- `key_str` - Key string in mj_cli_ format
-- `key` - Output buffer for 32-byte key
-
-**Returns:** 0 on success, -1 on error
-
-#### `MumbojumboClient *mumbojumbo_client_new(const uint8_t server_client_key[32], const char *domain, size_t max_fragment_size)`
+#### `MumbojumboClient *mumbojumbo_client_new(const char *server_client_key_input, const char *domain, size_t max_fragment_size)`
 
 Creates a new client instance.
 
 **Parameters:**
-- `server_client_key` - Server's public key (32 bytes)
+- `server_client_key_input` - Server's public key (mj_cli_ hex string, or raw 32-byte hex)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `max_fragment_size` - Maximum bytes per fragment (default: 80)
 
@@ -176,7 +163,7 @@ Frees client resources.
 **Parameters:**
 - `client` - Client to free
 
-#### `int mumbojumbo_send_data(MumbojumboClient *client, const uint8_t *data, size_t data_len, bool send_queries, QueryResult **out_results, size_t *out_count)`
+#### `int mumbojumbo_send_data(MumbojumboClient *client, const uint8_t *data, size_t data_len, QueryResult **out_results, size_t *out_count)`
 
 Send data via DNS queries.
 
@@ -184,7 +171,6 @@ Send data via DNS queries.
 - `client` - Client instance
 - `data` - Data to send
 - `data_len` - Length of data
-- `send_queries` - If true, actually sends DNS queries
 - `out_results` - Output array of QueryResult (caller must free with free_query_results)
 - `out_count` - Output count of results
 
@@ -223,14 +209,14 @@ Frees query strings.
 
 ### Fragment Structure
 
-Each message is split into 80-byte fragments with a 12-byte header:
+Each message is split into 80-byte fragments with an 18-byte header:
 
 ```
-Bytes 0-1:   packet_id (u16 big-endian)
-Bytes 2-5:   frag_index (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 6-9:   frag_count (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 10-11: data_length (u16 big-endian)
-Bytes 12+:   fragment data (max 80 bytes)
+Bytes 0-7:   packet_id (u64 big-endian) - 64-bit packet ID
+Bytes 8-11:  frag_index (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 12-15: frag_count (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 16-17: data_length (u16 big-endian)
+Bytes 18+:   fragment data (max 80 bytes)
 ```
 
 ### Protocol Capacity
@@ -257,10 +243,10 @@ Bytes 12+:   fragment data (max 80 bytes)
 
 ```
 Input: "Hello World" (11 bytes)
-→ Fragment: 12-byte header + 11 bytes = 23 bytes
-→ Encrypt: 23 + 48 = 71 bytes (SealedBox overhead)
-→ Base32: ~114 characters
-→ DNS: <114-char-base32>.asd.qwe
+→ Fragment: 18-byte header + 11 bytes = 29 bytes
+→ Encrypt: 29 + 48 = 77 bytes (SealedBox overhead)
+→ Base32: ~124 characters
+→ DNS: <124-char-base32>.asd.qwe
 ```
 
 ## Testing

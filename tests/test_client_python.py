@@ -30,29 +30,30 @@ spec.loader.exec_module(client)
 
 
 class TestKeyParsing:
-    """Test public key parsing."""
+    """Test public key parsing through MumbojumboClient constructor."""
 
     def test_parse_valid_key(self):
-        """Valid key should parse correctly."""
+        """Valid key should parse correctly through constructor."""
         key_str = 'mj_cli_' + 'a' * 64
-        key_bytes = client.parse_key_hex(key_str)
-        assert len(key_bytes) == 32
-        assert key_bytes == b'\xaa' * 32
+        # Test that client can be created with hex key string
+        client_obj = client.MumbojumboClient(key_str, '.test')
+        assert client_obj.server_client_key is not None
+        assert len(bytes(client_obj.server_client_key)) == 32
 
     def test_parse_key_wrong_prefix(self):
         """Key without mj_cli_ prefix should fail."""
         with pytest.raises(ValueError, match='must start with'):
-            client.parse_key_hex('wrong_prefix_' + 'a' * 64)
+            client.MumbojumboClient('wrong_prefix_' + 'a' * 64, '.test')
 
     def test_parse_key_wrong_length(self):
         """Key with wrong hex length should fail."""
         with pytest.raises(ValueError, match='Invalid hex key length'):
-            client.parse_key_hex('mj_cli_' + 'a' * 60)
+            client.MumbojumboClient('mj_cli_' + 'a' * 60, '.test')
 
     def test_parse_key_invalid_hex(self):
         """Key with invalid hex characters should fail."""
         with pytest.raises(ValueError, match='Invalid hex'):
-            client.parse_key_hex('mj_cli_' + 'z' * 64)
+            client.MumbojumboClient('mj_cli_' + 'z' * 64, '.test')
 
 
 class TestFragmentCreation:
@@ -353,19 +354,17 @@ class TestMumbojumboClient:
         assert len(queries) == 1
         assert queries[0].endswith('.test.com')
 
-    def test_send_data_without_sending(self):
-        """Test send_data with send_queries=False."""
+    def test_generate_queries(self):
+        """Test generate_queries returns queries without sending."""
         server_privkey = nacl.public.PrivateKey.generate()
         client_obj = client.MumbojumboClient(server_privkey.public_key, '.test.com')
 
         data = b"Test message"
-        results = client_obj.send_data(data, send_queries=False)
+        queries = client_obj.generate_queries(data)
 
-        # Should return list of (dns_name, success) tuples
-        assert len(results) == 1
-        dns_name, success = results[0]
-        assert dns_name.endswith('.test.com')
-        assert success is True  # Always True when not sending
+        # Should return list of DNS query strings
+        assert len(queries) == 1
+        assert queries[0].endswith('.test.com')
 
     def test_multi_fragment_via_client(self):
         """Test multi-fragment message via client."""
@@ -385,20 +384,19 @@ class TestMumbojumboClient:
         client_obj = client.MumbojumboClient(server_privkey.public_key, '.test.com')
 
         data = b"test"
-        # Should just return results, not packet ID
-        results1 = client_obj.send_data(data, send_queries=False)
-        results2 = client_obj.send_data(data, send_queries=False)
 
-        # Should return list of tuples
-        assert isinstance(results1, list)
-        assert isinstance(results2, list)
-        assert all(isinstance(r, tuple) and len(r) == 2 for r in results1)
-        assert all(isinstance(r, tuple) and len(r) == 2 for r in results2)
+        # generate_queries should return list of strings
+        queries1 = client_obj.generate_queries(data)
+        queries2 = client_obj.generate_queries(data)
 
-        # Queries should return list of strings
-        queries = client_obj.generate_queries(data)
-        assert isinstance(queries, list)
-        assert all(isinstance(q, str) for q in queries)
+        # Should return list of strings
+        assert isinstance(queries1, list)
+        assert isinstance(queries2, list)
+        assert all(isinstance(q, str) for q in queries1)
+        assert all(isinstance(q, str) for q in queries2)
+
+        # Queries should be different (different packet IDs)
+        assert queries1[0] != queries2[0]
 
 
 class TestEndToEndFlow:

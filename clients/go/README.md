@@ -62,17 +62,18 @@ import (
 )
 
 func main() {
-    // Parse server public key
-    serverKey, err := ParseKeyHex("mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e")
+    // Initialize client with mj_cli_ format key (auto-parsed)
+    client, err := NewMumbojumboClient(
+        "mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e",
+        ".asd.qwe",
+        80,
+    )
     if err != nil {
         log.Fatal(err)
     }
 
-    // Initialize client
-    client := NewMumbojumboClient(serverKey, ".asd.qwe", 80)
-
     // Send data (actually sends DNS queries)
-    results, err := client.SendData([]byte("Hello World"), true)
+    results, err := client.SendData([]byte("Hello World"))
     if err != nil {
         log.Fatal(err)
     }
@@ -95,33 +96,23 @@ func main() {
 
 ### API Reference
 
-#### `ParseKeyHex(keyStr string) ([32]byte, error)`
-
-Parses a server public key in `mj_cli_<hex>` format.
-
-**Parameters:**
-- `keyStr` - Key string in mj_cli_ format
-
-**Returns:** 32-byte array or error
-
-#### `NewMumbojumboClient(serverPubkey [32]byte, domain string, maxFragmentSize int) *MumbojumboClient`
+#### `NewMumbojumboClient(serverClientKeyInput interface{}, domain string, maxFragmentSize int) (*MumbojumboClient, error)`
 
 Creates a new client instance.
 
 **Parameters:**
-- `serverPubkey` - Server's public key (32 bytes)
+- `serverClientKeyInput` - Server's public key (mj_cli_ hex string, [32]byte, or []byte)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `maxFragmentSize` - Maximum bytes per fragment (default: 80)
 
-**Returns:** Pointer to MumbojumboClient
+**Returns:** Pointer to MumbojumboClient and error
 
-#### `(c *MumbojumboClient) SendData(data []byte, sendQueries bool) ([]QueryResult, error)`
+#### `(c *MumbojumboClient) SendData(data []byte) ([]QueryResult, error)`
 
 Send data via DNS queries.
 
 **Parameters:**
 - `data` - Data to send
-- `sendQueries` - If true, actually sends DNS queries (default: true)
 
 **Returns:** Slice of QueryResult or error
 
@@ -138,14 +129,14 @@ Generate DNS queries without sending them.
 
 ### Fragment Structure
 
-Each message is split into 80-byte fragments with a 12-byte header:
+Each message is split into 80-byte fragments with an 18-byte header:
 
 ```
-Bytes 0-1:   packet_id (u16 big-endian)
-Bytes 2-5:   frag_index (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 6-9:   frag_count (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 10-11: data_length (u16 big-endian)
-Bytes 12+:   fragment data (max 80 bytes)
+Bytes 0-7:   packet_id (u64 big-endian) - 64-bit packet ID
+Bytes 8-11:  frag_index (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 12-15: frag_count (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 16-17: data_length (u16 big-endian)
+Bytes 18+:   fragment data (max 80 bytes)
 ```
 
 ### Protocol Capacity
@@ -172,10 +163,10 @@ Bytes 12+:   fragment data (max 80 bytes)
 
 ```
 Input: "Hello World" (11 bytes)
-→ Fragment: 12-byte header + 11 bytes = 23 bytes
-→ Encrypt: 23 + 48 = 71 bytes (SealedBox overhead)
-→ Base32: ~114 characters
-→ DNS: <114-char-base32>.asd.qwe
+→ Fragment: 18-byte header + 11 bytes = 29 bytes
+→ Encrypt: 29 + 48 = 77 bytes (SealedBox overhead)
+→ Base32: ~124 characters
+→ DNS: <124-char-base32>.asd.qwe
 ```
 
 ## Testing

@@ -155,6 +155,14 @@ class PublicFragment(Fragment):
         One-way anonymous encryption using only the server's public key.
     '''
     def __init__(self, server_key=None, client_key=None, **kw):
+        # Auto-parse hex keys if strings are provided
+        if isinstance(server_key, str):
+            server_key_bytes = decode_key_hex(server_key)
+            server_key = nacl.public.PrivateKey(server_key_bytes)
+        if isinstance(client_key, str):
+            client_key_bytes = decode_key_hex(client_key)
+            client_key = nacl.public.PublicKey(client_key_bytes)
+
         self._server_key = server_key
         self._client_key = client_key
         # For encryption (client side): only needs client_key
@@ -947,27 +955,45 @@ def main():
         print(f'export MUMBOJUMBO_DOMAIN={domain}')
         sys.exit()
 
-    # Default to mumbojumbo.conf if no config specified
-    config_file = opt.config or 'mumbojumbo.conf'
+    # Check if we have minimum required values from env vars or CLI
+    has_server_key = opt.key or os.environ.get('MUMBOJUMBO_SERVER_KEY')
+    has_domain = opt.domain or os.environ.get('MUMBOJUMBO_DOMAIN')
 
-    if not os.path.exists(config_file):
-        print(f'Error: Config file "{config_file}" not found; you can generate one using --gen-conf.')
+    # Determine if we need a config file
+    config_file = opt.config or 'mumbojumbo.conf'
+    use_config_file = os.path.exists(config_file)
+
+    # If no config file and insufficient env vars, error
+    if not use_config_file and not (has_server_key and has_domain):
+        print('Error: Config file not found and required environment variables not set.')
+        print('Either create a config file (--gen-conf) or set environment variables:')
+        print('  export MUMBOJUMBO_SERVER_KEY=mj_srv_...')
+        print('  export MUMBOJUMBO_DOMAIN=.example.com')
         sys.exit(1)
 
+    # Parse config file if it exists
     config = configparser.ConfigParser(allow_no_value=True)
-    config.read(config_file)
+    if use_config_file:
+        config.read(config_file)
+        logger.info(f'Loaded config file: {config_file}')
 
     #
-    # Parse handler pipeline (REQUIRED)
+    # Parse handler pipeline
     #
-    if not config.has_option('main', 'handlers'):
+    # Default to stdout if no config file
+    if use_config_file and config.has_option('main', 'handlers'):
+        handler_names = config.get('main', 'handlers')
+        handler_names = [h.strip() for h in handler_names.split(',')]
+    elif use_config_file:
+        # Config file exists but no handlers specified - error
         logger.error('Missing required "handlers" option in [main] section')
         print('ERROR: Config file must specify "handlers" in [main] section.')
         print('Example: handlers = stdout,smtp,file,execute')
         sys.exit(1)
-
-    handler_names = config.get('main', 'handlers')
-    handler_names = [h.strip() for h in handler_names.split(',')]
+    else:
+        # No config file, use default stdout handler
+        handler_names = ['stdout']
+        logger.info('No config file - using default stdout handler')
 
     if not handler_names:
         logger.error('Handler pipeline is empty')
@@ -1089,7 +1115,7 @@ def main():
     elif os.environ.get('MUMBOJUMBO_SERVER_KEY'):
         server_key_str = os.environ.get('MUMBOJUMBO_SERVER_KEY')
         logger.info('Using server key from MUMBOJUMBO_SERVER_KEY environment variable')
-    elif config.has_option('main', 'mumbojumbo-server-key'):
+    elif use_config_file and config.has_option('main', 'mumbojumbo-server-key'):
         server_key_str = config.get('main', 'mumbojumbo-server-key')
     else:
         logger.error('Missing mumbojumbo-server-key: must be provided via --key, MUMBOJUMBO_SERVER_KEY, or config file')
@@ -1104,7 +1130,7 @@ def main():
     elif os.environ.get('MUMBOJUMBO_DOMAIN'):
         domain = os.environ.get('MUMBOJUMBO_DOMAIN')
         logger.info(f'Using domain from MUMBOJUMBO_DOMAIN environment variable: {domain}')
-    elif config.has_option('main', 'domain'):
+    elif use_config_file and config.has_option('main', 'domain'):
         domain = config.get('main', 'domain')
     else:
         logger.error('Missing domain: must be provided via --domain, MUMBOJUMBO_DOMAIN, or config file')
@@ -1119,32 +1145,41 @@ def main():
         print(f'ERROR: Invalid domain format: {e}')
         sys.exit(1)
 
-    # Client key always from config (not typically overridden)
-    client_key_str = config.get('main', 'mumbojumbo-client-key')
+    # Client key from env or config (optional - only used for validation)
+    client_key_str = None
+    if os.environ.get('MUMBOJUMBO_CLIENT_KEY'):
+        client_key_str = os.environ.get('MUMBOJUMBO_CLIENT_KEY')
+        logger.info('Using client key from MUMBOJUMBO_CLIENT_KEY environment variable')
+    elif use_config_file and config.has_option('main', 'mumbojumbo-client-key'):
+        client_key_str = config.get('main', 'mumbojumbo-client-key')
 
-    # Decode and validate keys
+    # Validate key format before passing to bind()
+    # bind() will parse them transparently
     try:
-        server_key_bytes = decode_key_hex(server_key_str)
-        mumbojumbo_server_key = nacl.public.PrivateKey(server_key_bytes)
-    except (ValueError, nacl.exceptions.CryptoError) as e:
-        logger.error(f'Invalid server key: {e}')
-        print(f'ERROR: Invalid server key format: {e}')
+        # Just validate they're valid hex keys, don't parse yet
+        decode_key_hex(server_key_str)
+        if client_key_str:
+            decode_key_hex(client_key_str)
+    except ValueError as e:
+        logger.error(f'Invalid key format: {e}')
+        print(f'ERROR: Invalid key format: {e}')
         sys.exit(1)
 
-    client_key_bytes = decode_key_hex(client_key_str)
-    mumbojumbo_client_key = nacl.public.PublicKey(client_key_bytes)
-
-    network_interface = config.get('main', 'network-interface')
+    # Network interface from config or default to empty (auto-detect)
+    network_interface = ''
+    if use_config_file and config.has_option('main', 'network-interface'):
+        network_interface = config.get('main', 'network-interface')
 
     logger.info('domain={0}, network_interface={1}'.format(
         domain, network_interface))
 
     #
     # prepare packet fragment class - server uses server_key for decryption
+    # Keys are passed as strings and parsed transparently inside PublicFragment
     #
     pf_cls = DnsPublicFragment.bind(domain=domain,
-                                    server_key=mumbojumbo_server_key,
-                                    client_key=mumbojumbo_client_key)
+                                    server_key=server_key_str,
+                                    client_key=client_key_str)
     #
     # build packet engine based on fragment class
     #
