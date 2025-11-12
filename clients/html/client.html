@@ -185,9 +185,9 @@
         <p class="subtitle">Send encrypted messages over DNS queries</p>
 
         <div class="form-group">
-            <label for="mumbojumboPubKey">Mumbojumbo Public Key (hex):</label>
-            <input type="text" id="mumbojumboPubKey" placeholder="mj_pub_...">
-            <div class="hint">Copy mumbojumbo_pubkey from server config comments (starts with mj_pub_)</div>
+            <label for="mumbojumboClientKey">Mumbojumbo Public Key (hex):</label>
+            <input type="text" id="mumbojumboClientKey" placeholder="mj_cli_...">
+            <div class="hint">Copy mumbojumbo_client_key from server config comments (starts with mj_cli_)</div>
         </div>
 
         <div class="form-group">
@@ -212,7 +212,7 @@
             <strong>📋 How to use:</strong>
             1. Run <code>./venv/bin/python3 mumbojumbo.py --gen-conf</code> on the server<br>
             2. Open the generated config file and find the comment section at the top<br>
-            3. Copy <code>mumbojumbo_pubkey</code> and <code>domain</code> from the comments<br>
+            3. Copy <code>mumbojumbo_client_key</code> and <code>domain</code> from the comments<br>
             4. Paste them into the fields above<br>
             5. Type your message and click "Send via DNS"<br>
             6. Check browser console (F12) to see the generated DNS queries
@@ -226,17 +226,17 @@
         const MAX_FRAG_DATA_LEN = 80;
 
         // Parse and validate keys (both private and public keys are 32 bytes)
-        // Accepts hex format with mj_pub_ or mj_priv_ prefix
+        // Accepts hex format with mj_cli_ or mj_srv_ prefix
         function parseKey(keyStr, keyType) {
             try {
-                // Check for mj_pub_ or mj_priv_ prefix
+                // Check for mj_cli_ or mj_srv_ prefix
                 let hexKey;
-                if (keyStr.startsWith('mj_pub_')) {
-                    hexKey = keyStr.substring(7); // Remove 'mj_pub_' prefix
-                } else if (keyStr.startsWith('mj_priv_')) {
-                    hexKey = keyStr.substring(8); // Remove 'mj_priv_' prefix
+                if (keyStr.startsWith('mj_cli_')) {
+                    hexKey = keyStr.substring(7); // Remove 'mj_cli_' prefix
+                } else if (keyStr.startsWith('mj_srv_')) {
+                    hexKey = keyStr.substring(8); // Remove 'mj_srv_' prefix
                 } else {
-                    throw new Error('Key must start with "mj_pub_" or "mj_priv_" prefix');
+                    throw new Error('Key must start with "mj_cli_" or "mj_srv_" prefix');
                 }
 
                 // Decode hex to bytes
@@ -339,9 +339,9 @@
         }
 
         // Encrypt fragment using NaCl SealedBox (anonymous, one-way encryption)
-        function encryptFragment(plaintext, mumbojumboPubKey) {
+        function encryptFragment(plaintext, mumbojumboClientKey) {
             // SealedBox handles nonce internally - no need for manual nonce management
-            const encrypted = sealedBox.seal(plaintext, mumbojumboPubKey);
+            const encrypted = sealedBox.seal(plaintext, mumbojumboClientKey);
             return encrypted;
         }
 
@@ -354,17 +354,17 @@
 
         // Send message via DNS
         async function sendMessage() {
-            const mumbojumboPubKeyEl = document.getElementById('mumbojumboPubKey');
+            const mumbojumboClientKeyEl = document.getElementById('mumbojumboClientKey');
             const domainEl = document.getElementById('domain');
             const messageEl = document.getElementById('message');
             const statusEl = document.getElementById('status');
             const sendBtn = document.getElementById('sendBtn');
 
-            const mumbojumboPubKeyStr = mumbojumboPubKeyEl.value.trim();
+            const mumbojumboClientKeyStr = mumbojumboClientKeyEl.value.trim();
             const domain = domainEl.value.trim();
             const message = messageEl.value.trim();
 
-            if (!mumbojumboPubKeyStr) {
+            if (!mumbojumboClientKeyStr) {
                 showStatus('Please enter the mumbojumbo public key.', 'error');
                 return;
             }
@@ -384,7 +384,7 @@
 
             try {
                 // Parse mumbojumbo public key (no client keypair needed for SealedBox)
-                const mumbojumboPubKey = parseKey(mumbojumboPubKeyStr, 'mumbojumbo public');
+                const mumbojumboClientKey = parseKey(mumbojumboClientKeyStr, 'mumbojumbo public');
 
                 showStatus(`✓ Parsed key and domain: ${domain}`, 'info');
                 await new Promise(resolve => setTimeout(resolve, 300));
@@ -412,7 +412,7 @@
                     // Encrypt fragment using SealedBox (only needs public key)
                     const encrypted = encryptFragment(
                         fragment,
-                        mumbojumboPubKey
+                        mumbojumboClientKey
                     );
 
                     // Create DNS name
@@ -469,7 +469,7 @@
         }
 
         function clearAll() {
-            document.getElementById('mumbojumboPubKey').value = '';
+            document.getElementById('mumbojumboClientKey').value = '';
             document.getElementById('domain').value = '';
             document.getElementById('message').value = '';
             document.getElementById('status').style.display = 'none';

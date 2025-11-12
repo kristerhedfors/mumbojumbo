@@ -23,7 +23,7 @@ echo ""
 
 # Test 2: Environment variables
 echo "3. Testing environment variables (should show error about missing config file handlers)..."
-export MUMBOJUMBO_PRIVKEY="$PRIVKEY"
+export MUMBOJUMBO_SERVER_KEY="$PRIVKEY"
 export MUMBOJUMBO_DOMAIN=".env.test.com"
 ./venv/bin/python3 mumbojumbo.py 2>&1 | head -3 || true
 echo ""
@@ -35,7 +35,7 @@ echo "   (CLI domain should win over environment domain)"
 echo ""
 
 # Clean up
-unset MUMBOJUMBO_PRIVKEY
+unset MUMBOJUMBO_SERVER_KEY
 unset MUMBOJUMBO_DOMAIN
 
 echo "=== Demo Complete ==="
@@ -43,7 +43,7 @@ echo ""
 echo "Key features implemented:"
 echo "  ✓ -k, --key argument to override private key"
 echo "  ✓ -d, --domain argument to override domain"
-echo "  ✓ MUMBOJUMBO_PRIVKEY environment variable"
+echo "  ✓ MUMBOJUMBO_SERVER_KEY environment variable"
 echo "  ✓ MUMBOJUMBO_DOMAIN environment variable"
 echo "  ✓ Precedence: CLI > Environment > Config file"
 echo "  ✓ Security warning when key provided via CLI"

@@ -93,7 +93,7 @@ Basic fragment serialization and deserialization tests.
 Tests for packet assembly, encryption/decryption, and fragment handling with NaCl SealedBox.
 
 ### test_key_encoding.py
-Tests for key encoding/decoding with `mj_priv_` and `mj_pub_` prefixes.
+Tests for key encoding/decoding with `mj_srv_` and `mj_cli_` prefixes.
 
 ### test_handlers.py
 Comprehensive tests for packet handlers:

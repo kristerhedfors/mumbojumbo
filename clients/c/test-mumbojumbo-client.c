@@ -28,7 +28,7 @@
 static int test_parse_valid_hex_key(void) {
     uint8_t key[32];
     char valid_key[72];
-    strcpy(valid_key, "mj_pub_");
+    strcpy(valid_key, "mj_cli_");
     for (int i = 0; i < 64; i++) {
         strcat(valid_key, "a");
     }
@@ -52,7 +52,7 @@ static int test_reject_key_without_prefix(void) {
 
 static int test_reject_key_with_wrong_length(void) {
     uint8_t key[32];
-    ASSERT(parse_key_hex("mj_pub_aabbccdd", key) != 0, "should reject short key");
+    ASSERT(parse_key_hex("mj_cli_aabbccdd", key) != 0, "should reject short key");
     return 1;
 }
 

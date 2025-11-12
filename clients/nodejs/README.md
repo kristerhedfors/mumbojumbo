@@ -28,25 +28,25 @@ npm install
 ```bash
 # Send message from stdin
 echo "Hello World" | ./mumbojumbo-client.js \
-  -k mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe
 
 # Send message from file
 ./mumbojumbo-client.js \
-  -k mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe \
   -f message.txt
 
 # Verbose mode for debugging
 echo "test" | ./mumbojumbo-client.js \
-  -k mj_pub_... \
+  -k mj_cli_... \
   -d .asd.qwe \
   -v
 ```
 
 ### Command Line Options
 
-- `-k, --key <public_key>` - Server public key in `mj_pub_<hex>` format (required)
+- `-k, --key <public_key>` - Server public key in `mj_cli_<hex>` format (required)
 - `-d, --domain <domain>` - DNS domain suffix, e.g., `.asd.qwe` (required)
 - `-f, --file <path>` - Input file path, use `-` for stdin (default: stdin)
 - `-v, --verbose` - Enable verbose output to stderr
@@ -57,7 +57,7 @@ echo "test" | ./mumbojumbo-client.js \
 const { MumbojumboClient, parseKeyHex } = require('./mumbojumbo-client.js');
 
 // Initialize client
-const serverKey = parseKeyHex('mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e');
+const serverKey = parseKeyHex('mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e');
 const client = new MumbojumboClient(serverKey, '.asd.qwe');
 
 // Send data (actually sends DNS queries)

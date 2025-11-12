@@ -26,12 +26,12 @@
             output += '  sealedBox.seal = ' + (typeof sealedBox.seal) + '\n';
             output += '  sealedBox.open = ' + (typeof sealedBox.open) + '\n';
 
-            // Test 4: Test hex key parsing with mj_pub_ prefix
-            const testKey = 'mj_pub_a2a339d31b459be076e41c366cfc4c5da694258ab884ca8d22d37dda6f9e6a44';
-            output += '\nTest 4: Parse hex key with mj_pub_ prefix\n';
+            // Test 4: Test hex key parsing with mj_cli_ prefix
+            const testKey = 'mj_cli_a2a339d31b459be076e41c366cfc4c5da694258ab884ca8d22d37dda6f9e6a44';
+            output += '\nTest 4: Parse hex key with mj_cli_ prefix\n';
             output += '  Input: ' + testKey + '\n';
 
-            let hexKey = testKey.substring(7); // Remove 'mj_pub_'
+            let hexKey = testKey.substring(7); // Remove 'mj_cli_'
             const keyBytes = new Uint8Array(hexKey.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
             output += '  Parsed length: ' + keyBytes.length + ' bytes ' + (keyBytes.length === 32 ? 'PASS' : 'FAIL') + '\n';
 

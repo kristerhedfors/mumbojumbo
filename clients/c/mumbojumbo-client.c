@@ -6,10 +6,10 @@
 #include <ctype.h>
 #include <sodium.h>
 
-// Parse key in mj_pub_<hex> format
+// Parse key in mj_cli_<hex> format
 int parse_key_hex(const char *key_str, uint8_t key[32]) {
-    if (strncmp(key_str, "mj_pub_", 7) != 0) {
-        fprintf(stderr, "Error: key must start with \"mj_pub_\"\n");
+    if (strncmp(key_str, "mj_cli_", 7) != 0) {
+        fprintf(stderr, "Error: key must start with \"mj_cli_\"\n");
         return -1;
     }
 
@@ -282,13 +282,13 @@ void free_fragments(uint8_t **fragments, size_t *frag_lens, size_t count) {
 }
 
 // Create new client instance
-MumbojumboClient *mumbojumbo_client_new(const uint8_t server_pubkey[32],
+MumbojumboClient *mumbojumbo_client_new(const uint8_t server_client_key[32],
                                         const char *domain,
                                         size_t max_fragment_size) {
     MumbojumboClient *client = malloc(sizeof(MumbojumboClient));
     if (!client) return NULL;
 
-    memcpy(client->server_pubkey, server_pubkey, 32);
+    memcpy(client->server_client_key, server_client_key, 32);
 
     // Auto-prepend dot to domain if needed
     if (domain[0] == '.') {
@@ -349,7 +349,7 @@ int mumbojumbo_send_data(MumbojumboClient *client, const uint8_t *data, size_t d
         uint8_t *encrypted;
         size_t encrypted_len;
 
-        if (encrypt_sealed_box(plaintext, plaintext_len, client->server_pubkey,
+        if (encrypt_sealed_box(plaintext, plaintext_len, client->server_client_key,
                               &encrypted, &encrypted_len) != 0) {
             free(plaintext);
             free_fragments(fragments, frag_lens, frag_count);
@@ -428,7 +428,7 @@ static void print_usage(void) {
         "Usage: mumbojumbo-client -k <key> -d <domain> [options]\n"
         "\n"
         "Required arguments:\n"
-        "  -k <public_key>     Server public key (mj_pub_... format)\n"
+        "  -k <public_key>     Server public key (mj_cli_... format)\n"
         "  -d <domain>         DNS domain suffix (e.g., .asd.qwe)\n"
         "\n"
         "Optional arguments:\n"
@@ -437,9 +437,9 @@ static void print_usage(void) {
         "  -h                  Show this help message\n"
         "\n"
         "Examples:\n"
-        "  echo \"Hello\" | mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe\n"
-        "  mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe -f message.txt\n"
-        "  mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe -v\n"
+        "  echo \"Hello\" | mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe\n"
+        "  mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe -f message.txt\n"
+        "  mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe -v\n"
         "\n"
     );
 }
@@ -487,8 +487,8 @@ int main(int argc, char *argv[]) {
     }
 
     // Parse server public key
-    uint8_t server_pubkey[32];
-    if (parse_key_hex(key_str, server_pubkey) != 0) {
+    uint8_t server_client_key[32];
+    if (parse_key_hex(key_str, server_client_key) != 0) {
         return 1;
     }
 
@@ -542,7 +542,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Create client
-    MumbojumboClient *client = mumbojumbo_client_new(server_pubkey, domain, MAX_FRAG_DATA_LEN);
+    MumbojumboClient *client = mumbojumbo_client_new(server_client_key, domain, MAX_FRAG_DATA_LEN);
     if (!client) {
         fprintf(stderr, "Error: failed to create client\n");
         free(data);

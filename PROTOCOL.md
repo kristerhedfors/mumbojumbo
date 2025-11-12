@@ -192,8 +192,8 @@ Mumbojumbo uses NaCl (libsodium) public-key anonymous encryption via `nacl.publi
 │  │   • Mumbojumbo Private Key (32 bytes)                   │ │
 │  │   • Mumbojumbo Public Key (32 bytes)                    │ │
 │  │                                                          │ │
-│  │ Server stores:  mumbojumbo_privkey, mumbojumbo_pubkey  │ │
-│  │ Client receives: mumbojumbo_pubkey                      │ │
+│  │ Server stores:  mumbojumbo_server_key, mumbojumbo_client_key  │ │
+│  │ Client receives: mumbojumbo_client_key                      │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  Configuration File (mumbojumbo.conf):                        │
@@ -201,14 +201,14 @@ Mumbojumbo uses NaCl (libsodium) public-key anonymous encryption via `nacl.publi
 │  │ [main]                                                   │ │
 │  │ domain = .asd.qwe                                       │ │
 │  │ network-interface = en0                                  │ │
-│  │ mumbojumbo-privkey = xQ9s...N= (base64)                 │ │
-│  │ mumbojumbo-pubkey = wP8r...M= (base64)                  │ │
+│  │ mumbojumbo-server-key = xQ9s...N= (base64)                 │ │
+│  │ mumbojumbo-client-key = wP8r...M= (base64)                  │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  Out-of-Band Transfer:                                        │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │ Client receives via secure channel:                     │ │
-│  │   • mumbojumbo_pubkey = zS1u...P= (base64)              │ │
+│  │   • mumbojumbo_client_key = zS1u...P= (base64)              │ │
 │  │   • domain = .asd.qwe                                   │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
@@ -636,8 +636,8 @@ domain = .asd.qwe
 network-interface = en0
 
 # Base64-encoded NaCl keypair for server (mumbojumbo keys)
-mumbojumbo-privkey = xQ9sAa...0N5K=
-mumbojumbo-pubkey = wP8rZX...Yz4M=
+mumbojumbo-server-key = xQ9sAa...0N5K=
+mumbojumbo-client-key = wP8rZX...Yz4M=
 
 [smtp]
 # Optional: forward received messages via email
@@ -658,13 +658,13 @@ $ ./mumbojumbo.py --gen-conf > mumbojumbo.conf
 $ chmod 600 mumbojumbo.conf
 
 # The config file contains comments showing which keys to give to client:
-#   mumbojumbo_pubkey=<key>
+#   mumbojumbo_client_key=<key>
 ```
 
 ### Client Configuration
 
 Client needs:
-1. `mumbojumbo_pubkey` (32 bytes, base64)
+1. `mumbojumbo_client_key` (32 bytes, base64)
 2. `domain` (e.g., `.asd.qwe`)
 
 These can be hardcoded in client application or loaded from config.
@@ -835,11 +835,11 @@ import base64
 import nacl.public
 
 # Configuration from server
-MUMBOJUMBO_PUBKEY = base64.b64decode('zS1u...P=')
+MUMBOJUMBO_CLIENT_KEY = base64.b64decode('zS1u...P=')
 DOMAIN = '.asd.qwe'
 
 # Create public key
-mumbojumbo_public = nacl.public.PublicKey(MUMBOJUMBO_PUBKEY)
+mumbojumbo_public = nacl.public.PublicKey(MUMBOJUMBO_CLIENT_KEY)
 
 # Create fragment class (client only needs public key for SealedBox)
 from mumbojumbo import DnsPublicFragment, PacketEngine
@@ -911,8 +911,8 @@ network-interface = en0  # or eth0, wlan0, etc.
 
 **Problem:** Decryption fails
 - Verify client is using the correct mumbojumbo public key
-- Check that `mumbojumbo-pubkey` in server config matches the key given to client
-- Ensure server has the correct `mumbojumbo-privkey` to decrypt
+- Check that `mumbojumbo-client-key` in server config matches the key given to client
+- Ensure server has the correct `mumbojumbo-server-key` to decrypt
 
 **Problem:** No queries captured
 - Ensure server is listening on correct network interface
