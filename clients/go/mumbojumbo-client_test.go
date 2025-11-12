@@ -72,7 +72,7 @@ func base32Decode(encoded string) ([]byte, error) {
 // ============================================================================
 
 func TestParseValidHexKey(t *testing.T) {
-	validKey := "mj_pub_" + strings.Repeat("a", 64)
+	validKey := "mj_cli_" + strings.Repeat("a", 64)
 	result, err := ParseKeyHex(validKey)
 
 	if err != nil {
@@ -97,7 +97,7 @@ func TestRejectKeyWithoutPrefix(t *testing.T) {
 }
 
 func TestRejectKeyWithWrongLength(t *testing.T) {
-	_, err := ParseKeyHex("mj_pub_" + strings.Repeat("a", 32))
+	_, err := ParseKeyHex("mj_cli_" + strings.Repeat("a", 32))
 
 	if err == nil {
 		t.Fatal("Expected error for wrong length")
@@ -109,7 +109,7 @@ func TestRejectKeyWithWrongLength(t *testing.T) {
 }
 
 func TestRejectKeyWithInvalidHex(t *testing.T) {
-	_, err := ParseKeyHex("mj_pub_" + strings.Repeat("z", 64))
+	_, err := ParseKeyHex("mj_cli_" + strings.Repeat("z", 64))
 
 	if err == nil {
 		t.Fatal("Expected error for invalid hex")

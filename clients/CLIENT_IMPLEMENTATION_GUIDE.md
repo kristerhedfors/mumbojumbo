@@ -87,7 +87,7 @@ MumbojumboClient(server_public_key, domain, [max_fragment_size=80])
 
 **Internal State:**
 - `_next_packet_id` - Auto-incrementing u16 counter (wraps at 0xFFFF)
-- `server_pubkey` - Server's public key (32 bytes)
+- `server_client_key` - Server's public key (32 bytes)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `max_fragment_size` - Max bytes per fragment (default: 80)
 
@@ -95,9 +95,9 @@ MumbojumboClient(server_public_key, domain, [max_fragment_size=80])
 
 All clients MUST provide these helpers (can be private):
 
-1. **`parse_key_hex(key_str)`** - Parse `mj_pub_<hex>` format
+1. **`parse_key_hex(key_str)`** - Parse `mj_cli_<hex>` format
 2. **`create_fragment(packet_id, frag_index, frag_count, frag_data)`** - Build 12-byte header + data
-3. **`encrypt_fragment(plaintext, server_pubkey)`** - NaCl SealedBox encryption
+3. **`encrypt_fragment(plaintext, server_client_key)`** - NaCl SealedBox encryption
 4. **`base32_encode(data)`** - Lowercase, no padding
 5. **`split_to_labels(data, max_len=63)`** - Split into DNS labels
 6. **`create_dns_query(encrypted, domain)`** - Full DNS name
@@ -200,7 +200,7 @@ All clients MUST support the same command-line interface:
 
 ### Arguments
 
-- `-k, --key <public_key>` - Server public key (mj_pub_... format) **REQUIRED**
+- `-k, --key <public_key>` - Server public key (mj_cli_... format) **REQUIRED**
 - `-d, --domain <domain>` - DNS domain suffix (e.g., `.asd.qwe`) **REQUIRED**
 - `-f, --file <path>` - Input file path, use `-` for stdin (default: stdin)
 - `-v, --verbose` - Enable verbose output to stderr
@@ -209,13 +209,13 @@ All clients MUST support the same command-line interface:
 
 ```bash
 # Send from stdin
-echo "Hello" | ./mumbojumbo-client -k mj_pub_... -d .asd.qwe
+echo "Hello" | ./mumbojumbo-client -k mj_cli_... -d .asd.qwe
 
 # Send from file
-./mumbojumbo-client -k mj_pub_... -d .asd.qwe -f message.txt
+./mumbojumbo-client -k mj_cli_... -d .asd.qwe -f message.txt
 
 # Verbose mode
-./mumbojumbo-client -k mj_pub_... -d .asd.qwe -v
+./mumbojumbo-client -k mj_cli_... -d .asd.qwe -v
 ```
 
 ### Output
@@ -360,7 +360,7 @@ For each language:
 from mumbojumbo_client import MumbojumboClient, parse_key_hex
 
 # Initialize
-key = parse_key_hex('mj_pub_abc123...')
+key = parse_key_hex('mj_cli_abc123...')
 client = MumbojumboClient(key, '.asd.qwe')
 
 # Send data

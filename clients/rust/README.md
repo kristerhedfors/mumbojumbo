@@ -32,25 +32,25 @@ The compiled binary will be at `target/release/mumbojumbo-client`.
 ```bash
 # Send message from stdin
 echo "Hello World" | ./target/release/mumbojumbo-client \
-  -k mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe
 
 # Send message from file
 ./target/release/mumbojumbo-client \
-  -k mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe \
   -f message.txt
 
 # Verbose mode for debugging
 echo "test" | ./target/release/mumbojumbo-client \
-  -k mj_pub_... \
+  -k mj_cli_... \
   -d .asd.qwe \
   -v
 ```
 
 ### Command Line Options
 
-- `-k, --key <public_key>` - Server public key in `mj_pub_<hex>` format (required)
+- `-k, --key <public_key>` - Server public key in `mj_cli_<hex>` format (required)
 - `-d, --domain <domain>` - DNS domain suffix, e.g., `.asd.qwe` (required)
 - `-f, --file <path>` - Input file path, use `-` for stdin (default: stdin)
 - `-v, --verbose` - Enable verbose output to stderr
@@ -64,7 +64,7 @@ use mumbojumbo_client::{MumbojumboClient, parse_key_hex, MAX_FRAG_DATA_LEN};
 
 fn main() -> Result<(), String> {
     // Parse server public key
-    let server_key = parse_key_hex("mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e")?;
+    let server_key = parse_key_hex("mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e")?;
 
     // Initialize client
     let mut client = MumbojumboClient::new(server_key, ".asd.qwe".to_string(), MAX_FRAG_DATA_LEN);
@@ -91,19 +91,19 @@ fn main() -> Result<(), String> {
 
 #### `parse_key_hex(key_str: &str) -> Result<[u8; 32], String>`
 
-Parses a server public key in `mj_pub_<hex>` format.
+Parses a server public key in `mj_cli_<hex>` format.
 
 **Parameters:**
-- `key_str` - Key string in mj_pub_ format
+- `key_str` - Key string in mj_cli_ format
 
 **Returns:** 32-byte array or error
 
-#### `MumbojumboClient::new(server_pubkey: [u8; 32], domain: String, max_fragment_size: usize) -> Self`
+#### `MumbojumboClient::new(server_client_key: [u8; 32], domain: String, max_fragment_size: usize) -> Self`
 
 Creates a new client instance.
 
 **Parameters:**
-- `server_pubkey` - Server's public key (32 bytes)
+- `server_client_key` - Server's public key (32 bytes)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `max_fragment_size` - Maximum bytes per fragment (default: 80)
 

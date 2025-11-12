@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for key encoding/decoding with mj_priv_ and mj_pub_ prefixes."""
+"""Tests for key encoding/decoding with mj_srv_ and mj_cli_ prefixes."""
 
 import pytest
 import nacl.public
@@ -7,117 +7,117 @@ from mumbojumbo import encode_key_hex, decode_key_hex, get_nacl_keypair_hex
 
 
 class TestKeyEncoding:
-    """Test key encoding/decoding with mj_priv_ and mj_pub_ prefixes."""
+    """Test key encoding/decoding with mj_srv_ and mj_cli_ prefixes."""
 
-    def test_encode_public_key(self):
-        """Test encoding public key with mj_pub_ prefix."""
+    def test_encode_client_key(self):
+        """Test encoding client key with mj_cli_ prefix."""
         private_key = nacl.public.PrivateKey.generate()
-        pub_key_bytes = private_key.public_key.encode()
+        cli_key_bytes = private_key.public_key.encode()
 
-        encoded = encode_key_hex(pub_key_bytes, key_type='pub')
+        encoded = encode_key_hex(cli_key_bytes, key_type='cli')
 
         # Check prefix
-        assert encoded.startswith('mj_pub_')
+        assert encoded.startswith('mj_cli_')
 
-        # Check length (mj_pub_ = 7 chars + 64 hex chars = 71 total)
+        # Check length (mj_cli_ = 7 chars + 64 hex chars = 71 total)
         assert len(encoded) == 71
 
         # Check hex encoding
         hex_part = encoded[7:]
-        assert pub_key_bytes.hex() == hex_part
+        assert cli_key_bytes.hex() == hex_part
 
-    def test_encode_private_key(self):
-        """Test encoding private key with mj_priv_ prefix."""
+    def test_encode_server_key(self):
+        """Test encoding server key with mj_srv_ prefix."""
         private_key = nacl.public.PrivateKey.generate()
-        priv_key_bytes = private_key.encode()
+        srv_key_bytes = private_key.encode()
 
-        encoded = encode_key_hex(priv_key_bytes, key_type='priv')
+        encoded = encode_key_hex(srv_key_bytes, key_type='srv')
 
         # Check prefix
-        assert encoded.startswith('mj_priv_')
+        assert encoded.startswith('mj_srv_')
 
-        # Check length (mj_priv_ = 8 chars + 64 hex chars = 72 total)
-        assert len(encoded) == 72
+        # Check length (mj_srv_ = 7 chars + 64 hex chars = 71 total)
+        assert len(encoded) == 71
 
         # Check hex encoding
-        hex_part = encoded[8:]
-        assert priv_key_bytes.hex() == hex_part
+        hex_part = encoded[7:]
+        assert srv_key_bytes.hex() == hex_part
 
     def test_encode_invalid_key_type(self):
         """Test that invalid key_type raises ValueError."""
         private_key = nacl.public.PrivateKey.generate()
         key_bytes = private_key.encode()
 
-        with pytest.raises(ValueError, match='must be "priv" or "pub"'):
+        with pytest.raises(ValueError, match='must be "srv" or "cli"'):
             encode_key_hex(key_bytes, key_type='invalid')
 
-    def test_decode_public_key(self):
-        """Test decoding public key with mj_pub_ prefix."""
+    def test_decode_client_key(self):
+        """Test decoding client key with mj_cli_ prefix."""
         private_key = nacl.public.PrivateKey.generate()
-        pub_key_bytes = private_key.public_key.encode()
+        cli_key_bytes = private_key.public_key.encode()
 
-        encoded = encode_key_hex(pub_key_bytes, key_type='pub')
+        encoded = encode_key_hex(cli_key_bytes, key_type='cli')
         decoded = decode_key_hex(encoded)
 
-        assert pub_key_bytes == decoded
+        assert cli_key_bytes == decoded
 
-    def test_decode_private_key(self):
-        """Test decoding private key with mj_priv_ prefix."""
+    def test_decode_server_key(self):
+        """Test decoding server key with mj_srv_ prefix."""
         private_key = nacl.public.PrivateKey.generate()
-        priv_key_bytes = private_key.encode()
+        srv_key_bytes = private_key.encode()
 
-        encoded = encode_key_hex(priv_key_bytes, key_type='priv')
+        encoded = encode_key_hex(srv_key_bytes, key_type='srv')
         decoded = decode_key_hex(encoded)
 
-        assert priv_key_bytes == decoded
+        assert srv_key_bytes == decoded
 
     def test_decode_invalid_prefix(self):
         """Test that keys without proper prefix raise ValueError."""
         # Test completely invalid prefix
-        with pytest.raises(ValueError, match='must start with "mj_priv_" or "mj_pub_"'):
+        with pytest.raises(ValueError, match='must start with "mj_srv_" or "mj_cli_"'):
             decode_key_hex('invalid_prefix_1234567890abcdef')
 
         # Test legacy mj_ prefix (no longer supported)
-        with pytest.raises(ValueError, match='must start with "mj_priv_" or "mj_pub_"'):
+        with pytest.raises(ValueError, match='must start with "mj_srv_" or "mj_cli_"'):
             decode_key_hex('mj_1234567890abcdef')
 
     def test_decode_invalid_hex(self):
         """Test that invalid hex raises ValueError."""
         with pytest.raises(ValueError, match='Invalid hex key format'):
-            decode_key_hex('mj_pub_GGGGGG')  # G is not valid hex
+            decode_key_hex('mj_cli_GGGGGG')  # G is not valid hex
 
     def test_get_nacl_keypair_hex(self):
         """Test keypair generation with new prefixes."""
-        priv_str, pub_str = get_nacl_keypair_hex()
+        srv_str, cli_str = get_nacl_keypair_hex()
 
         # Check prefixes
-        assert priv_str.startswith('mj_priv_')
-        assert pub_str.startswith('mj_pub_')
+        assert srv_str.startswith('mj_srv_')
+        assert cli_str.startswith('mj_cli_')
 
         # Check lengths
-        assert len(priv_str) == 72
-        assert len(pub_str) == 71
+        assert len(srv_str) == 71
+        assert len(cli_str) == 71
 
         # Decode and verify they form a valid keypair
-        priv_bytes = decode_key_hex(priv_str)
-        pub_bytes = decode_key_hex(pub_str)
+        srv_bytes = decode_key_hex(srv_str)
+        cli_bytes = decode_key_hex(cli_str)
 
         # Reconstruct keypair and verify public key matches
-        private_key = nacl.public.PrivateKey(priv_bytes)
-        assert private_key.public_key.encode() == pub_bytes
+        private_key = nacl.public.PrivateKey(srv_bytes)
+        assert private_key.public_key.encode() == cli_bytes
 
     def test_round_trip_encoding(self):
         """Test encode->decode round trip for both key types."""
         private_key = nacl.public.PrivateKey.generate()
 
-        # Test private key round trip
-        priv_bytes = private_key.encode()
-        priv_encoded = encode_key_hex(priv_bytes, key_type='priv')
-        priv_decoded = decode_key_hex(priv_encoded)
-        assert priv_bytes == priv_decoded
+        # Test server key round trip
+        srv_bytes = private_key.encode()
+        srv_encoded = encode_key_hex(srv_bytes, key_type='srv')
+        srv_decoded = decode_key_hex(srv_encoded)
+        assert srv_bytes == srv_decoded
 
-        # Test public key round trip
-        pub_bytes = private_key.public_key.encode()
-        pub_encoded = encode_key_hex(pub_bytes, key_type='pub')
-        pub_decoded = decode_key_hex(pub_encoded)
-        assert pub_bytes == pub_decoded
+        # Test client key round trip
+        cli_bytes = private_key.public_key.encode()
+        cli_encoded = encode_key_hex(cli_bytes, key_type='cli')
+        cli_decoded = decode_key_hex(cli_encoded)
+        assert cli_bytes == cli_decoded

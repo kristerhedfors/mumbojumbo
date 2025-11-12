@@ -18,10 +18,10 @@ class TestPublicFragment:
     def do_test_cls(self, cls, multi_public_serialize_deserialize, **kw):
         """Test encrypted fragment class with various data sizes."""
         # For SealedBox: Only need one keypair (server keypair)
-        # Client encrypts with public_key, server decrypts with private_key
+        # Client encrypts with client_key, server decrypts with server_key
         server_privkey = nacl.public.PrivateKey.generate()
-        pfcls_encrypt = cls.bind(public_key=server_privkey.public_key, **kw)
-        pfcls_decrypt = cls.bind(private_key=server_privkey, **kw)
+        pfcls_encrypt = cls.bind(client_key=server_privkey.public_key, **kw)
+        pfcls_decrypt = cls.bind(server_key=server_privkey, **kw)
         multi_public_serialize_deserialize(pfcls_encrypt, pfcls_decrypt)
 
     def test_classes(self, multi_public_serialize_deserialize):
@@ -51,8 +51,8 @@ class TestPacketEngine:
 
         # For SealedBox: Only need one keypair (server keypair)
         server_privkey = nacl.public.PrivateKey.generate()
-        pfcls_encrypt = DnsPublicFragment.bind(public_key=server_privkey.public_key)
-        pfcls_decrypt = DnsPublicFragment.bind(private_key=server_privkey)
+        pfcls_encrypt = DnsPublicFragment.bind(client_key=server_privkey.public_key)
+        pfcls_decrypt = DnsPublicFragment.bind(server_key=server_privkey)
 
         # Create packet engines
         pe_encrypt = PacketEngine(frag_cls=pfcls_encrypt, max_frag_data_len=100)

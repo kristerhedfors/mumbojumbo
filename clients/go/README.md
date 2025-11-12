@@ -28,25 +28,25 @@ go build -o mumbojumbo-client mumbojumbo-client.go
 ```bash
 # Send message from stdin
 echo "Hello World" | ./mumbojumbo-client \
-  -k mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe
 
 # Send message from file
 ./mumbojumbo-client \
-  -k mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe \
   -f message.txt
 
 # Verbose mode for debugging
 echo "test" | ./mumbojumbo-client \
-  -k mj_pub_... \
+  -k mj_cli_... \
   -d .asd.qwe \
   -v
 ```
 
 ### Command Line Options
 
-- `-k, --key <public_key>` - Server public key in `mj_pub_<hex>` format (required)
+- `-k, --key <public_key>` - Server public key in `mj_cli_<hex>` format (required)
 - `-d, --domain <domain>` - DNS domain suffix, e.g., `.asd.qwe` (required)
 - `-f, --file <path>` - Input file path, use `-` for stdin (default: stdin)
 - `-v, --verbose` - Enable verbose output to stderr
@@ -63,7 +63,7 @@ import (
 
 func main() {
     // Parse server public key
-    serverKey, err := ParseKeyHex("mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e")
+    serverKey, err := ParseKeyHex("mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e")
     if err != nil {
         log.Fatal(err)
     }
@@ -97,10 +97,10 @@ func main() {
 
 #### `ParseKeyHex(keyStr string) ([32]byte, error)`
 
-Parses a server public key in `mj_pub_<hex>` format.
+Parses a server public key in `mj_cli_<hex>` format.
 
 **Parameters:**
-- `keyStr` - Key string in mj_pub_ format
+- `keyStr` - Key string in mj_cli_ format
 
 **Returns:** 32-byte array or error
 

@@ -93,9 +93,9 @@ def test_performance():
 
     _key = r'nQV+KhrNM2kbJGCrm+LlfPfiCodLV9A4Ldok4f6gvD4='
     private_key = nacl.public.PrivateKey(base64.b64decode(_key))
-    # For SealedBox: client uses public_key only, server uses private_key only
-    pfcls_encrypt = DnsPublicFragment.bind(public_key=private_key.public_key)
-    pfcls_decrypt = DnsPublicFragment.bind(private_key=private_key)
+    # For SealedBox: client uses client_key only, server uses server_key only
+    pfcls_encrypt = DnsPublicFragment.bind(client_key=private_key.public_key)
+    pfcls_decrypt = DnsPublicFragment.bind(server_key=private_key)
     packet_engine_encrypt = PacketEngine(pfcls_encrypt)
     packet_engine_decrypt = PacketEngine(pfcls_decrypt)
     data = nacl.public.random(1024)

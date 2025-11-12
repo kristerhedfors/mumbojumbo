@@ -130,10 +130,10 @@ class Fragment(BaseFragment):
         # Pass keys if they exist (for PublicFragment subclasses)
         kw = {'packet_id': packet_id, 'frag_index': frag_index,
               'frag_count': frag_count, 'frag_data': frag_data}
-        if hasattr(self, '_private_key'):
-            kw['private_key'] = self._private_key
-        if hasattr(self, '_public_key'):
-            kw['public_key'] = self._public_key
+        if hasattr(self, '_server_key'):
+            kw['server_key'] = self._server_key
+        if hasattr(self, '_client_key'):
+            kw['client_key'] = self._client_key
         if hasattr(self, '_domain'):
             kw['domain'] = self._domain
         return self.__class__(**kw)
@@ -144,17 +144,17 @@ class PublicFragment(Fragment):
         Packet fragment encrypted/decrypted using nacl.public.SealedBox().
         One-way anonymous encryption using only the server's public key.
     '''
-    def __init__(self, private_key=None, public_key=None, **kw):
-        self._private_key = private_key
-        self._public_key = public_key
-        # For encryption (client side): only needs public_key
-        # For decryption (server side): only needs private_key
-        if public_key is not None:
-            self._sealedbox_encrypt = nacl.public.SealedBox(public_key)
+    def __init__(self, server_key=None, client_key=None, **kw):
+        self._server_key = server_key
+        self._client_key = client_key
+        # For encryption (client side): only needs client_key
+        # For decryption (server side): only needs server_key
+        if client_key is not None:
+            self._sealedbox_encrypt = nacl.public.SealedBox(client_key)
         else:
             self._sealedbox_encrypt = None
-        if private_key is not None:
-            self._sealedbox_decrypt = nacl.public.SealedBox(private_key)
+        if server_key is not None:
+            self._sealedbox_decrypt = nacl.public.SealedBox(server_key)
         else:
             self._sealedbox_decrypt = None
         super(PublicFragment, self).__init__(**kw)
@@ -401,12 +401,12 @@ Quick Start:
      $ sudo ./mumbojumbo.py
 
   3. Send data from client:
-     $ echo "data" | ./clients/python/mumbojumbo-client.py -k $MUMBOJUMBO_PUBKEY -d $MUMBOJUMBO_DOMAIN
+     $ echo "data" | ./clients/python/mumbojumbo-client.py -k $MUMBOJUMBO_CLIENT_KEY -d $MUMBOJUMBO_DOMAIN
 
 Environment Variables:
-  MUMBOJUMBO_PRIVKEY  Server private key (overrides config file)
-  MUMBOJUMBO_PUBKEY   Server public key (for client use with -k)
-  MUMBOJUMBO_DOMAIN   Domain suffix (overrides config file)
+  MUMBOJUMBO_SERVER_KEY  Server private key (overrides config file)
+  MUMBOJUMBO_CLIENT_KEY  Server public key (for client use with -k)
+  MUMBOJUMBO_DOMAIN      Domain suffix (overrides config file)
 
 Precedence: CLI args > Environment variables > Config file
 '''
@@ -418,11 +418,11 @@ __config_skel__ = '''\
 #
 # for use on client-side:
 #   domain = .asd.qwe
-#   mumbojumbo_pubkey = {mumbojumbo_pubkey}
+#   mumbojumbo_client_key = {mumbojumbo_client_key}
 #
-# Keys are in hex format with mj_priv_ or mj_pub_ prefix for easy identification.
-# Format: mj_priv_<64_hex_chars> for private keys
-#         mj_pub_<64_hex_chars> for public keys
+# Keys are in hex format with mj_srv_ or mj_cli_ prefix for easy identification.
+# Format: mj_srv_<64_hex_chars> for server keys
+#         mj_cli_<64_hex_chars> for client keys
 #
 
 [main]
@@ -433,8 +433,8 @@ network-interface = en0
 # Handler pipeline: comma-separated list of handlers (REQUIRED)
 # Available handlers: stdout, smtp, file, execute
 handlers = stdout
-mumbojumbo-privkey = {mumbojumbo_privkey}
-mumbojumbo-pubkey = {mumbojumbo_pubkey}
+mumbojumbo-server-key = {mumbojumbo_server_key}
+mumbojumbo-client-key = {mumbojumbo_client_key}
 
 [smtp]
 server = 127.0.0.1
@@ -461,8 +461,8 @@ def option_parser():
     p = optparse.OptionParser(usage=__usage__)
     p.add_option('-c', '--config', metavar='path',
                  help='use this config file')
-    p.add_option('-k', '--key', metavar='privkey',
-                 help='override mumbojumbo-privkey from config (format: mj_priv_<64_hex_chars>)')
+    p.add_option('-k', '--key', metavar='server_key',
+                 help='override mumbojumbo-server-key from config (format: mj_srv_<64_hex_chars>)')
     p.add_option('-d', '--domain', metavar='domain',
                  help='override domain from config (e.g., .example.com)')
     p.add_option('', '--gen-keys', action='store_true',
@@ -476,36 +476,36 @@ def option_parser():
     return p
 
 
-def encode_key_hex(key_bytes, key_type='pub'):
+def encode_key_hex(key_bytes, key_type='cli'):
     '''
-        Encode NaCL key bytes to hex format with mj_priv_ or mj_pub_ prefix.
-        Format: mj_priv_<hex_encoded_key> or mj_pub_<hex_encoded_key>
+        Encode NaCL key bytes to hex format with mj_srv_ or mj_cli_ prefix.
+        Format: mj_srv_<hex_encoded_key> or mj_cli_<hex_encoded_key>
 
         Args:
             key_bytes: Raw key bytes to encode
-            key_type: Either 'priv' for private keys or 'pub' for public keys
+            key_type: Either 'srv' for server keys or 'cli' for client keys
 
         Returns:
             Hex-encoded key with appropriate prefix
     '''
-    if key_type not in ('priv', 'pub'):
-        raise ValueError('key_type must be "priv" or "pub"')
+    if key_type not in ('srv', 'cli'):
+        raise ValueError('key_type must be "srv" or "cli"')
     hex_key = key_bytes.hex()
     return f'mj_{key_type}_{hex_key}'
 
 
 def decode_key_hex(key_str):
     '''
-        Decode hex-formatted key with mj_priv_ or mj_pub_ prefix to bytes.
-        Accepts: mj_priv_<hex_encoded_key> or mj_pub_<hex_encoded_key>
+        Decode hex-formatted key with mj_srv_ or mj_cli_ prefix to bytes.
+        Accepts: mj_srv_<hex_encoded_key> or mj_cli_<hex_encoded_key>
         Returns: raw key bytes
     '''
-    if key_str.startswith('mj_priv_'):
-        hex_key = key_str[8:]  # Remove 'mj_priv_' prefix
-    elif key_str.startswith('mj_pub_'):
-        hex_key = key_str[7:]  # Remove 'mj_pub_' prefix
+    if key_str.startswith('mj_srv_'):
+        hex_key = key_str[7:]  # Remove 'mj_srv_' prefix
+    elif key_str.startswith('mj_cli_'):
+        hex_key = key_str[7:]  # Remove 'mj_cli_' prefix
     else:
-        raise ValueError('Key must start with "mj_priv_" or "mj_pub_" prefix')
+        raise ValueError('Key must start with "mj_srv_" or "mj_cli_" prefix')
 
     try:
         return bytes.fromhex(hex_key)
@@ -531,13 +531,13 @@ def validate_domain(domain):
 
 def get_nacl_keypair_hex():
     '''
-        Generate NaCL keypair and return as hex strings with mj_priv_ and mj_pub_ prefixes.
-        Returns: (private_key_string, public_key_string)
+        Generate NaCL keypair and return as hex strings with mj_srv_ and mj_cli_ prefixes.
+        Returns: (server_key_string, client_key_string)
     '''
     private_key = nacl.public.PrivateKey.generate()
-    priv = encode_key_hex(private_key.encode(), key_type='priv')
-    pub = encode_key_hex(private_key.public_key.encode(), key_type='pub')
-    return (priv, pub)
+    srv = encode_key_hex(private_key.encode(), key_type='srv')
+    cli = encode_key_hex(private_key.public_key.encode(), key_type='cli')
+    return (srv, cli)
 
 
 def get_nacl_keypair_base64():
@@ -893,7 +893,7 @@ def main():
     setup_logging(verbose=opt.verbose)
 
     if opt.gen_conf:
-        (mumbojumbo_privkey, mumbojumbo_pubkey) = get_nacl_keypair_hex()
+        (mumbojumbo_server_key, mumbojumbo_client_key) = get_nacl_keypair_hex()
 
         # Find available filename: mumbojumbo.conf, mumbojumbo.conf.1, etc.
         filename = 'mumbojumbo.conf'
@@ -904,8 +904,8 @@ def main():
 
         # Write config to file
         config_content = __config_skel__.format(
-            mumbojumbo_privkey=mumbojumbo_privkey,
-            mumbojumbo_pubkey=mumbojumbo_pubkey
+            mumbojumbo_server_key=mumbojumbo_server_key,
+            mumbojumbo_client_key=mumbojumbo_client_key
         )
         with open(filename, 'w') as f:
             f.write(config_content)
@@ -914,7 +914,7 @@ def main():
         sys.exit()
 
     if opt.gen_keys:
-        (priv, pub) = get_nacl_keypair_hex()
+        (srv, cli) = get_nacl_keypair_hex()
 
         # Generate random domain suffix
         import secrets
@@ -922,8 +922,8 @@ def main():
         domain = f'.{random_suffix[:4]}.{random_suffix[4:]}'
 
         # Output as environment variable declarations for easy sourcing
-        print(f'export MUMBOJUMBO_PRIVKEY={priv}  # Server private key')
-        print(f'export MUMBOJUMBO_PUBKEY={pub}   # Client public key (use with -k)')
+        print(f'export MUMBOJUMBO_SERVER_KEY={srv}  # Server private key')
+        print(f'export MUMBOJUMBO_CLIENT_KEY={cli}   # Client public key (use with -k)')
         print(f'export MUMBOJUMBO_DOMAIN={domain}  # Domain for both server and client (use with -d)')
         sys.exit()
 
@@ -1057,23 +1057,23 @@ def main():
             sys.exit(1)
 
     #
-    # parse NaCL keys (hex format with mj_priv_ or mj_pub_ prefix)
+    # parse NaCL keys (hex format with mj_srv_ or mj_cli_ prefix)
     # Precedence: CLI args > Environment variables > Config file
     #
 
-    # Get private key with precedence chain
-    privkey_str = None
+    # Get server key with precedence chain
+    server_key_str = None
     if opt.key:
-        privkey_str = opt.key
-        logger.warning('Private key provided via CLI argument - this is visible in process list. Consider using MUMBOJUMBO_PRIVKEY environment variable instead.')
-    elif os.environ.get('MUMBOJUMBO_PRIVKEY'):
-        privkey_str = os.environ.get('MUMBOJUMBO_PRIVKEY')
-        logger.info('Using private key from MUMBOJUMBO_PRIVKEY environment variable')
-    elif config.has_option('main', 'mumbojumbo-privkey'):
-        privkey_str = config.get('main', 'mumbojumbo-privkey')
+        server_key_str = opt.key
+        logger.warning('Server key provided via CLI argument - this is visible in process list. Consider using MUMBOJUMBO_SERVER_KEY environment variable instead.')
+    elif os.environ.get('MUMBOJUMBO_SERVER_KEY'):
+        server_key_str = os.environ.get('MUMBOJUMBO_SERVER_KEY')
+        logger.info('Using server key from MUMBOJUMBO_SERVER_KEY environment variable')
+    elif config.has_option('main', 'mumbojumbo-server-key'):
+        server_key_str = config.get('main', 'mumbojumbo-server-key')
     else:
-        logger.error('Missing mumbojumbo-privkey: must be provided via --key, MUMBOJUMBO_PRIVKEY, or config file')
-        print('ERROR: Private key required (use --key, MUMBOJUMBO_PRIVKEY env var, or config file)')
+        logger.error('Missing mumbojumbo-server-key: must be provided via --key, MUMBOJUMBO_SERVER_KEY, or config file')
+        print('ERROR: Server key required (use --key, MUMBOJUMBO_SERVER_KEY env var, or config file)')
         sys.exit(1)
 
     # Get domain with precedence chain
@@ -1099,20 +1099,20 @@ def main():
         print(f'ERROR: Invalid domain format: {e}')
         sys.exit(1)
 
-    # Public key always from config (not typically overridden)
-    pubkey_str = config.get('main', 'mumbojumbo-pubkey')
+    # Client key always from config (not typically overridden)
+    client_key_str = config.get('main', 'mumbojumbo-client-key')
 
     # Decode and validate keys
     try:
-        privkey_bytes = decode_key_hex(privkey_str)
-        mumbojumbo_privkey = nacl.public.PrivateKey(privkey_bytes)
+        server_key_bytes = decode_key_hex(server_key_str)
+        mumbojumbo_server_key = nacl.public.PrivateKey(server_key_bytes)
     except (ValueError, nacl.exceptions.CryptoError) as e:
-        logger.error(f'Invalid private key: {e}')
-        print(f'ERROR: Invalid private key format: {e}')
+        logger.error(f'Invalid server key: {e}')
+        print(f'ERROR: Invalid server key format: {e}')
         sys.exit(1)
 
-    pubkey_bytes = decode_key_hex(pubkey_str)
-    mumbojumbo_pubkey = nacl.public.PublicKey(pubkey_bytes)
+    client_key_bytes = decode_key_hex(client_key_str)
+    mumbojumbo_client_key = nacl.public.PublicKey(client_key_bytes)
 
     network_interface = config.get('main', 'network-interface')
 
@@ -1120,11 +1120,11 @@ def main():
         domain, network_interface))
 
     #
-    # prepare packet fragment class - server uses private key for decryption
+    # prepare packet fragment class - server uses server_key for decryption
     #
     pf_cls = DnsPublicFragment.bind(domain=domain,
-                                    private_key=mumbojumbo_privkey,
-                                    public_key=mumbojumbo_pubkey)
+                                    server_key=mumbojumbo_server_key,
+                                    client_key=mumbojumbo_client_key)
     #
     # build packet engine based on fragment class
     #

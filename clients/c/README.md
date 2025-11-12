@@ -60,25 +60,25 @@ This installs to `/usr/local/bin/mumbojumbo-client`.
 ```bash
 # Send message from stdin
 echo "Hello World" | ./mumbojumbo-client \
-  -k mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe
 
 # Send message from file
 ./mumbojumbo-client \
-  -k mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe \
   -f message.txt
 
 # Verbose mode for debugging
 echo "test" | ./mumbojumbo-client \
-  -k mj_pub_... \
+  -k mj_cli_... \
   -d .asd.qwe \
   -v
 ```
 
 ### Command Line Options
 
-- `-k <public_key>` - Server public key in `mj_pub_<hex>` format (required)
+- `-k <public_key>` - Server public key in `mj_cli_<hex>` format (required)
 - `-d <domain>` - DNS domain suffix, e.g., `.asd.qwe` (required)
 - `-f <path>` - Input file path, use `-` for stdin (default: stdin)
 - `-v` - Enable verbose output to stderr
@@ -99,7 +99,7 @@ int main(void) {
 
     // Parse server public key
     uint8_t server_key[32];
-    if (parse_key_hex("mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e",
+    if (parse_key_hex("mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e",
                       server_key) != 0) {
         return 1;
     }
@@ -150,20 +150,20 @@ gcc -o myapp myapp.c mumbojumbo-client.c -lsodium
 
 #### `int parse_key_hex(const char *key_str, uint8_t key[32])`
 
-Parses a server public key in `mj_pub_<hex>` format.
+Parses a server public key in `mj_cli_<hex>` format.
 
 **Parameters:**
-- `key_str` - Key string in mj_pub_ format
+- `key_str` - Key string in mj_cli_ format
 - `key` - Output buffer for 32-byte key
 
 **Returns:** 0 on success, -1 on error
 
-#### `MumbojumboClient *mumbojumbo_client_new(const uint8_t server_pubkey[32], const char *domain, size_t max_fragment_size)`
+#### `MumbojumboClient *mumbojumbo_client_new(const uint8_t server_client_key[32], const char *domain, size_t max_fragment_size)`
 
 Creates a new client instance.
 
 **Parameters:**
-- `server_pubkey` - Server's public key (32 bytes)
+- `server_client_key` - Server's public key (32 bytes)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `max_fragment_size` - Maximum bytes per fragment (default: 80)
 

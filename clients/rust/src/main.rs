@@ -16,7 +16,7 @@ const SEALED_BOX_OH: usize = 48; // 32-byte ephemeral pubkey + 16-byte tag
 
 /// MumbojumboClient handles DNS tunneling operations
 pub struct MumbojumboClient {
-    server_pubkey: [u8; 32],
+    server_client_key: [u8; 32],
     domain: String,
     max_fragment_size: usize,
     next_packet_id: u16,
@@ -24,7 +24,7 @@ pub struct MumbojumboClient {
 
 impl MumbojumboClient {
     /// Creates a new client instance
-    pub fn new(server_pubkey: [u8; 32], domain: String, max_fragment_size: usize) -> Self {
+    pub fn new(server_client_key: [u8; 32], domain: String, max_fragment_size: usize) -> Self {
         let domain = if domain.starts_with('.') {
             domain
         } else {
@@ -37,7 +37,7 @@ impl MumbojumboClient {
         let next_packet_id = u16::from_be_bytes(random_bytes);
 
         Self {
-            server_pubkey,
+            server_client_key,
             domain,
             max_fragment_size,
             next_packet_id,
@@ -64,7 +64,7 @@ impl MumbojumboClient {
             let plaintext = create_fragment(packet_id, frag_index as u32, frag_count, frag_data)?;
 
             // Encrypt with SealedBox
-            let encrypted = encrypt_sealed_box(&plaintext, &self.server_pubkey)?;
+            let encrypted = encrypt_sealed_box(&plaintext, &self.server_client_key)?;
 
             // Create DNS query name
             let dns_name = create_dns_query(&encrypted, &self.domain);
@@ -99,10 +99,10 @@ pub struct QueryResult {
     pub success: bool,
 }
 
-/// Parses a key in mj_pub_<hex> format
+/// Parses a key in mj_cli_<hex> format
 pub fn parse_key_hex(key_str: &str) -> Result<[u8; 32], String> {
-    if !key_str.starts_with("mj_pub_") {
-        return Err("key must start with \"mj_pub_\"".to_string());
+    if !key_str.starts_with("mj_cli_") {
+        return Err("key must start with \"mj_cli_\"".to_string());
     }
 
     let hex_key = &key_str[7..];
@@ -263,7 +263,7 @@ Mumbojumbo DNS Client - Rust Implementation
 Usage: mumbojumbo-client -k <key> -d <domain> [options]
 
 Required arguments:
-  -k, --key <public_key>     Server public key (mj_pub_... format)
+  -k, --key <public_key>     Server public key (mj_cli_... format)
   -d, --domain <domain>      DNS domain suffix (e.g., .asd.qwe)
 
 Optional arguments:
@@ -271,9 +271,9 @@ Optional arguments:
   -v, --verbose              Enable verbose output to stderr
 
 Examples:
-  echo "Hello" | mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe
-  mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe -f message.txt
-  mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe -v
+  echo "Hello" | mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe
+  mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe -f message.txt
+  mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe -v
 "#
     );
 }
@@ -336,7 +336,7 @@ fn main() {
     }
 
     // Parse server public key
-    let server_pubkey = match parse_key_hex(&key_str) {
+    let server_client_key = match parse_key_hex(&key_str) {
         Ok(key) => key,
         Err(e) => {
             eprintln!("Error parsing key: {}", e);
@@ -366,7 +366,7 @@ fn main() {
     }
 
     // Create client
-    let mut client = MumbojumboClient::new(server_pubkey, domain, MAX_FRAG_DATA_LEN);
+    let mut client = MumbojumboClient::new(server_client_key, domain, MAX_FRAG_DATA_LEN);
 
     if verbose {
         let fragments = fragment_data(&data, MAX_FRAG_DATA_LEN);
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_parse_valid_hex_key() {
-        let valid_key = format!("mj_pub_{}", "a".repeat(64));
+        let valid_key = format!("mj_cli_{}", "a".repeat(64));
         let result = parse_key_hex(&valid_key).unwrap();
         assert_eq!(result[0], 0xaa);
     }
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_reject_key_with_wrong_length() {
-        let result = parse_key_hex(&format!("mj_pub_{}", "a".repeat(32)));
+        let result = parse_key_hex(&format!("mj_cli_{}", "a".repeat(32)));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid hex key length"));
     }
@@ -588,9 +588,9 @@ mod tests {
 
     #[test]
     fn test_encrypt_fragment() {
-        let server_pubkey = [0xaau8; 32];
+        let server_client_key = [0xaau8; 32];
         let plaintext = b"secret data";
-        let encrypted = encrypt_sealed_box(plaintext, &server_pubkey).unwrap();
+        let encrypted = encrypt_sealed_box(plaintext, &server_client_key).unwrap();
         assert_eq!(encrypted.len(), plaintext.len() + SEALED_BOX_OH);
     }
 

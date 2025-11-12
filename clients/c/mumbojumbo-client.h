@@ -19,7 +19,7 @@ typedef struct {
 
 // MumbojumboClient structure
 typedef struct {
-    uint8_t server_pubkey[32];
+    uint8_t server_client_key[32];
     char *domain;
     size_t max_fragment_size;
     uint16_t next_packet_id;
@@ -57,7 +57,7 @@ int fragment_data(const uint8_t *data, size_t data_len, size_t max_fragment_size
 void free_fragments(uint8_t **fragments, size_t *frag_lens, size_t count);
 
 // Client API
-MumbojumboClient *mumbojumbo_client_new(const uint8_t server_pubkey[32],
+MumbojumboClient *mumbojumbo_client_new(const uint8_t server_client_key[32],
                                         const char *domain,
                                         size_t max_fragment_size);
 void mumbojumbo_client_free(MumbojumboClient *client);

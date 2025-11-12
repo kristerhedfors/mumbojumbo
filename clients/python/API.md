@@ -10,10 +10,10 @@ The `MumbojumboClient` class provides a clean, modular interface for sending dat
 from mumbojumbo_client import MumbojumboClient, parse_key_hex
 
 # Parse server public key
-server_pubkey = parse_key_hex('mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e')
+server_client_key = parse_key_hex('mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e')
 
 # Initialize client
-client = MumbojumboClient(server_pubkey, '.asd.qwe')
+client = MumbojumboClient(server_client_key, '.asd.qwe')
 
 # Send data
 results = client.send_data(b"Hello World")
@@ -90,10 +90,10 @@ print(f"Generated {len(queries)} queries")
 
 #### `parse_key_hex(key_str)`
 
-Parse a hex-encoded public key in `mj_pub_<hex>` format.
+Parse a hex-encoded public key in `mj_cli_<hex>` format.
 
 **Parameters:**
-- `key_str`: Key string (e.g., `'mj_pub_abc123...'`)
+- `key_str`: Key string (e.g., `'mj_cli_abc123...'`)
 
 **Returns:**
 - `bytes`: 32-byte public key
@@ -106,7 +106,7 @@ Parse a hex-encoded public key in `mj_pub_<hex>` format.
 The following functions are available for custom implementations:
 
 - `create_fragment(packet_id, frag_index, frag_count, frag_data)` - Build fragment with 12-byte header
-- `encrypt_fragment(plaintext, server_pubkey)` - Encrypt with NaCl SealedBox
+- `encrypt_fragment(plaintext, server_client_key)` - Encrypt with NaCl SealedBox
 - `base32_encode(data)` - Base32 encode (lowercase, no padding)
 - `split_to_labels(data, max_len=63)` - Split into DNS labels
 - `create_dns_query(encrypted, domain)` - Create full DNS query name
@@ -122,7 +122,7 @@ The following functions are available for custom implementations:
 from mumbojumbo_client import MumbojumboClient, parse_key_hex
 
 # Configuration
-SERVER_KEY = 'mj_pub_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e'
+SERVER_KEY = 'mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e'
 DOMAIN = '.asd.qwe'
 
 # Read file
@@ -144,7 +144,7 @@ print(f"Sent {success_count}/{len(results)} fragments (packet 0x{packet_id:04x})
 #!/usr/bin/env python3
 from mumbojumbo_client import MumbojumboClient, parse_key_hex
 
-SERVER_KEY = parse_key_hex('mj_pub_...')
+SERVER_KEY = parse_key_hex('mj_cli_...')
 client = MumbojumboClient(SERVER_KEY, '.asd.qwe')
 
 messages = [
@@ -166,7 +166,7 @@ for msg in messages:
 from mumbojumbo_client import MumbojumboClient, parse_key_hex
 import dns.resolver  # dnspython library
 
-SERVER_KEY = parse_key_hex('mj_pub_...')
+SERVER_KEY = parse_key_hex('mj_cli_...')
 client = MumbojumboClient(SERVER_KEY, '.asd.qwe')
 
 # Generate queries without sending
@@ -233,13 +233,13 @@ The module also provides a command-line interface:
 
 ```bash
 # Send from stdin
-echo "Hello" | ./mumbojumbo-client.py -k mj_pub_... -d .asd.qwe
+echo "Hello" | ./mumbojumbo-client.py -k mj_cli_... -d .asd.qwe
 
 # Send from file
-./mumbojumbo-client.py -k mj_pub_... -d .asd.qwe -f message.txt
+./mumbojumbo-client.py -k mj_cli_... -d .asd.qwe -f message.txt
 
 # Verbose mode
-./mumbojumbo-client.py -k mj_pub_... -d .asd.qwe -v
+./mumbojumbo-client.py -k mj_cli_... -d .asd.qwe -v
 ```
 
 See `README.md` for full CLI documentation.

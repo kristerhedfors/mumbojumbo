@@ -29,20 +29,20 @@ const (
 
 // MumbojumboClient handles DNS tunneling operations
 type MumbojumboClient struct {
-	serverPubkey    [32]byte
+	serverClientKey    [32]byte
 	domain          string
 	maxFragmentSize int
 	nextPacketID    uint16
 }
 
 // NewMumbojumboClient creates a new client instance
-func NewMumbojumboClient(serverPubkey [32]byte, domain string, maxFragmentSize int) *MumbojumboClient {
+func NewMumbojumboClient(serverClientKey [32]byte, domain string, maxFragmentSize int) *MumbojumboClient {
 	if !strings.HasPrefix(domain, ".") {
 		domain = "." + domain
 	}
 
 	client := &MumbojumboClient{
-		serverPubkey:    serverPubkey,
+		serverClientKey:    serverClientKey,
 		domain:          domain,
 		maxFragmentSize: maxFragmentSize,
 	}
@@ -62,12 +62,12 @@ func (c *MumbojumboClient) getNextPacketID() uint16 {
 	return packetID
 }
 
-// ParseKeyHex parses a key in mj_pub_<hex> format
+// ParseKeyHex parses a key in mj_cli_<hex> format
 func ParseKeyHex(keyStr string) ([32]byte, error) {
 	var key [32]byte
 
-	if !strings.HasPrefix(keyStr, "mj_pub_") {
-		return key, errors.New("key must start with \"mj_pub_\"")
+	if !strings.HasPrefix(keyStr, "mj_cli_") {
+		return key, errors.New("key must start with \"mj_cli_\"")
 	}
 
 	hexKey := keyStr[7:]
@@ -250,7 +250,7 @@ func (c *MumbojumboClient) SendData(data []byte, sendQueries bool) ([]QueryResul
 		}
 
 		// Encrypt with SealedBox
-		encrypted, err := EncryptSealedBox(plaintext, &c.serverPubkey)
+		encrypted, err := EncryptSealedBox(plaintext, &c.serverClientKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt fragment %d: %w", fragIndex, err)
 		}
@@ -297,8 +297,8 @@ func main() {
 		verbose bool
 	)
 
-	flag.StringVar(&key, "k", "", "Server public key (mj_pub_... format)")
-	flag.StringVar(&key, "key", "", "Server public key (mj_pub_... format)")
+	flag.StringVar(&key, "k", "", "Server public key (mj_cli_... format)")
+	flag.StringVar(&key, "key", "", "Server public key (mj_cli_... format)")
 	flag.StringVar(&domain, "d", "", "DNS domain suffix (e.g., .asd.qwe)")
 	flag.StringVar(&domain, "domain", "", "DNS domain suffix (e.g., .asd.qwe)")
 	flag.StringVar(&file, "f", "-", "Input file path (use \"-\" for stdin)")
@@ -313,7 +313,7 @@ Mumbojumbo DNS Client - Go Implementation
 Usage: mumbojumbo-client -k <key> -d <domain> [options]
 
 Required arguments:
-  -k, --key <public_key>     Server public key (mj_pub_... format)
+  -k, --key <public_key>     Server public key (mj_cli_... format)
   -d, --domain <domain>      DNS domain suffix (e.g., .asd.qwe)
 
 Optional arguments:
@@ -321,9 +321,9 @@ Optional arguments:
   -v, --verbose              Enable verbose output to stderr
 
 Examples:
-  echo "Hello" | mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe
-  mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe -f message.txt
-  mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe -v
+  echo "Hello" | mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe
+  mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe -f message.txt
+  mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe -v
 `)
 	}
 
@@ -336,7 +336,7 @@ Examples:
 	}
 
 	// Parse server public key
-	serverPubkeyBytes, err := ParseKeyHex(key)
+	serverClientKeyBytes, err := ParseKeyHex(key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing key: %v\n", err)
 		os.Exit(1)
@@ -366,7 +366,7 @@ Examples:
 	}
 
 	// Create client
-	client := NewMumbojumboClient(serverPubkeyBytes, domain, MaxFragDataLen)
+	client := NewMumbojumboClient(serverClientKeyBytes, domain, MaxFragDataLen)
 
 	if verbose {
 		fragments := FragmentData(data, MaxFragDataLen)

@@ -20,9 +20,9 @@ DNS_LABEL_MAX_LEN = 63
 
 
 def parse_key_hex(key_str):
-    """Parse mj_pub_<hex> format key to bytes."""
-    if not key_str.startswith('mj_pub_'):
-        raise ValueError('Key must start with "mj_pub_"')
+    """Parse mj_cli_<hex> format key to bytes."""
+    if not key_str.startswith('mj_cli_'):
+        raise ValueError('Key must start with "mj_cli_"')
     hex_key = key_str[7:]
     if len(hex_key) != 64:
         raise ValueError(f'Invalid hex key length: expected 64, got {len(hex_key)}')
@@ -65,9 +65,9 @@ def create_fragment(packet_id, frag_index, frag_count, frag_data):
     return header + frag_data
 
 
-def encrypt_fragment(plaintext, server_pubkey):
+def encrypt_fragment(plaintext, server_client_key):
     """Encrypt fragment using NaCl SealedBox (anonymous encryption)."""
-    sealedbox = nacl.public.SealedBox(server_pubkey)
+    sealedbox = nacl.public.SealedBox(server_client_key)
     return bytes(sealedbox.encrypt(plaintext))
 
 
@@ -134,19 +134,19 @@ class MumbojumboClient:
     - Automatic packet ID management
     """
 
-    def __init__(self, server_public_key, domain, max_fragment_size=MAX_FRAG_DATA_LEN):
+    def __init__(self, server_client_key, domain, max_fragment_size=MAX_FRAG_DATA_LEN):
         """
         Initialize client.
 
         Args:
-            server_public_key: Server's public key (bytes or nacl.public.PublicKey)
+            server_client_key: Server's public key (bytes or nacl.public.PublicKey)
             domain: DNS domain suffix (e.g., '.asd.qwe')
             max_fragment_size: Maximum bytes per fragment (default: 80)
         """
-        if isinstance(server_public_key, bytes):
-            self.server_pubkey = nacl.public.PublicKey(server_public_key)
+        if isinstance(server_client_key, bytes):
+            self.server_client_key = nacl.public.PublicKey(server_client_key)
         else:
-            self.server_pubkey = server_public_key
+            self.server_client_key = server_client_key
 
         self.domain = domain if domain.startswith('.') else '.' + domain
         self.max_fragment_size = max_fragment_size
@@ -181,7 +181,7 @@ class MumbojumboClient:
             plaintext = create_fragment(packet_id, frag_index, frag_count, frag_data)
 
             # Encrypt with SealedBox
-            encrypted = encrypt_fragment(plaintext, self.server_pubkey)
+            encrypted = encrypt_fragment(plaintext, self.server_client_key)
 
             # Create DNS query name
             dns_name = create_dns_query(encrypted, self.domain)
@@ -213,19 +213,19 @@ def main():
         epilog='''
 examples:
   # Send from stdin
-  echo "Hello World" | %(prog)s -k mj_pub_abc123... -d .asd.qwe
+  echo "Hello World" | %(prog)s -k mj_cli_abc123... -d .asd.qwe
 
   # Send from file
-  %(prog)s -k mj_pub_abc123... -d .asd.qwe -f message.txt
+  %(prog)s -k mj_cli_abc123... -d .asd.qwe -f message.txt
 
   # Send from stdin (explicit)
-  %(prog)s -k mj_pub_abc123... -d .asd.qwe -f -
+  %(prog)s -k mj_cli_abc123... -d .asd.qwe -f -
         '''
     )
     parser.add_argument(
         '-k', '--key',
         required=True,
-        help='Server public key in mj_pub_<hex> format'
+        help='Server public key in mj_cli_<hex> format'
     )
     parser.add_argument(
         '-d', '--domain',
@@ -247,7 +247,7 @@ examples:
 
     # Parse server public key
     try:
-        server_pubkey_bytes = parse_key_hex(args.key)
+        server_client_key_bytes = parse_key_hex(args.key)
     except Exception as e:
         print(f"Error parsing key: {e}", file=sys.stderr)
         return 1
@@ -275,7 +275,7 @@ examples:
 
     # Create client
     try:
-        client_obj = MumbojumboClient(server_pubkey_bytes, domain)
+        client_obj = MumbojumboClient(server_client_key_bytes, domain)
     except Exception as e:
         print(f"Error initializing client: {e}", file=sys.stderr)
         return 1

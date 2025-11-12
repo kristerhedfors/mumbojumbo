@@ -34,25 +34,25 @@ class TestKeyParsing:
 
     def test_parse_valid_key(self):
         """Valid key should parse correctly."""
-        key_str = 'mj_pub_' + 'a' * 64
+        key_str = 'mj_cli_' + 'a' * 64
         key_bytes = client.parse_key_hex(key_str)
         assert len(key_bytes) == 32
         assert key_bytes == b'\xaa' * 32
 
     def test_parse_key_wrong_prefix(self):
-        """Key without mj_pub_ prefix should fail."""
+        """Key without mj_cli_ prefix should fail."""
         with pytest.raises(ValueError, match='must start with'):
             client.parse_key_hex('wrong_prefix_' + 'a' * 64)
 
     def test_parse_key_wrong_length(self):
         """Key with wrong hex length should fail."""
         with pytest.raises(ValueError, match='Invalid hex key length'):
-            client.parse_key_hex('mj_pub_' + 'a' * 60)
+            client.parse_key_hex('mj_cli_' + 'a' * 60)
 
     def test_parse_key_invalid_hex(self):
         """Key with invalid hex characters should fail."""
         with pytest.raises(ValueError, match='Invalid hex'):
-            client.parse_key_hex('mj_pub_' + 'z' * 64)
+            client.parse_key_hex('mj_cli_' + 'z' * 64)
 
 
 class TestFragmentCreation:
@@ -512,7 +512,7 @@ class TestCLIIntegration:
         """Should accept input from stdin."""
         # Generate test key
         server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_pub_' + server_privkey.public_key.encode().hex()
+        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
 
         result = subprocess.run(
             ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
@@ -530,7 +530,7 @@ class TestCLIIntegration:
         """Should accept input from file."""
         # Generate test key
         server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_pub_' + server_privkey.public_key.encode().hex()
+        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
 
         # Create temp file
         with tempfile.NamedTemporaryFile(mode='wb', delete=False) as f:
@@ -553,7 +553,7 @@ class TestCLIIntegration:
     def test_domain_auto_dot(self):
         """Should auto-add leading dot to domain."""
         server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_pub_' + server_privkey.public_key.encode().hex()
+        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
 
         result = subprocess.run(
             ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',

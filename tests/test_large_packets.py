@@ -57,7 +57,7 @@ class TestLargeFragmentCounts:
 
         # Create encrypted fragment (client side)
         fr_encrypt = PublicFragment(
-            public_key=server_privkey.public_key,
+            client_key=server_privkey.public_key,
             frag_index=frag_index,
             frag_count=frag_count,
             frag_data=frag_data
@@ -67,7 +67,7 @@ class TestLargeFragmentCounts:
         ciphertext = fr_encrypt.serialize()
 
         # Deserialize (decrypt) on server side
-        fr_decrypt = PublicFragment(private_key=server_privkey)
+        fr_decrypt = PublicFragment(server_key=server_privkey)
         fr_result = fr_decrypt.deserialize(ciphertext)
 
         assert frag_index == fr_result._frag_index
@@ -156,8 +156,8 @@ class TestTenGigabyteCapacity:
         """Verify PacketEngine can handle packets with many fragments."""
         # Create a small multi-fragment packet to verify the mechanism works
         server_privkey = nacl.public.PrivateKey.generate()
-        pfcls_encrypt = DnsPublicFragment.bind(public_key=server_privkey.public_key)
-        pfcls_decrypt = DnsPublicFragment.bind(private_key=server_privkey)
+        pfcls_encrypt = DnsPublicFragment.bind(client_key=server_privkey.public_key)
+        pfcls_decrypt = DnsPublicFragment.bind(server_key=server_privkey)
 
         pe_encrypt = PacketEngine(frag_cls=pfcls_encrypt, max_frag_data_len=10)
         pe_decrypt = PacketEngine(frag_cls=pfcls_decrypt, max_frag_data_len=10)

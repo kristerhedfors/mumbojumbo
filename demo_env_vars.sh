@@ -23,8 +23,8 @@ echo ""
 # Step 3: Source the file
 echo "3. Sourcing environment variables..."
 source /tmp/mumbojumbo_env.sh
-echo "   ✓ MUMBOJUMBO_PRIVKEY=${MUMBOJUMBO_PRIVKEY:0:25}..."
-echo "   ✓ MUMBOJUMBO_PUBKEY=${MUMBOJUMBO_PUBKEY:0:25}..."
+echo "   ✓ MUMBOJUMBO_SERVER_KEY=${MUMBOJUMBO_SERVER_KEY:0:25}..."
+echo "   ✓ MUMBOJUMBO_CLIENT_KEY=${MUMBOJUMBO_CLIENT_KEY:0:25}..."
 echo "   ✓ MUMBOJUMBO_DOMAIN=$MUMBOJUMBO_DOMAIN"
 echo ""
 
@@ -37,35 +37,35 @@ echo ""
 # Step 5: Show client usage (Python example)
 echo "5. Python client can use the variables:"
 echo "   echo 'Hello' | ./clients/python/mumbojumbo-client.py \\"
-echo "     -k \$MUMBOJUMBO_PUBKEY \\"
+echo "     -k \$MUMBOJUMBO_CLIENT_KEY \\"
 echo "     -d \$MUMBOJUMBO_DOMAIN"
 echo ""
 
 # Step 6: Show Go client usage
 echo "6. Go client can use the variables:"
 echo "   echo 'Hello' | ./clients/go/mumbojumbo-client \\"
-echo "     -key \$MUMBOJUMBO_PUBKEY \\"
+echo "     -key \$MUMBOJUMBO_CLIENT_KEY \\"
 echo "     -domain \$MUMBOJUMBO_DOMAIN"
 echo ""
 
 # Step 7: Show Node.js client usage
 echo "7. Node.js client can use the variables:"
 echo "   echo 'Hello' | node clients/node/mumbojumbo-client.js \\"
-echo "     -k \$MUMBOJUMBO_PUBKEY \\"
+echo "     -k \$MUMBOJUMBO_CLIENT_KEY \\"
 echo "     -d \$MUMBOJUMBO_DOMAIN"
 echo ""
 
 # Step 8: Show Rust client usage
 echo "8. Rust client can use the variables:"
 echo "   echo 'Hello' | ./clients/rust/target/release/mumbojumbo-client \\"
-echo "     --key \$MUMBOJUMBO_PUBKEY \\"
+echo "     --key \$MUMBOJUMBO_CLIENT_KEY \\"
 echo "     --domain \$MUMBOJUMBO_DOMAIN"
 echo ""
 
 # Step 9: Show C client usage
 echo "9. C client can use the variables:"
 echo "   echo 'Hello' | ./clients/c/mumbojumbo-client \\"
-echo "     -k \$MUMBOJUMBO_PUBKEY \\"
+echo "     -k \$MUMBOJUMBO_CLIENT_KEY \\"
 echo "     -d \$MUMBOJUMBO_DOMAIN"
 echo ""
 
@@ -77,7 +77,7 @@ echo "echo 'source ~/.mumbojumbo_env' >> ~/.bashrc"
 echo ""
 echo "# Then in any new terminal:"
 echo "sudo ./venv/bin/python3 mumbojumbo.py  # Server uses env vars"
-echo "echo 'data' | ./clients/python/mumbojumbo-client.py -k \$MUMBOJUMBO_PUBKEY -d \$MUMBOJUMBO_DOMAIN"
+echo "echo 'data' | ./clients/python/mumbojumbo-client.py -k \$MUMBOJUMBO_CLIENT_KEY -d \$MUMBOJUMBO_DOMAIN"
 echo ""
 
 # Cleanup

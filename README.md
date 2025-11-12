@@ -46,14 +46,14 @@ The generated `mumbojumbo.conf` includes the configuration needed for both serve
 #
 # for use on client-side:
 #   domain = .asd.qwe
-#   mumbojumbo_pubkey = sdcn50krReeK+tcKyodfWhUEkv5/HEu58e1LsfrXTms=
+#   mumbojumbo_client_key = sdcn50krReeK+tcKyodfWhUEkv5/HEu58e1LsfrXTms=
 #
 
 [main]
 domain = .asd.qwe
 network-interface = en0
-mumbojumbo-privkey = OTlWa64XPOvLL23LCyE/9DddoaqTQKBbjrieRlSOHmE=
-mumbojumbo-pubkey = u6DmkkHUVsVjsFFNuQXlM89k25kueOXeKX4j2uE7cQ8=
+mumbojumbo-server-key = OTlWa64XPOvLL23LCyE/9DddoaqTQKBbjrieRlSOHmE=
+mumbojumbo-client-key = u6DmkkHUVsVjsFFNuQXlM89k25kueOXeKX4j2uE7cQ8=
 
 [smtp]
 server = smtp.gmail.com
@@ -65,7 +65,7 @@ from = user@gmail.com
 to = recipient@example.com
 ```
 
-**For clients:** Copy the `domain` and `mumbojumbo_pubkey` values from the config comments.
+**For clients:** Copy the `domain` and `mumbojumbo_client_key` values from the config comments.
 
 ## Requirements
 

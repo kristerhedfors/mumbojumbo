@@ -42,7 +42,7 @@ xdg-open client.html   # Linux
 ```
 
 Then:
-1. Copy the `server_pubkey` value from the config comments and paste into "Server Public Key" field
+1. Copy the `server_client_key` value from the config comments and paste into "Server Public Key" field
 2. Copy the `domain` value (e.g., `.asd.qwe`) and paste into "Domain Suffix" field
 3. Type your message in the textarea
 4. Click "Send via DNS"

@@ -101,7 +101,7 @@ async function runCli(args, stdinData = null) {
 
 describe('Key Parsing', () => {
   test('parse valid hex key', () => {
-    const validKey = 'mj_pub_' + 'a'.repeat(64);
+    const validKey = 'mj_cli_' + 'a'.repeat(64);
     const result = parseKeyHex(validKey);
 
     assert.ok(result instanceof Uint8Array);
@@ -109,21 +109,21 @@ describe('Key Parsing', () => {
     assert.equal(result[0], 0xaa);
   });
 
-  test('reject key without mj_pub_ prefix', () => {
+  test('reject key without mj_cli_ prefix', () => {
     assert.throws(() => {
       parseKeyHex('a'.repeat(64));
-    }, /must start with "mj_pub_"/);
+    }, /must start with "mj_cli_"/);
   });
 
   test('reject key with wrong hex length', () => {
     assert.throws(() => {
-      parseKeyHex('mj_pub_' + 'a'.repeat(32));
+      parseKeyHex('mj_cli_' + 'a'.repeat(32));
     }, /Invalid hex key length/);
   });
 
   test('reject key with invalid hex characters', () => {
     assert.throws(() => {
-      parseKeyHex('mj_pub_' + 'z'.repeat(64));
+      parseKeyHex('mj_cli_' + 'z'.repeat(64));
     }, /Invalid hex characters/);
   });
 });
@@ -545,7 +545,7 @@ describe('End-to-End Flow', () => {
 // ============================================================================
 
 describe('CLI Interface', () => {
-  const testKeyHex = 'mj_pub_' + Buffer.from(TEST_SERVER_PUBKEY).toString('hex');
+  const testKeyHex = 'mj_cli_' + Buffer.from(TEST_SERVER_PUBKEY).toString('hex');
 
   test('show help', async () => {
     const result = await runCli(['--help']);

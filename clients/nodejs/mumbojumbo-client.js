@@ -15,11 +15,11 @@ const MAX_FRAG_DATA_LEN = 80;
 const DNS_LABEL_MAX_LEN = 63;
 
 /**
- * Parse mj_pub_<hex> format key to Uint8Array
+ * Parse mj_cli_<hex> format key to Uint8Array
  */
 function parseKeyHex(keyStr) {
-  if (!keyStr.startsWith('mj_pub_')) {
-    throw new Error('Key must start with "mj_pub_"');
+  if (!keyStr.startsWith('mj_cli_')) {
+    throw new Error('Key must start with "mj_cli_"');
   }
   const hexKey = keyStr.substring(7);
   if (hexKey.length !== 64) {
@@ -266,7 +266,7 @@ Mumbojumbo DNS Client - Node.js Implementation
 Usage: mumbojumbo-client -k <key> -d <domain> [options]
 
 Required arguments:
-  -k, --key <public_key>     Server public key (mj_pub_... format)
+  -k, --key <public_key>     Server public key (mj_cli_... format)
   -d, --domain <domain>      DNS domain suffix (e.g., .asd.qwe)
 
 Optional arguments:
@@ -274,9 +274,9 @@ Optional arguments:
   -v, --verbose              Enable verbose output to stderr
 
 Examples:
-  echo "Hello" | mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe
-  mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe -f message.txt
-  mumbojumbo-client -k mj_pub_abc123... -d .asd.qwe -v
+  echo "Hello" | mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe
+  mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe -f message.txt
+  mumbojumbo-client -k mj_cli_abc123... -d .asd.qwe -v
       `);
       process.exit(0);
     }

@@ -48,9 +48,9 @@ class TestCLIArgumentParsing:
 
         parser = option_parser()
         # Parse with --key argument
-        opt, args = parser.parse_args(['--key', 'mj_priv_test123'])
+        opt, args = parser.parse_args(['--key', 'mj_srv_test123'])
 
-        assert opt.key == 'mj_priv_test123'
+        assert opt.key == 'mj_srv_test123'
 
     def test_option_parser_has_domain_argument(self):
         """Test that option parser includes --domain argument."""
@@ -68,9 +68,9 @@ class TestCLIArgumentParsing:
 
         parser = option_parser()
         # Parse with -k argument
-        opt, args = parser.parse_args(['-k', 'mj_priv_shortkey'])
+        opt, args = parser.parse_args(['-k', 'mj_srv_shortkey'])
 
-        assert opt.key == 'mj_priv_shortkey'
+        assert opt.key == 'mj_srv_shortkey'
 
     def test_option_parser_short_domain_argument(self):
         """Test that option parser includes -d short argument."""
@@ -87,14 +87,14 @@ class TestCLIArgumentParsing:
         from mumbojumbo import option_parser
 
         parser = option_parser()
-        priv_key, pub_key = get_nacl_keypair_hex()
+        srv_key, cli_key = get_nacl_keypair_hex()
 
         opt, args = parser.parse_args([
-            '-k', priv_key,
+            '-k', srv_key,
             '-d', '.combined.test'
         ])
 
-        assert opt.key == priv_key
+        assert opt.key == srv_key
         assert opt.domain == '.combined.test'
 
     def test_option_parser_defaults_none(self):
@@ -111,13 +111,13 @@ class TestCLIArgumentParsing:
 class TestEnvironmentVariables:
     """Test environment variable support for configuration."""
 
-    def test_mumbojumbo_privkey_env_var(self):
-        """Test MUMBOJUMBO_PRIVKEY environment variable."""
-        priv_key, _ = get_nacl_keypair_hex()
+    def test_mumbojumbo_server_key_env_var(self):
+        """Test MUMBOJUMBO_SERVER_KEY environment variable."""
+        srv_key, _ = get_nacl_keypair_hex()
 
         # Test environment variable is read correctly
-        with patch.dict(os.environ, {'MUMBOJUMBO_PRIVKEY': priv_key}):
-            assert os.environ.get('MUMBOJUMBO_PRIVKEY') == priv_key
+        with patch.dict(os.environ, {'MUMBOJUMBO_SERVER_KEY': srv_key}):
+            assert os.environ.get('MUMBOJUMBO_SERVER_KEY') == srv_key
 
     def test_mumbojumbo_domain_env_var(self):
         """Test MUMBOJUMBO_DOMAIN environment variable."""
@@ -130,7 +130,7 @@ class TestEnvironmentVariables:
     def test_env_vars_not_set_returns_none(self):
         """Test that missing env vars return None."""
         with patch.dict(os.environ, {}, clear=True):
-            assert os.environ.get('MUMBOJUMBO_PRIVKEY') is None
+            assert os.environ.get('MUMBOJUMBO_SERVER_KEY') is None
             assert os.environ.get('MUMBOJUMBO_DOMAIN') is None
 
 
@@ -149,7 +149,7 @@ class TestConfigPrecedence:
 
         Expected precedence (highest to lowest):
         1. CLI arguments (--key, --domain)
-        2. Environment variables (MUMBOJUMBO_PRIVKEY, MUMBOJUMBO_DOMAIN)
+        2. Environment variables (MUMBOJUMBO_SERVER_KEY, MUMBOJUMBO_DOMAIN)
         3. Config file values
         """
         # This is a documentation test - the precedence logic
@@ -173,10 +173,10 @@ class TestConfigPrecedence:
         logger = logging.getLogger('mumbojumbo')
 
         # Simulate what happens in main() when opt.key is set
-        test_key = 'mj_priv_test123'
+        test_key = 'mj_srv_test123'
         logger.warning(
-            'Private key provided via CLI argument - this is visible in '
-            'process list. Consider using MUMBOJUMBO_PRIVKEY environment '
+            'Server key provided via CLI argument - this is visible in '
+            'process list. Consider using MUMBOJUMBO_SERVER_KEY environment '
             'variable instead.'
         )
 
@@ -207,8 +207,8 @@ class TestGenKeysOutput:
         assert len(output_lines) == 3
 
         # Check each line format
-        assert output_lines[0].startswith('export MUMBOJUMBO_PRIVKEY=mj_priv_')
-        assert output_lines[1].startswith('export MUMBOJUMBO_PUBKEY=mj_pub_')
+        assert output_lines[0].startswith('export MUMBOJUMBO_SERVER_KEY=mj_srv_')
+        assert output_lines[1].startswith('export MUMBOJUMBO_CLIENT_KEY=mj_cli_')
         assert output_lines[2].startswith('export MUMBOJUMBO_DOMAIN=.')
 
         # Check that lines have comments
@@ -232,26 +232,26 @@ class TestGenKeysOutput:
         output_lines = result.stdout.strip().split('\n')
 
         # Extract keys from export statements
-        privkey_line = output_lines[0]
-        pubkey_line = output_lines[1]
+        server_key_line = output_lines[0]
+        client_key_line = output_lines[1]
 
         # Extract key values (between = and #)
-        privkey = privkey_line.split('=')[1].split('#')[0].strip()
-        pubkey = pubkey_line.split('=')[1].split('#')[0].strip()
+        server_key = server_key_line.split('=')[1].split('#')[0].strip()
+        client_key = client_key_line.split('=')[1].split('#')[0].strip()
 
         # Verify key formats
-        assert privkey.startswith('mj_priv_')
-        assert pubkey.startswith('mj_pub_')
-        assert len(privkey) == 72  # mj_priv_ (8) + 64 hex chars
-        assert len(pubkey) == 71   # mj_pub_ (7) + 64 hex chars
+        assert server_key.startswith('mj_srv_')
+        assert client_key.startswith('mj_cli_')
+        assert len(server_key) == 71  # mj_srv_ (7) + 64 hex chars
+        assert len(client_key) == 71   # mj_cli_ (7) + 64 hex chars
 
         # Verify keys can be decoded
         from mumbojumbo import decode_key_hex
-        priv_bytes = decode_key_hex(privkey)
-        pub_bytes = decode_key_hex(pubkey)
+        srv_bytes = decode_key_hex(server_key)
+        cli_bytes = decode_key_hex(client_key)
 
-        assert len(priv_bytes) == 32
-        assert len(pub_bytes) == 32
+        assert len(srv_bytes) == 32
+        assert len(cli_bytes) == 32
 
     def test_gen_keys_domain_format(self):
         """Test that generated domain has correct format."""
@@ -295,7 +295,7 @@ class TestGenKeysOutput:
         )
 
         # Create a shell script that sources the output
-        shell_script = result.stdout + '\necho "$MUMBOJUMBO_PRIVKEY|$MUMBOJUMBO_PUBKEY|$MUMBOJUMBO_DOMAIN"'
+        shell_script = result.stdout + '\necho "$MUMBOJUMBO_SERVER_KEY|$MUMBOJUMBO_CLIENT_KEY|$MUMBOJUMBO_DOMAIN"'
 
         # Run in bash
         bash_result = subprocess.run(
@@ -311,6 +311,6 @@ class TestGenKeysOutput:
         output = bash_result.stdout.strip()
         parts = output.split('|')
         assert len(parts) == 3
-        assert parts[0].startswith('mj_priv_')
-        assert parts[1].startswith('mj_pub_')
+        assert parts[0].startswith('mj_srv_')
+        assert parts[1].startswith('mj_cli_')
         assert parts[2].startswith('.')
