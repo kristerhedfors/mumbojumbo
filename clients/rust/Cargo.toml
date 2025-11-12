@@ -1,0 +1,10 @@
+[package]
+name = "mumbojumbo-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blake2 = "0.10"
+crypto_box = "0.9"
+getrandom = "0.2"
+hex = "0.4"
