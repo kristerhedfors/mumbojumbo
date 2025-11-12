@@ -1,9 +1,10 @@
 use blake2::{Blake2b, Digest};
 use crypto_box::{
-    aead::{Aead, AeadCore},
+    aead::Aead,
     PublicKey, SalsaBox, SecretKey,
 };
 use getrandom::getrandom;
+use rand_core::OsRng;
 use std::env;
 use std::io::{self, Read};
 use std::process::{Command, exit};
@@ -193,7 +194,7 @@ pub fn create_fragment(
 /// Format: ephemeral_pubkey(32) || box(plaintext) with nonce derived from BLAKE2b
 pub fn encrypt_sealed_box(plaintext: &[u8], recipient_pubkey: &[u8; 32]) -> Result<Vec<u8>, String> {
     // Generate ephemeral keypair
-    let ephemeral_secret = SecretKey::generate(&mut crypto_box::rand_core::OsRng);
+    let ephemeral_secret = SecretKey::generate(&mut OsRng);
     let ephemeral_public = ephemeral_secret.public_key();
 
     // Derive nonce from BLAKE2b(ephemeral_pubkey || recipient_pubkey)
