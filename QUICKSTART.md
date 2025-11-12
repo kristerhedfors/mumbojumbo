@@ -2,9 +2,30 @@
 
 ## What is Mumbojumbo?
 
-Mumbojumbo is a DNS tunnel that sends encrypted data via DNS queries. It uses NaCl public key cryptography to encrypt messages, fragments them into chunks, and encodes each fragment as a DNS subdomain query.
+Mumbojumbo is a DNS tunnel that sends encrypted data via DNS queries. It uses NaCl public key cryptography (SealedBox) to encrypt messages, fragments them into chunks, and encodes each fragment as a DNS subdomain query.
 
-## Quick Test (2 Terminals)
+## Quick Test (Recommended: Environment Variables)
+
+### Terminal 1 - Server
+```bash
+# 1. Generate keys and export to environment (do this once)
+./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+source ~/.mumbojumbo_env
+
+# 2. Start server (requires sudo for packet capture, uses env vars)
+sudo -E ./venv/bin/python3 mumbojumbo.py
+```
+
+### Terminal 2 - Client
+```bash
+# Load the same environment variables
+source ~/.mumbojumbo_env
+
+# Send data using Python client (no arguments needed!)
+echo "Hello World" | ./clients/python/mumbojumbo-client.py
+```
+
+## Alternative: Using Config File
 
 ### Terminal 1 - Server
 ```bash
@@ -18,8 +39,12 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 
 ### Terminal 2 - Client
 ```bash
-# Send test data
-./venv/bin/python3 test.py --test-client
+# Extract client key from config file comments
+# Look for: mumbojumbo_client_key = mj_cli_<64_hex_chars>
+# Use that key with any client
+echo "Hello" | ./clients/python/mumbojumbo-client.py \
+  -k mj_cli_<your_key_here> \
+  -d .asd.qwe
 ```
 
 ## HTML Client
@@ -59,68 +84,126 @@ python3 -m venv venv
 # 2. Install dependencies
 ./venv/bin/pip install pynacl
 
-# 3. Generate configuration with keys
+# 3. Generate keys and save to environment file
+./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+
+# 4. Load environment variables
+source ~/.mumbojumbo_env
+
+# Alternatively, generate a config file
 ./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
-
-# 4. Secure the config file
 chmod 600 mumbojumbo.conf
-
-# 5. (Optional) Edit mumbojumbo.conf to customize domain and interface
-# Default domain: .asd.qwe
-# Default interface: eth0
 ```
 
 ### Running the Server
+
+**Option A - With environment variables (recommended):**
 ```bash
-# Start server (captures DNS packets on eth0)
+# Load environment
+source ~/.mumbojumbo_env
+
+# Start server (sudo -E preserves environment variables)
+sudo -E ./venv/bin/python3 mumbojumbo.py
+```
+
+**Option B - With config file:**
+```bash
+# Start server with config
 sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
+```
+
+**Option C - With CLI overrides:**
+```bash
+# Override specific settings
+sudo ./venv/bin/python3 mumbojumbo.py \
+  -k mj_srv_<64_hex_chars> \
+  -d .example.com
 ```
 
 **Why sudo?** The server uses `tshark` to capture network packets, which requires root privileges.
 
 ### Sending Data
 
-**Option A - Python test client:**
+**Option A - Python client with env vars:**
 ```bash
-# In a different terminal
-./venv/bin/python3 test.py --test-client
+source ~/.mumbojumbo_env
+echo "Hello World" | ./clients/python/mumbojumbo-client.py
+# (No arguments needed - uses environment variables automatically)
 ```
 
-**Option B - HTML client:**
+**Option B - Go client:**
+```bash
+# Build first
+cd clients/go
+go build -o mumbojumbo-client mumbojumbo-client.go
+
+# Use client
+echo "Hello" | ./mumbojumbo-client \
+  -k mj_cli_<64_hex_chars> \
+  -d .example.com
+```
+
+**Option C - Node.js client:**
+```bash
+cd clients/nodejs
+npm install
+echo "Hello" | ./mumbojumbo-client.js \
+  -k mj_cli_<64_hex_chars> \
+  -d .example.com
+```
+
+**Option D - HTML client:**
 ```bash
 # Open client.html in browser
 open client.html
+# (paste your mj_cli_ key and domain into the form)
 ```
 
-**Option C - Manual DNS queries:**
-```bash
-# Generate keys first
-./venv/bin/python3 mumbojumbo.py --gen-keys
+## Key Format
 
-# Then send DNS queries manually (replace with your encoded data)
-dig @8.8.8.8 <base32-encoded-encrypted-fragment>.asd.qwe
+Mumbojumbo uses hex-encoded keys with prefixes for easy identification:
+
+- **Server key:** `mj_srv_<64_hex_chars>` - Server's private key (keep secret!)
+- **Client key:** `mj_cli_<64_hex_chars>` - Server's public key (safe to share)
+
+Example:
+```bash
+# Server private key (used by server only, keep secret)
+mj_srv_f24d8109d69ffc89c688ffd069715691b8c1c583faeda28dfab9a1a092785d8c
+
+# Client public key (given to all clients, safe to share)
+mj_cli_6eaa1b50a62694a695c605b7491eb5cf87f1b210284b52cc5c99b3f3e2176048
 ```
 
-## Testing Without Root Access
+## Configuration Precedence
 
-If you can't run with sudo, use the test mode:
+The server checks configuration in this order:
+1. **CLI arguments** (`-k`, `-d`) - highest priority
+2. **Environment variables** (`MUMBOJUMBO_SERVER_KEY`, `MUMBOJUMBO_DOMAIN`)
+3. **Config file** (`--config mumbojumbo.conf`) - lowest priority
 
-```bash
-# Terminal 1: Mock server
-./venv/bin/python3 test.py --test-server
+This allows flexible deployment scenarios.
 
-# Terminal 2: Test client
-./venv/bin/python3 test.py --test-client
-```
+## Handler Pipeline (Optional)
 
-This runs everything in user space without requiring packet capture.
+Mumbojumbo supports multiple output handlers for received packets:
 
-## SMTP Forwarding (Optional)
+### Available Handlers
 
-To forward received messages via email:
+1. **stdout** - Print to console (default)
+2. **smtp** - Forward via email
+3. **file** - Write to log file
+4. **execute** - Run external command
 
-```bash
-# 1. Add to mumbojumbo.conf:
+### Configuration
+
+Edit `mumbojumbo.conf` to configure handlers:
+
+```ini
+[main]
+# Comma-separated list of handlers (executed in order)
+handlers = stdout,smtp,file
+
 [smtp]
 server = smtp.gmail.com
 port = 587
@@ -130,26 +213,43 @@ password = your-smtp-password
 from = your-email@gmail.com
 to = recipient@example.com
 
-# 2. Secure the config file (important!)
-chmod 600 mumbojumbo.conf
+[file]
+path = /var/log/mumbojumbo-packets.log
+format = hex  # Options: raw, hex, base64
 
-# 3. Test SMTP
-./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf --test-smtp
+[execute]
+command = /usr/local/bin/process-packet.sh
+timeout = 5
+```
 
-# 4. Run server (will now forward to email)
-sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
+### Testing Handlers
+
+```bash
+# Test all configured handlers
+./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf --test-handlers
+
+# This sends test data through each handler to verify configuration
 ```
 
 ## Configuration File Format
 
 ```ini
+#
+# !! remember to `chmod 0600` this file !!
+#
+# for use on client-side:
+#   domain = .asd.qwe
+#   mumbojumbo_client_key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
+#
+
 [main]
 domain = .asd.qwe
-network-interface = eth0
-client-pubkey = <base64-client-public-key>
-server-privkey = <base64-server-private-key>
+network-interface = en0  # macOS: en0, en1; Linux: eth0, wlan0
+handlers = stdout  # Comma-separated: stdout, smtp, file, execute
+mumbojumbo-server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
+mumbojumbo-client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
 
-# Optional SMTP forwarding
+# Optional handler configurations
 [smtp]
 server = smtp.gmail.com
 port = 587
@@ -158,6 +258,14 @@ username = user@gmail.com
 password = your-smtp-password
 from = user@gmail.com
 to = recipient@example.com
+
+[file]
+path = /var/log/mumbojumbo-packets.log
+format = hex  # Options: raw, hex, base64
+
+[execute]
+command = /usr/local/bin/process-packet.sh
+timeout = 5
 ```
 
 ## How It Works
@@ -280,21 +388,39 @@ python3 setup_and_run.py
 
 ## Summary of Exact Commands
 
-```bash
-# Complete workflow:
+### Environment Variable Workflow (Recommended)
 
+```bash
 # 1. Setup (one time)
+python3 -m venv venv
+./venv/bin/pip install pynacl
+./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+source ~/.mumbojumbo_env
+
+# 2. Run server
+sudo -E ./venv/bin/python3 mumbojumbo.py
+
+# 3. Run client (different terminal)
+source ~/.mumbojumbo_env
+echo "Hello" | ./clients/python/mumbojumbo-client.py
+```
+
+### Config File Workflow
+
+```bash
+# 1. Setup (one time)
+python3 -m venv venv
+./venv/bin/pip install pynacl
 ./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 chmod 600 mumbojumbo.conf
 
 # 2. Run server
 sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 
-# 3. Run client (different terminal)
-./venv/bin/python3 test.py --test-client
-
-# Or use HTML client
-open client.html
+# 3. Run client (use key from config comments)
+echo "Hello" | ./clients/python/mumbojumbo-client.py \
+  -k mj_cli_<key_from_config> \
+  -d .asd.qwe
 ```
 
-That's it! 🎉
+That's it!

@@ -186,14 +186,17 @@ Mumbojumbo uses NaCl (libsodium) public-key anonymous encryption via `nacl.publi
 │                                                               │
 │  Server Side:                                                 │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │ $ ./mumbojumbo.py --gen-conf > mumbojumbo.conf   │ │
+│  │ $ ./mumbojumbo.py --gen-keys                            │ │
 │  │                                                          │ │
-│  │ Generates:                                               │ │
-│  │   • Mumbojumbo Private Key (32 bytes)                   │ │
-│  │   • Mumbojumbo Public Key (32 bytes)                    │ │
+│  │ Generates (hex format with prefixes):                   │ │
+│  │   • Server Private Key: mj_srv_<64_hex_chars>           │ │
+│  │   • Client Public Key: mj_cli_<64_hex_chars>            │ │
+│  │   • Random Domain: .xxxx.yyyy                           │ │
 │  │                                                          │ │
-│  │ Server stores:  mumbojumbo_server_key, mumbojumbo_client_key  │ │
-│  │ Client receives: mumbojumbo_client_key                      │ │
+│  │ Output: Environment variable declarations               │ │
+│  │ export MUMBOJUMBO_SERVER_KEY=mj_srv_...                │ │
+│  │ export MUMBOJUMBO_CLIENT_KEY=mj_cli_...                │ │
+│  │ export MUMBOJUMBO_DOMAIN=.asd.qwe                      │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  Configuration File (mumbojumbo.conf):                        │
@@ -201,14 +204,15 @@ Mumbojumbo uses NaCl (libsodium) public-key anonymous encryption via `nacl.publi
 │  │ [main]                                                   │ │
 │  │ domain = .asd.qwe                                       │ │
 │  │ network-interface = en0                                  │ │
-│  │ mumbojumbo-server-key = xQ9s...N= (base64)                 │ │
-│  │ mumbojumbo-client-key = wP8r...M= (base64)                  │ │
+│  │ handlers = stdout                                        │ │
+│  │ mumbojumbo-server-key = mj_srv_3f55...cb72 (hex)       │ │
+│  │ mumbojumbo-client-key = mj_cli_0630...b679 (hex)       │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  Out-of-Band Transfer:                                        │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │ Client receives via secure channel:                     │ │
-│  │   • mumbojumbo_client_key = zS1u...P= (base64)              │ │
+│  │   • mumbojumbo_client_key = mj_cli_<64_hex>            │ │
 │  │   • domain = .asd.qwe                                   │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
@@ -653,21 +657,46 @@ to = recipient@example.com
 ### Key Generation
 
 ```bash
-# Generate configuration with fresh keys
+# Option 1: Generate environment variables (recommended)
+$ ./mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+$ source ~/.mumbojumbo_env
+
+# Output:
+# export MUMBOJUMBO_SERVER_KEY=mj_srv_<64_hex_chars>  # Server private key
+# export MUMBOJUMBO_CLIENT_KEY=mj_cli_<64_hex_chars>  # Client public key (use with -k)
+# export MUMBOJUMBO_DOMAIN=.xxxx.yyyy                # Domain for both server and client
+
+# Option 2: Generate configuration file
 $ ./mumbojumbo.py --gen-conf > mumbojumbo.conf
 $ chmod 600 mumbojumbo.conf
 
 # The config file contains comments showing which keys to give to client:
-#   mumbojumbo_client_key=<key>
+#   mumbojumbo_client_key = mj_cli_<64_hex_chars>
+#   domain = .asd.qwe
+```
+
+### Key Format
+
+Keys are hex-encoded (64 hex characters = 32 bytes) with prefixes:
+- **Server key:** `mj_srv_<64_hex_chars>` - Server's private key (keep secret!)
+- **Client key:** `mj_cli_<64_hex_chars>` - Server's public key (safe to share with clients)
+
+Example:
+```
+mj_srv_f24d8109d69ffc89c688ffd069715691b8c1c583faeda28dfab9a1a092785d8c
+mj_cli_6eaa1b50a62694a695c605b7491eb5cf87f1b210284b52cc5c99b3f3e2176048
 ```
 
 ### Client Configuration
 
 Client needs:
-1. `mumbojumbo_client_key` (32 bytes, base64)
-2. `domain` (e.g., `.asd.qwe`)
+1. `mumbojumbo_client_key` - Server's public key in hex format: `mj_cli_<64_hex_chars>`
+2. `domain` - Domain suffix (e.g., `.asd.qwe`)
 
-These can be hardcoded in client application or loaded from config.
+These can be:
+- Passed via command line: `-k mj_cli_... -d .asd.qwe`
+- Loaded from environment: `$MUMBOJUMBO_CLIENT_KEY $MUMBOJUMBO_DOMAIN`
+- Hardcoded in client application
 
 ---
 
@@ -813,52 +842,74 @@ Compare to direct TCP: ~1-100 MB/s (1000-100000× faster)
 
 ### Server Setup
 
+**Option A: Using environment variables (recommended)**
+```bash
+# 1. Generate keys
+$ ./mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+$ source ~/.mumbojumbo_env
+
+# 2. Start server (sudo -E preserves environment variables)
+$ sudo -E ./mumbojumbo.py
+```
+
+**Option B: Using config file**
 ```bash
 # 1. Generate config
 $ ./mumbojumbo.py --gen-conf > mumbojumbo.conf
 $ chmod 600 mumbojumbo.conf
 
-# 2. Edit config (set network interface, domain, SMTP if desired)
+# 2. Edit config (set network interface, domain, handlers)
 $ nano mumbojumbo.conf
 
-# 3. Test SMTP (optional)
-$ ./mumbojumbo.py --config mumbojumbo.conf --test-smtp
+# 3. Test handlers (optional)
+$ ./mumbojumbo.py --config mumbojumbo.conf --test-handlers
 
 # 4. Start server (requires root for packet capture)
 $ sudo ./mumbojumbo.py --config mumbojumbo.conf
 ```
 
+**Option C: Using CLI overrides**
+```bash
+# Override configuration with command-line arguments
+$ sudo ./mumbojumbo.py -k mj_srv_<64_hex> -d .example.com
+```
+
+**Configuration precedence:** CLI args > Environment variables > Config file
+
 ### Client (Python)
 
 ```python
-import base64
-import nacl.public
+# Using the Python client from clients/python/
 
-# Configuration from server
-MUMBOJUMBO_CLIENT_KEY = base64.b64decode('zS1u...P=')
-DOMAIN = '.asd.qwe'
+# Option 1: With environment variables (recommended - no args needed!)
+# source ~/.mumbojumbo_env
+# echo "Hello" | ./clients/python/mumbojumbo-client.py
 
-# Create public key
-mumbojumbo_public = nacl.public.PublicKey(MUMBOJUMBO_CLIENT_KEY)
+# Option 2: Via command line arguments
+# echo "Hello" | ./clients/python/mumbojumbo-client.py \
+#   -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
+#   -d .asd.qwe
 
-# Create fragment class (client only needs public key for SealedBox)
-from mumbojumbo import DnsPublicFragment, PacketEngine
+# Option 3: Programmatic usage
+import sys
+sys.path.insert(0, 'clients/python')
+from mumbojumbo_client import parse_key_hex, MumbojumboClient
 
-frag_cls = DnsPublicFragment.bind(
-    domain=DOMAIN,
-    public_key=mumbojumbo_public
-)
+# Parse server public key (mj_cli_ format)
+server_key = parse_key_hex('mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e')
 
-# Create packet engine
-engine = PacketEngine(frag_cls)
+# Create client
+client = MumbojumboClient(server_key, '.asd.qwe')
 
 # Send message
 message = b"Hello from Mumbojumbo!"
-for dns_query in engine.to_wire(message):
-    print(f"Query: {dns_query}")
-    # In real use: send this DNS query via resolver
-    # Example: subprocess.run(['dig', dns_query])
+queries = client.generate_queries(message)
+for query in queries:
+    print(f"Query: {query}")
+    # In real use: send DNS query via dig or resolver library
 ```
+
+**Client Configuration Precedence:** CLI arguments > Environment variables
 
 ### Client (HTML/JavaScript)
 

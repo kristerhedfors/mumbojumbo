@@ -7,6 +7,7 @@ Minimalist design: only requires pynacl for crypto.
 """
 
 import sys
+import os
 import argparse
 import base64
 import struct
@@ -212,25 +213,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 examples:
-  # Send from stdin
+  # Send from stdin with arguments
   echo "Hello World" | %(prog)s -k mj_cli_abc123... -d .asd.qwe
 
   # Send from file
   %(prog)s -k mj_cli_abc123... -d .asd.qwe -f message.txt
 
-  # Send from stdin (explicit)
-  %(prog)s -k mj_cli_abc123... -d .asd.qwe -f -
+  # Use environment variables (no arguments needed)
+  export MUMBOJUMBO_CLIENT_KEY=mj_cli_abc123...
+  export MUMBOJUMBO_DOMAIN=.asd.qwe
+  echo "Hello World" | %(prog)s
+
+Configuration precedence: CLI args > Environment variables
         '''
     )
     parser.add_argument(
         '-k', '--key',
-        required=True,
-        help='Server public key in mj_cli_<hex> format'
+        help='Server public key in mj_cli_<hex> format (or use MUMBOJUMBO_CLIENT_KEY env var)'
     )
     parser.add_argument(
         '-d', '--domain',
-        required=True,
-        help='DNS domain suffix (e.g., .asd.qwe)'
+        help='DNS domain suffix, e.g., .asd.qwe (or use MUMBOJUMBO_DOMAIN env var)'
     )
     parser.add_argument(
         '-f', '--file',
@@ -245,18 +248,32 @@ examples:
 
     args = parser.parse_args()
 
+    # Get key from CLI arg or environment variable
+    key_str = args.key or os.environ.get('MUMBOJUMBO_CLIENT_KEY')
+    if not key_str:
+        print("Error: Server public key required", file=sys.stderr)
+        print("  Provide via -k argument or MUMBOJUMBO_CLIENT_KEY environment variable", file=sys.stderr)
+        return 1
+
+    # Get domain from CLI arg or environment variable
+    domain = args.domain or os.environ.get('MUMBOJUMBO_DOMAIN')
+    if not domain:
+        print("Error: Domain required", file=sys.stderr)
+        print("  Provide via -d argument or MUMBOJUMBO_DOMAIN environment variable", file=sys.stderr)
+        return 1
+
     # Parse server public key
     try:
-        server_client_key_bytes = parse_key_hex(args.key)
+        server_client_key_bytes = parse_key_hex(key_str)
     except Exception as e:
         print(f"Error parsing key: {e}", file=sys.stderr)
         return 1
 
     # Validate domain
-    domain = args.domain
     if not domain.startswith('.'):
-        print(f"Warning: domain should start with '.', got '{domain}'", file=sys.stderr)
-        print(f"         Prepending '.' automatically", file=sys.stderr)
+        if args.verbose:
+            print(f"Warning: domain should start with '.', got '{domain}'", file=sys.stderr)
+            print(f"         Prepending '.' automatically", file=sys.stderr)
         domain = '.' + domain
 
     # Read input data

@@ -4,20 +4,40 @@ DNS tunnel with NaCl SealedBox encryption. Sends encrypted messages via DNS quer
 
 ## Quick Start
 
+### Option 1: Environment Variables (Recommended)
+
 ```bash
 # 1. Install
 python3 -m venv venv
 ./venv/bin/pip install pynacl
 
-# 2. Generate config
+# 2. Generate keys and export to environment
+./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+source ~/.mumbojumbo_env
+
+# 3. Run server (uses env vars automatically)
+sudo ./venv/bin/python3 mumbojumbo.py
+
+# 4. Send data from client (uses env vars automatically)
+echo "Hello" | ./clients/python/mumbojumbo-client.py
+```
+
+### Option 2: Config File
+
+```bash
+# 1. Install
+python3 -m venv venv
+./venv/bin/pip install pynacl
+
+# 2. Generate config file
 ./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 chmod 600 mumbojumbo.conf
 
-# 3. Run server (requires sudo for packet capture)
+# 3. Run server with config
 sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 
-# 4. Test (in another terminal)
-./venv/bin/python3 test.py --test-client
+# 4. Use client with keys from config file comments
+# (See mumbojumbo_client_key in config comments)
 ```
 
 ## What It Does
@@ -38,22 +58,54 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 
 ## Configuration
 
-The generated `mumbojumbo.conf` includes the configuration needed for both server and client:
+### Key Format
 
+Keys use hex encoding with prefixes for easy identification:
+- **Server keys:** `mj_srv_<64_hex_chars>` - Server's private key (keep secret!)
+- **Client keys:** `mj_cli_<64_hex_chars>` - Server's public key (safe to share with clients)
+
+### Environment Variables (Recommended)
+
+Generate and use environment variables:
+
+```bash
+# Generate keys as environment variable declarations
+./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+
+# Example output:
+# export MUMBOJUMBO_SERVER_KEY=mj_srv_<64_hex_chars>  # Server private key
+# export MUMBOJUMBO_CLIENT_KEY=mj_cli_<64_hex_chars>  # Client public key (use with -k)
+# export MUMBOJUMBO_DOMAIN=.example.com              # Domain for both server and client
+
+# Load into environment
+source ~/.mumbojumbo_env
+
+# Run server (uses env vars automatically)
+sudo ./venv/bin/python3 mumbojumbo.py
 ```
+
+**Configuration Precedence:** CLI args > Environment variables > Config file
+
+### Config File Format
+
+The generated `mumbojumbo.conf` includes configuration for server and clients:
+
+```ini
 #
 # !! remember to `chmod 0600` this file !!
 #
 # for use on client-side:
 #   domain = .asd.qwe
-#   mumbojumbo_client_key = sdcn50krReeK+tcKyodfWhUEkv5/HEu58e1LsfrXTms=
+#   mumbojumbo_client_key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
 #
 
 [main]
 domain = .asd.qwe
 network-interface = en0
-mumbojumbo-server-key = OTlWa64XPOvLL23LCyE/9DddoaqTQKBbjrieRlSOHmE=
-mumbojumbo-client-key = u6DmkkHUVsVjsFFNuQXlM89k25kueOXeKX4j2uE7cQ8=
+# Handler pipeline: comma-separated list (stdout, smtp, file, execute)
+handlers = stdout
+mumbojumbo-server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
+mumbojumbo-client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
 
 [smtp]
 server = smtp.gmail.com
@@ -63,9 +115,17 @@ username = user@gmail.com
 password = password
 from = user@gmail.com
 to = recipient@example.com
+
+[file]
+path = /var/log/mumbojumbo-packets.log
+format = hex
+
+[execute]
+command = /usr/local/bin/process-packet.sh
+timeout = 5
 ```
 
-**For clients:** Copy the `domain` and `mumbojumbo_client_key` values from the config comments.
+**For clients:** Copy the `mumbojumbo_client_key` (mj_cli_ format) and `domain` from config comments.
 
 ## Requirements
 
@@ -84,17 +144,57 @@ brew install wireshark
 sudo apt-get install tshark
 ```
 
-## Commands
+## CLI Commands
 
 ```bash
-# Generate keys
+# Show help
+./venv/bin/python3 mumbojumbo.py --help
+
+# Generate keys as environment variables (for easy sourcing)
 ./venv/bin/python3 mumbojumbo.py --gen-keys
 
-# Test SMTP
-./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf --test-smtp
+# Generate config file skeleton
+./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 
-# Run tests
+# Run with config file
+sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
+
+# Run with environment variables
+sudo ./venv/bin/python3 mumbojumbo.py
+# (uses MUMBOJUMBO_SERVER_KEY and MUMBOJUMBO_DOMAIN if set)
+
+# Override config with CLI arguments
+sudo ./venv/bin/python3 mumbojumbo.py -k mj_srv_<hex> -d .example.com
+
+# Verbose mode (show logs to stderr)
+sudo ./venv/bin/python3 mumbojumbo.py -v
+
+# Test all configured handlers
+./venv/bin/python3 mumbojumbo.py --test-handlers
+
+# Run unit tests
 ./venv/bin/python3 test.py
+```
+
+### Client Examples
+
+See [clients/](clients/) directory for Python, Go, Node.js, Rust, and C implementations.
+
+```bash
+# Python client
+echo "Hello" | ./clients/python/mumbojumbo-client.py \
+  -k mj_cli_<64_hex_chars> \
+  -d .example.com
+
+# Go client
+echo "Hello" | ./clients/go/mumbojumbo-client \
+  -k mj_cli_<64_hex_chars> \
+  -d .example.com
+
+# Node.js client
+echo "Hello" | ./clients/nodejs/mumbojumbo-client.js \
+  -k mj_cli_<64_hex_chars> \
+  -d .example.com
 ```
 
 ## Documentation
