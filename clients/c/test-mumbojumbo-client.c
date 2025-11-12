@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <ctype.h>
 #include <sodium.h>
 
 #define ASSERT(cond, msg) do { \
@@ -24,35 +25,37 @@
     total++; \
 } while(0)
 
-// Test: Key Parsing
+// Test: Key Parsing (via mumbojumbo_client_new_from_hex)
 static int test_parse_valid_hex_key(void) {
-    uint8_t key[32];
     char valid_key[72];
     strcpy(valid_key, "mj_cli_");
     for (int i = 0; i < 64; i++) {
         strcat(valid_key, "a");
     }
 
-    ASSERT(parse_key_hex(valid_key, key) == 0, "parse_key_hex should succeed");
-    ASSERT(key[0] == 0xaa, "first byte should be 0xaa");
+    MumbojumboClient *client = mumbojumbo_client_new_from_hex(valid_key, ".asd.qwe", MAX_FRAG_DATA_LEN);
+    ASSERT(client != NULL, "client creation should succeed");
+    ASSERT(client->server_client_key[0] == 0xaa, "first byte should be 0xaa");
+
+    mumbojumbo_client_free(client);
     return 1;
 }
 
 static int test_reject_key_without_prefix(void) {
-    uint8_t key[32];
     char invalid_key[65];
     for (int i = 0; i < 64; i++) {
         invalid_key[i] = 'a';
     }
     invalid_key[64] = '\0';
 
-    ASSERT(parse_key_hex(invalid_key, key) != 0, "should reject key without prefix");
+    MumbojumboClient *client = mumbojumbo_client_new_from_hex(invalid_key, ".asd.qwe", MAX_FRAG_DATA_LEN);
+    ASSERT(client == NULL, "should reject key without prefix");
     return 1;
 }
 
 static int test_reject_key_with_wrong_length(void) {
-    uint8_t key[32];
-    ASSERT(parse_key_hex("mj_cli_aabbccdd", key) != 0, "should reject short key");
+    MumbojumboClient *client = mumbojumbo_client_new_from_hex("mj_cli_aabbccdd", ".asd.qwe", MAX_FRAG_DATA_LEN);
+    ASSERT(client == NULL, "should reject short key");
     return 1;
 }
 

@@ -68,24 +68,24 @@ func base32Decode(encoded string) ([]byte, error) {
 }
 
 // ============================================================================
-// Test: Key Parsing
+// Test: Key Parsing (via NewMumbojumboClient constructor)
 // ============================================================================
 
 func TestParseValidHexKey(t *testing.T) {
 	validKey := "mj_cli_" + strings.Repeat("a", 64)
-	result, err := ParseKeyHex(validKey)
+	client, err := NewMumbojumboClient(validKey, ".asd.qwe", MaxFragDataLen)
 
 	if err != nil {
 		t.Fatalf("Expected no error, got: %v", err)
 	}
 
-	if result[0] != 0xaa {
-		t.Errorf("Expected first byte 0xaa, got: 0x%x", result[0])
+	if client.serverClientKey[0] != 0xaa {
+		t.Errorf("Expected first byte 0xaa, got: 0x%x", client.serverClientKey[0])
 	}
 }
 
 func TestRejectKeyWithoutPrefix(t *testing.T) {
-	_, err := ParseKeyHex(strings.Repeat("a", 64))
+	_, err := NewMumbojumboClient(strings.Repeat("a", 64), ".asd.qwe", MaxFragDataLen)
 
 	if err == nil {
 		t.Fatal("Expected error for missing prefix")
@@ -97,7 +97,7 @@ func TestRejectKeyWithoutPrefix(t *testing.T) {
 }
 
 func TestRejectKeyWithWrongLength(t *testing.T) {
-	_, err := ParseKeyHex("mj_cli_" + strings.Repeat("a", 32))
+	_, err := NewMumbojumboClient("mj_cli_"+strings.Repeat("a", 32), ".asd.qwe", MaxFragDataLen)
 
 	if err == nil {
 		t.Fatal("Expected error for wrong length")
@@ -109,7 +109,7 @@ func TestRejectKeyWithWrongLength(t *testing.T) {
 }
 
 func TestRejectKeyWithInvalidHex(t *testing.T) {
-	_, err := ParseKeyHex("mj_cli_" + strings.Repeat("z", 64))
+	_, err := NewMumbojumboClient("mj_cli_"+strings.Repeat("z", 64), ".asd.qwe", MaxFragDataLen)
 
 	if err == nil {
 		t.Fatal("Expected error for invalid hex")
@@ -528,7 +528,10 @@ func TestCreateQueryFromEmptyData(t *testing.T) {
 // ============================================================================
 
 func TestInitializeClient(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 
 	if client.domain != ".asd.qwe" {
 		t.Errorf("Expected domain '.asd.qwe', got: %s", client.domain)
@@ -540,7 +543,10 @@ func TestInitializeClient(t *testing.T) {
 }
 
 func TestAutoPrependDotToDomain(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, "asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, "asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 
 	if client.domain != ".asd.qwe" {
 		t.Errorf("Expected '.asd.qwe', got: %s", client.domain)
@@ -548,7 +554,11 @@ func TestAutoPrependDotToDomain(t *testing.T) {
 }
 
 func TestGenerateQueriesWithoutSending(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Client creation error: %v", err)
+	}
+
 	queries, err := client.GenerateQueries([]byte("test"))
 
 	if err != nil {
@@ -565,7 +575,11 @@ func TestGenerateQueriesWithoutSending(t *testing.T) {
 }
 
 func TestGenerateQueriesOnly(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Client creation error: %v", err)
+	}
+
 	queries, err := client.GenerateQueries([]byte("test"))
 
 	if err != nil {
@@ -582,7 +596,10 @@ func TestGenerateQueriesOnly(t *testing.T) {
 }
 
 func TestPacketIDIncrements(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Client creation error: %v", err)
+	}
 
 	queries1, _ := client.GenerateQueries([]byte("msg1"))
 	queries2, _ := client.GenerateQueries([]byte("msg2"))
@@ -593,7 +610,11 @@ func TestPacketIDIncrements(t *testing.T) {
 }
 
 func TestPacketIDWrapsAt0xFFFF(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Client creation error: %v", err)
+	}
+
 	client.nextPacketID = 0xFFFF
 
 	id1 := client.getNextPacketID()
@@ -609,7 +630,11 @@ func TestPacketIDWrapsAt0xFFFF(t *testing.T) {
 }
 
 func TestMultiFragmentMessage(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Client creation error: %v", err)
+	}
+
 	largeData := make([]byte, MaxFragDataLen*3)
 
 	queries, err := client.GenerateQueries(largeData)
@@ -627,7 +652,11 @@ func TestMultiFragmentMessage(t *testing.T) {
 // ============================================================================
 
 func TestEncryptDecryptSingleFragment(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Client creation error: %v", err)
+	}
+
 	message := []byte("Hello World")
 
 	queries, err := client.GenerateQueries(message)
@@ -667,7 +696,11 @@ func TestEncryptDecryptSingleFragment(t *testing.T) {
 }
 
 func TestEncryptDecryptMultiFragment(t *testing.T) {
-	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	client, err := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
+	if err != nil {
+		t.Fatalf("Client creation error: %v", err)
+	}
+
 	message := bytes.Repeat([]byte{0x42}, MaxFragDataLen*2+10)
 
 	queries, err := client.GenerateQueries(message)

@@ -85,7 +85,7 @@ func (c *MumbojumboClient) getNextPacketID() uint64 {
 	return packetID
 }
 
-// parseKeyHex parses a key in mj_cli_<hex> format (internal use)
+// parseKeyHex parses a key in mj_cli_<hex> format (internal use only)
 func parseKeyHex(keyStr string) ([32]byte, error) {
 	var key [32]byte
 

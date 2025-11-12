@@ -6,8 +6,8 @@
 #include <ctype.h>
 #include <sodium.h>
 
-// Parse key in mj_cli_<hex> format
-int parse_key_hex(const char *key_str, uint8_t key[32]) {
+// Parse key in mj_cli_<hex> format (internal use only)
+static int parse_key_hex(const char *key_str, uint8_t key[32]) {
     if (strncmp(key_str, "mj_cli_", 7) != 0) {
         fprintf(stderr, "Error: key must start with \"mj_cli_\"\n");
         return -1;
@@ -457,6 +457,7 @@ static void print_usage(void) {
     );
 }
 
+#ifndef MUMBOJUMBO_TEST_BUILD
 int main(int argc, char *argv[]) {
     if (sodium_init() < 0) {
         fprintf(stderr, "Error: failed to initialize libsodium\n");
@@ -622,3 +623,4 @@ int main(int argc, char *argv[]) {
 
     return exit_code;
 }
+#endif // MUMBOJUMBO_TEST_BUILD

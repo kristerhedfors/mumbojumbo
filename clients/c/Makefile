@@ -1,6 +1,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c11 -O2
 LDFLAGS = -lsodium
+TEST_CFLAGS = $(CFLAGS) -DMUMBOJUMBO_TEST_BUILD
 
 TARGET = mumbojumbo-client
 TEST_TARGET = test-mumbojumbo-client
@@ -25,17 +26,23 @@ all: $(TARGET)
 $(TARGET): $(OBJECTS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-$(TEST_TARGET): $(TEST_OBJECTS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+$(TEST_TARGET): test-mumbojumbo-client.o mumbojumbo-client-test.o
+	$(CC) $(TEST_CFLAGS) -o $@ $^ $(LDFLAGS)
 
 %.o: %.c $(HEADER)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+test-mumbojumbo-client.o: test-mumbojumbo-client.c $(HEADER)
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
+
+mumbojumbo-client-test.o: mumbojumbo-client.c $(HEADER)
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
 
 test: $(TEST_TARGET)
 	./$(TEST_TARGET)
 
 clean:
-	rm -f $(TARGET) $(TEST_TARGET) $(OBJECTS) $(TEST_OBJECTS)
+	rm -f $(TARGET) $(TEST_TARGET) $(OBJECTS) $(TEST_OBJECTS) mumbojumbo-client-test.o
 
 install: $(TARGET)
 	install -m 755 $(TARGET) /usr/local/bin/

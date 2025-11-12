@@ -25,9 +25,6 @@ typedef struct {
     uint16_t next_packet_id;
 } MumbojumboClient;
 
-// Key parsing
-int parse_key_hex(const char *key_str, uint8_t key[32]);
-
 // Base32 encoding
 char *base32_encode(const uint8_t *data, size_t len);
 
