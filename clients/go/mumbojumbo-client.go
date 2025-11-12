@@ -21,7 +21,7 @@ import (
 const (
 	MaxFragDataLen  = 80
 	DNSLabelMaxLen  = 63
-	HeaderSize      = 12
+	HeaderSize      = 18 // 18-byte header: u64 + u32 + u32 + u16
 	SealedBoxOH     = 48 // SealedBox overhead: 32-byte ephemeral pubkey + 16-byte tag (libsodium compatible)
 	PublicKeySize   = 32
 	PrivateKeySize  = 32
@@ -32,7 +32,7 @@ type MumbojumboClient struct {
 	serverClientKey    [32]byte
 	domain          string
 	maxFragmentSize int
-	nextPacketID    uint16
+	nextPacketID    uint64
 }
 
 // NewMumbojumboClient creates a new client instance
@@ -47,18 +47,18 @@ func NewMumbojumboClient(serverClientKey [32]byte, domain string, maxFragmentSiz
 		maxFragmentSize: maxFragmentSize,
 	}
 
-	// Initialize with random packet ID
-	var randomBytes [2]byte
+	// Initialize with cryptographically random packet ID (u64)
+	var randomBytes [8]byte
 	rand.Read(randomBytes[:])
-	client.nextPacketID = binary.BigEndian.Uint16(randomBytes[:])
+	client.nextPacketID = binary.BigEndian.Uint64(randomBytes[:])
 
 	return client
 }
 
-// getNextPacketID returns the next packet ID and increments counter (wraps at 0xFFFF)
-func (c *MumbojumboClient) getNextPacketID() uint16 {
+// getNextPacketID returns the next packet ID and increments counter (wraps at 2^64-1)
+func (c *MumbojumboClient) getNextPacketID() uint64 {
 	packetID := c.nextPacketID
-	c.nextPacketID = (c.nextPacketID + 1) & 0xFFFF
+	c.nextPacketID = (c.nextPacketID + 1) & 0xFFFFFFFFFFFFFFFF
 	return packetID
 }
 
@@ -124,8 +124,8 @@ func SplitToLabels(data string, maxLen int) []string {
 	return labels
 }
 
-// CreateFragment builds a fragment with 12-byte header
-func CreateFragment(packetID uint16, fragIndex, fragCount uint32, fragData []byte) ([]byte, error) {
+// CreateFragment builds a fragment with 18-byte header
+func CreateFragment(packetID uint64, fragIndex, fragCount uint32, fragData []byte) ([]byte, error) {
 	if fragIndex >= fragCount {
 		return nil, fmt.Errorf("invalid frag_index %d for frag_count %d", fragIndex, fragCount)
 	}
@@ -135,10 +135,10 @@ func CreateFragment(packetID uint16, fragIndex, fragCount uint32, fragData []byt
 	}
 
 	header := make([]byte, HeaderSize)
-	binary.BigEndian.PutUint16(header[0:2], packetID)
-	binary.BigEndian.PutUint32(header[2:6], fragIndex)
-	binary.BigEndian.PutUint32(header[6:10], fragCount)
-	binary.BigEndian.PutUint16(header[10:12], uint16(len(fragData)))
+	binary.BigEndian.PutUint64(header[0:8], packetID)
+	binary.BigEndian.PutUint32(header[8:12], fragIndex)
+	binary.BigEndian.PutUint32(header[12:16], fragCount)
+	binary.BigEndian.PutUint16(header[16:18], uint16(len(fragData)))
 
 	return append(header, fragData...), nil
 }

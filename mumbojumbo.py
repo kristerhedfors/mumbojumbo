@@ -5,6 +5,7 @@ import logging
 import logging.handlers
 import os
 import queue
+import secrets
 import socket
 import struct
 import subprocess
@@ -71,7 +72,7 @@ class BaseFragment(Bindable):
 class Fragment(BaseFragment):
     '''
         Packet format:
-            u16 packet_id (changed from u32)
+            u64 packet_id
             u32 frag_index
             u32 frag_count
             u16 len(frag_data)
@@ -91,6 +92,10 @@ class Fragment(BaseFragment):
         nval = socket.htons(val)
         return struct.pack('H', nval)
 
+    def _htonll_pack(self, val):
+        # Pack u64 in big-endian (network byte order)
+        return struct.pack('!Q', val)
+
     def _unpack_ntohl(self, s):
         assert len(s) == 4
         nval = struct.unpack('I', s)[0]
@@ -101,9 +106,14 @@ class Fragment(BaseFragment):
         nval = struct.unpack('H', s)[0]
         return socket.ntohs(nval)
 
+    def _unpack_ntohll(self, s):
+        # Unpack u64 from big-endian (network byte order)
+        assert len(s) == 8
+        return struct.unpack('!Q', s)[0]
+
     def serialize(self):
         ser = b''
-        ser += self._htons_pack(self._packet_id)  # u16 (2 bytes)
+        ser += self._htonll_pack(self._packet_id)  # u64 (8 bytes)
         ser += self._htonl_pack(self._frag_index)  # u32 (4 bytes)
         ser += self._htonl_pack(self._frag_count)  # u32 (4 bytes)
         ser += self._htons_pack(len(self._frag_data))  # u16 (2 bytes)
@@ -111,11 +121,11 @@ class Fragment(BaseFragment):
         return ser
 
     def deserialize(self, raw):
-        packet_id = self._unpack_ntohs(raw[:2])  # u16, bytes 0-2
-        frag_index = self._unpack_ntohl(raw[2:6])  # u32, bytes 2-6
-        frag_count = self._unpack_ntohl(raw[6:10])  # u32, bytes 6-10
-        frag_data_len = self._unpack_ntohs(raw[10:12])  # u16, bytes 10-12
-        frag_data = raw[12:]  # bytes 12+
+        packet_id = self._unpack_ntohll(raw[:8])  # u64, bytes 0-8
+        frag_index = self._unpack_ntohl(raw[8:12])  # u32, bytes 8-12
+        frag_count = self._unpack_ntohl(raw[12:16])  # u32, bytes 12-16
+        frag_data_len = self._unpack_ntohs(raw[16:18])  # u16, bytes 16-18
+        frag_data = raw[18:]  # bytes 18+
         try:
             assert frag_data_len == len(frag_data)
         except:
@@ -258,8 +268,11 @@ class PacketEngine(object):
         self._packet_assembly = {}
         self._packet_assembly_counter = {}
         self._packet_outqueue = queue.Queue()
-        # Sequential packet ID counter (u16: 0-65535, wraps around)
-        self._next_packet_id = 0
+        # Packet ID counter (u64: 0 to 2^64-1, wraps around)
+        # Initialize with cryptographically secure random value
+        self._next_packet_id = secrets.randbits(64)
+        # Track completed packet IDs for replay detection
+        self._completed_packet_ids = set()
 
     @property
     def packet_outqueue(self):
@@ -270,9 +283,9 @@ class PacketEngine(object):
             Generator yielding zero or more fragments from data.
         '''
         logger.debug('to_wire() len(packet_data)==' + str(len(packet_data)))
-        # Use sequential packet ID and increment counter
+        # Use packet ID and increment counter
         packet_id = self._next_packet_id
-        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFF  # Wrap at 65535 (u16)
+        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFFFFFFFFFF  # Wrap at 2^64-1 (u64)
         frag_data_lst = _split2len(packet_data, self._max_frag_data_len)
         frag_count = len(frag_data_lst)
         frag_index = 0
@@ -325,6 +338,13 @@ class PacketEngine(object):
                     self._finalize_packet(packet_id)
 
     def _finalize_packet(self, packet_id):
+        # Check for replay attack (duplicate packet ID)
+        if packet_id in self._completed_packet_ids:
+            logger.warning(f'Replay attack detected: packet_id {packet_id} has been completed before')
+        else:
+            # Add to completed set
+            self._completed_packet_ids.add(packet_id)
+
         frag_data_lst = self._packet_assembly[packet_id]
         packet_data = b''.join(frag_data_lst)
         self.packet_outqueue.put(packet_data)
@@ -922,9 +942,9 @@ def main():
         domain = f'.{random_suffix[:4]}.{random_suffix[4:]}'
 
         # Output as environment variable declarations for easy sourcing
-        print(f'export MUMBOJUMBO_SERVER_KEY={srv}  # Server private key')
-        print(f'export MUMBOJUMBO_CLIENT_KEY={cli}   # Client public key (use with -k)')
-        print(f'export MUMBOJUMBO_DOMAIN={domain}  # Domain for both server and client (use with -d)')
+        print(f'export MUMBOJUMBO_SERVER_KEY={srv}')
+        print(f'export MUMBOJUMBO_CLIENT_KEY={cli}')
+        print(f'export MUMBOJUMBO_DOMAIN={domain}')
         sys.exit()
 
     # Default to mumbojumbo.conf if no config specified

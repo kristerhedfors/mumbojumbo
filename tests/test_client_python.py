@@ -67,13 +67,13 @@ class TestFragmentCreation:
 
         fragment = client.create_fragment(packet_id, frag_index, frag_count, frag_data)
 
-        # Verify header (12 bytes: u16 + u32 + u32 + u16)
-        assert len(fragment) == 14  # 12 byte header + 2 byte data
-        assert fragment[:2] == b'\x12\x34'  # packet_id big-endian u16
-        assert fragment[2:6] == b'\x00\x00\x00\x00'  # frag_index u32
-        assert fragment[6:10] == b'\x00\x00\x00\x01'  # frag_count u32
-        assert fragment[10:12] == b'\x00\x02'  # data_len u16
-        assert fragment[12:] == b"HI"
+        # Verify header (18 bytes: u64 + u32 + u32 + u16)
+        assert len(fragment) == 20  # 18 byte header + 2 byte data
+        assert fragment[:8] == b'\x00\x00\x00\x00\x00\x00\x12\x34'  # packet_id big-endian u64
+        assert fragment[8:12] == b'\x00\x00\x00\x00'  # frag_index u32
+        assert fragment[12:16] == b'\x00\x00\x00\x01'  # frag_count u32
+        assert fragment[16:18] == b'\x00\x02'  # data_len u16
+        assert fragment[18:] == b"HI"
 
     def test_multi_fragment(self):
         """Test multi-fragment packet header."""
@@ -84,8 +84,8 @@ class TestFragmentCreation:
 
         fragment = client.create_fragment(packet_id, frag_index, frag_count, frag_data)
 
-        # Verify header fields (12 bytes: u16 + u32 + u32 + u16)
-        pid, fidx, fcnt, flen = struct.unpack('!HIIH', fragment[:12])
+        # Verify header fields (18 bytes: u64 + u32 + u32 + u16)
+        pid, fidx, fcnt, flen = struct.unpack('!QIIH', fragment[:18])
         assert pid == 0xDEAD
         assert fidx == 1
         assert fcnt == 3
@@ -94,14 +94,14 @@ class TestFragmentCreation:
     def test_empty_fragment(self):
         """Test empty fragment data."""
         fragment = client.create_fragment(0x0001, 0, 1, b'')
-        assert len(fragment) == 12  # Just header (12 bytes)
-        assert fragment[10:12] == b'\x00\x00'  # data_len = 0
+        assert len(fragment) == 18  # Just header (18 bytes)
+        assert fragment[16:18] == b'\x00\x00'  # data_len = 0
 
     def test_max_size_fragment(self):
         """Test maximum size fragment."""
         frag_data = b'X' * client.MAX_FRAG_DATA_LEN
         fragment = client.create_fragment(0x0001, 0, 1, frag_data)
-        assert len(fragment) == 12 + client.MAX_FRAG_DATA_LEN  # 12-byte header
+        assert len(fragment) == 18 + client.MAX_FRAG_DATA_LEN  # 18-byte header
 
     def test_oversized_fragment_fails(self):
         """Fragment data over max size should fail."""
@@ -112,7 +112,7 @@ class TestFragmentCreation:
     def test_invalid_packet_id(self):
         """Invalid packet ID should fail."""
         with pytest.raises(ValueError, match='packet_id out of range'):
-            client.create_fragment(0x10000, 0, 1, b'test')
+            client.create_fragment(0x10000000000000000, 0, 1, b'test')  # Beyond u64 max
 
     def test_invalid_frag_index(self):
         """Fragment index >= frag_count should fail."""
@@ -433,9 +433,9 @@ class TestEndToEndFlow:
         # 3. Decrypt
         sealedbox = nacl.public.SealedBox(server_privkey)
         plaintext_recovered = sealedbox.decrypt(encrypted_recovered)
-        # 4. Parse fragment header (12 bytes: u16 + u32 + u32 + u16)
-        pid, fidx, fcnt, flen = struct.unpack('!HIIH', plaintext_recovered[:12])
-        data = plaintext_recovered[12:12+flen]
+        # 4. Parse fragment header (18 bytes: u64 + u32 + u32 + u16)
+        pid, fidx, fcnt, flen = struct.unpack('!QIIH', plaintext_recovered[:18])
+        data = plaintext_recovered[18:18+flen]
 
         # Verify
         assert pid == packet_id
@@ -472,9 +472,9 @@ class TestEndToEndFlow:
             sealedbox = nacl.public.SealedBox(server_privkey)
             plaintext_recovered = sealedbox.decrypt(encrypted_recovered)
 
-            # Parse header (12 bytes: u16 + u32 + u32 + u16)
-            pid, fidx, fcnt, flen = struct.unpack('!HIIH', plaintext_recovered[:12])
-            data = plaintext_recovered[12:12+flen]
+            # Parse header (18 bytes: u64 + u32 + u32 + u16)
+            pid, fidx, fcnt, flen = struct.unpack('!QIIH', plaintext_recovered[:18])
+            data = plaintext_recovered[18:18+flen]
 
             # Verify header
             assert pid == packet_id

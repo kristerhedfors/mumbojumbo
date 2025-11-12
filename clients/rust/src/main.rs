@@ -11,7 +11,7 @@ use std::process::{Command, exit};
 
 const MAX_FRAG_DATA_LEN: usize = 80;
 const DNS_LABEL_MAX_LEN: usize = 63;
-const HEADER_SIZE: usize = 12;
+const HEADER_SIZE: usize = 18; // 18-byte header: u64 + u32 + u32 + u16
 const SEALED_BOX_OH: usize = 48; // 32-byte ephemeral pubkey + 16-byte tag
 
 /// MumbojumboClient handles DNS tunneling operations
@@ -19,7 +19,7 @@ pub struct MumbojumboClient {
     server_client_key: [u8; 32],
     domain: String,
     max_fragment_size: usize,
-    next_packet_id: u16,
+    next_packet_id: u64,
 }
 
 impl MumbojumboClient {
@@ -31,10 +31,10 @@ impl MumbojumboClient {
             format!(".{}", domain)
         };
 
-        // Initialize with random packet ID
-        let mut random_bytes = [0u8; 2];
+        // Initialize with cryptographically random packet ID (u64)
+        let mut random_bytes = [0u8; 8];
         getrandom(&mut random_bytes).expect("Failed to generate random bytes");
-        let next_packet_id = u16::from_be_bytes(random_bytes);
+        let next_packet_id = u64::from_be_bytes(random_bytes);
 
         Self {
             server_client_key,
@@ -44,8 +44,8 @@ impl MumbojumboClient {
         }
     }
 
-    /// Returns the next packet ID and increments counter (wraps at 0xFFFF)
-    fn get_next_packet_id(&mut self) -> u16 {
+    /// Returns the next packet ID and increments counter (wraps at 2^64-1)
+    fn get_next_packet_id(&mut self) -> u64 {
         let packet_id = self.next_packet_id;
         self.next_packet_id = self.next_packet_id.wrapping_add(1);
         packet_id
@@ -157,9 +157,9 @@ pub fn split_to_labels(data: &str, max_len: usize) -> Vec<String> {
         .collect()
 }
 
-/// Create fragment with 12-byte header
+/// Create fragment with 18-byte header
 pub fn create_fragment(
-    packet_id: u16,
+    packet_id: u64,
     frag_index: u32,
     frag_count: u32,
     frag_data: &[u8],
@@ -180,10 +180,10 @@ pub fn create_fragment(
     }
 
     let mut header = vec![0u8; HEADER_SIZE];
-    header[0..2].copy_from_slice(&packet_id.to_be_bytes());
-    header[2..6].copy_from_slice(&frag_index.to_be_bytes());
-    header[6..10].copy_from_slice(&frag_count.to_be_bytes());
-    header[10..12].copy_from_slice(&(frag_data.len() as u16).to_be_bytes());
+    header[0..8].copy_from_slice(&packet_id.to_be_bytes());
+    header[8..12].copy_from_slice(&frag_index.to_be_bytes());
+    header[12..16].copy_from_slice(&frag_count.to_be_bytes());
+    header[16..18].copy_from_slice(&(frag_data.len() as u16).to_be_bytes());
 
     let mut fragment = header;
     fragment.extend_from_slice(frag_data);
@@ -518,10 +518,10 @@ mod tests {
 
         assert_eq!(frag.len(), HEADER_SIZE + 4);
 
-        let packet_id = u16::from_be_bytes([frag[0], frag[1]]);
-        let frag_index = u32::from_be_bytes([frag[2], frag[3], frag[4], frag[5]]);
-        let frag_count = u32::from_be_bytes([frag[6], frag[7], frag[8], frag[9]]);
-        let data_len = u16::from_be_bytes([frag[10], frag[11]]);
+        let packet_id = u64::from_be_bytes([frag[0], frag[1], frag[2], frag[3], frag[4], frag[5], frag[6], frag[7]]);
+        let frag_index = u32::from_be_bytes([frag[8], frag[9], frag[10], frag[11]]);
+        let frag_count = u32::from_be_bytes([frag[12], frag[13], frag[14], frag[15]]);
+        let data_len = u16::from_be_bytes([frag[16], frag[17]]);
 
         assert_eq!(packet_id, 100);
         assert_eq!(frag_index, 0);
@@ -535,7 +535,7 @@ mod tests {
         let frag = create_fragment(1, 0, 1, &[]).unwrap();
         assert_eq!(frag.len(), HEADER_SIZE);
 
-        let data_len = u16::from_be_bytes([frag[10], frag[11]]);
+        let data_len = u16::from_be_bytes([frag[16], frag[17]]);
         assert_eq!(data_len, 0);
     }
 

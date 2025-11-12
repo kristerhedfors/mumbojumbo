@@ -11,7 +11,7 @@ import os
 import argparse
 import base64
 import struct
-import random
+import secrets
 import subprocess
 import nacl.public
 
@@ -45,15 +45,15 @@ def split_to_labels(data, max_len=DNS_LABEL_MAX_LEN):
 
 def create_fragment(packet_id, frag_index, frag_count, frag_data):
     """
-    Create fragment with 12-byte header.
+    Create fragment with 18-byte header.
 
     Header format (big-endian):
-    - packet_id: u16 (0-65535)
+    - packet_id: u64 (0 to 2^64-1)
     - frag_index: u32 (0-based fragment index, up to 4.3 billion)
     - frag_count: u32 (total fragments in packet, up to 4.3 billion)
     - frag_data_len: u16 (length of fragment data, 0-65535)
     """
-    if not (0 <= packet_id <= 0xFFFF):
+    if not (0 <= packet_id <= 0xFFFFFFFFFFFFFFFF):
         raise ValueError(f'packet_id out of range: {packet_id}')
     if not (0 <= frag_index < frag_count):
         raise ValueError(f'Invalid frag_index {frag_index} for frag_count {frag_count}')
@@ -62,7 +62,7 @@ def create_fragment(packet_id, frag_index, frag_count, frag_data):
     if len(frag_data) > MAX_FRAG_DATA_LEN:
         raise ValueError(f'Fragment data too large: {len(frag_data)} > {MAX_FRAG_DATA_LEN}')
 
-    header = struct.pack('!HIIH', packet_id, frag_index, frag_count, len(frag_data))
+    header = struct.pack('!QIIH', packet_id, frag_index, frag_count, len(frag_data))
     return header + frag_data
 
 
@@ -151,12 +151,13 @@ class MumbojumboClient:
 
         self.domain = domain if domain.startswith('.') else '.' + domain
         self.max_fragment_size = max_fragment_size
-        self._next_packet_id = random.randint(0, 0xFFFF)
+        # Initialize with cryptographically secure random u64
+        self._next_packet_id = secrets.randbits(64)
 
     def _get_next_packet_id(self):
-        """Get next packet ID and increment counter (wraps at 0xFFFF)."""
+        """Get next packet ID and increment counter (wraps at 2^64-1)."""
         packet_id = self._next_packet_id
-        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFF
+        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFFFFFFFFFF
         return packet_id
 
     def send_data(self, data, send_queries=True):
@@ -327,7 +328,7 @@ Configuration precedence: CLI args > Environment variables
 
             # Calculate sizes for display
             frag_data_len = len(data[frag_index * MAX_FRAG_DATA_LEN:(frag_index + 1) * MAX_FRAG_DATA_LEN])
-            plaintext_len = 12 + frag_data_len  # 12-byte header (u16 + u32 + u32 + u16)
+            plaintext_len = 18 + frag_data_len  # 18-byte header (u64 + u32 + u32 + u16)
             encrypted_len = plaintext_len + 48  # SealedBox adds ~48 bytes overhead
 
             print(f"  Data length: {frag_data_len} bytes", file=sys.stderr)
