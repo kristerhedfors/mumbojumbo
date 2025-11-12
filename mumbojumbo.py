@@ -443,6 +443,10 @@ def option_parser():
     p = optparse.OptionParser(usage=__usage__)
     p.add_option('-c', '--config', metavar='path',
                  help='use this config file')
+    p.add_option('-k', '--key', metavar='privkey',
+                 help='override mumbojumbo-privkey from config (format: mj_priv_<64_hex_chars>)')
+    p.add_option('-d', '--domain', metavar='domain',
+                 help='override domain from config (e.g., .example.com)')
     p.add_option('', '--gen-keys', action='store_true',
                  help='generate and print two NaCL key pairs')
     p.add_option('', '--gen-conf', action='store_true',
@@ -489,6 +493,22 @@ def decode_key_hex(key_str):
         return bytes.fromhex(hex_key)
     except ValueError as e:
         raise ValueError(f'Invalid hex key format: {e}')
+
+
+def validate_domain(domain):
+    '''
+        Validate domain format for DNS-based communication.
+        Domain should typically start with a dot (e.g., .example.com).
+        Raises ValueError if domain format is invalid.
+    '''
+    if not domain:
+        raise ValueError('Domain cannot be empty')
+    if not domain.startswith('.'):
+        logger.warning(f'Domain "{domain}" does not start with a dot - this may cause issues with DNS matching')
+    # Basic DNS label validation
+    if '..' in domain:
+        raise ValueError('Domain cannot contain consecutive dots')
+    return True
 
 
 def get_nacl_keypair_hex():
@@ -1012,17 +1032,62 @@ def main():
 
     #
     # parse NaCL keys (hex format with mj_priv_ or mj_pub_ prefix)
+    # Precedence: CLI args > Environment variables > Config file
     #
-    privkey_str = config.get('main', 'mumbojumbo-privkey')
+
+    # Get private key with precedence chain
+    privkey_str = None
+    if opt.key:
+        privkey_str = opt.key
+        logger.warning('Private key provided via CLI argument - this is visible in process list. Consider using MUMBOJUMBO_PRIVKEY environment variable instead.')
+    elif os.environ.get('MUMBOJUMBO_PRIVKEY'):
+        privkey_str = os.environ.get('MUMBOJUMBO_PRIVKEY')
+        logger.info('Using private key from MUMBOJUMBO_PRIVKEY environment variable')
+    elif config.has_option('main', 'mumbojumbo-privkey'):
+        privkey_str = config.get('main', 'mumbojumbo-privkey')
+    else:
+        logger.error('Missing mumbojumbo-privkey: must be provided via --key, MUMBOJUMBO_PRIVKEY, or config file')
+        print('ERROR: Private key required (use --key, MUMBOJUMBO_PRIVKEY env var, or config file)')
+        sys.exit(1)
+
+    # Get domain with precedence chain
+    domain = None
+    if opt.domain:
+        domain = opt.domain
+        logger.info(f'Using domain from CLI argument: {domain}')
+    elif os.environ.get('MUMBOJUMBO_DOMAIN'):
+        domain = os.environ.get('MUMBOJUMBO_DOMAIN')
+        logger.info(f'Using domain from MUMBOJUMBO_DOMAIN environment variable: {domain}')
+    elif config.has_option('main', 'domain'):
+        domain = config.get('main', 'domain')
+    else:
+        logger.error('Missing domain: must be provided via --domain, MUMBOJUMBO_DOMAIN, or config file')
+        print('ERROR: Domain required (use --domain, MUMBOJUMBO_DOMAIN env var, or config file)')
+        sys.exit(1)
+
+    # Validate domain format
+    try:
+        validate_domain(domain)
+    except ValueError as e:
+        logger.error(f'Invalid domain format: {e}')
+        print(f'ERROR: Invalid domain format: {e}')
+        sys.exit(1)
+
+    # Public key always from config (not typically overridden)
     pubkey_str = config.get('main', 'mumbojumbo-pubkey')
 
-    # Decode keys
-    privkey_bytes = decode_key_hex(privkey_str)
-    mumbojumbo_privkey = nacl.public.PrivateKey(privkey_bytes)
+    # Decode and validate keys
+    try:
+        privkey_bytes = decode_key_hex(privkey_str)
+        mumbojumbo_privkey = nacl.public.PrivateKey(privkey_bytes)
+    except (ValueError, nacl.exceptions.CryptoError) as e:
+        logger.error(f'Invalid private key: {e}')
+        print(f'ERROR: Invalid private key format: {e}')
+        sys.exit(1)
 
     pubkey_bytes = decode_key_hex(pubkey_str)
     mumbojumbo_pubkey = nacl.public.PublicKey(pubkey_bytes)
-    domain = config.get('main', 'domain')
+
     network_interface = config.get('main', 'network-interface')
 
     logger.info('domain={0}, network_interface={1}'.format(
