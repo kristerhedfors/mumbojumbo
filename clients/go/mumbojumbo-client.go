@@ -36,7 +36,30 @@ type MumbojumboClient struct {
 }
 
 // NewMumbojumboClient creates a new client instance
-func NewMumbojumboClient(serverClientKey [32]byte, domain string, maxFragmentSize int) *MumbojumboClient {
+// Accepts either a string key (mj_cli_<hex>) or raw [32]byte
+func NewMumbojumboClient(serverClientKeyInput interface{}, domain string, maxFragmentSize int) (*MumbojumboClient, error) {
+	var serverClientKey [32]byte
+
+	// Handle both string and byte array inputs
+	switch v := serverClientKeyInput.(type) {
+	case string:
+		// Parse hex format key
+		parsed, err := parseKeyHex(v)
+		if err != nil {
+			return nil, err
+		}
+		serverClientKey = parsed
+	case [32]byte:
+		serverClientKey = v
+	case []byte:
+		if len(v) != 32 {
+			return nil, fmt.Errorf("invalid key length: expected 32, got %d", len(v))
+		}
+		copy(serverClientKey[:], v)
+	default:
+		return nil, errors.New("serverClientKey must be string, [32]byte, or []byte")
+	}
+
 	if !strings.HasPrefix(domain, ".") {
 		domain = "." + domain
 	}
@@ -52,7 +75,7 @@ func NewMumbojumboClient(serverClientKey [32]byte, domain string, maxFragmentSiz
 	rand.Read(randomBytes[:])
 	client.nextPacketID = binary.BigEndian.Uint64(randomBytes[:])
 
-	return client
+	return client, nil
 }
 
 // getNextPacketID returns the next packet ID and increments counter (wraps at 2^64-1)
@@ -62,8 +85,8 @@ func (c *MumbojumboClient) getNextPacketID() uint64 {
 	return packetID
 }
 
-// ParseKeyHex parses a key in mj_cli_<hex> format
-func ParseKeyHex(keyStr string) ([32]byte, error) {
+// parseKeyHex parses a key in mj_cli_<hex> format (internal use)
+func parseKeyHex(keyStr string) ([32]byte, error) {
 	var key [32]byte
 
 	if !strings.HasPrefix(keyStr, "mj_cli_") {
@@ -335,13 +358,6 @@ Examples:
 		os.Exit(1)
 	}
 
-	// Parse server public key
-	serverClientKeyBytes, err := ParseKeyHex(key)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error parsing key: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Validate domain
 	if !strings.HasPrefix(domain, ".") {
 		fmt.Fprintf(os.Stderr, "Warning: domain should start with '.', got '%s'\n", domain)
@@ -365,8 +381,12 @@ Examples:
 		fmt.Fprintf(os.Stderr, "Read %d bytes of input\n", len(data))
 	}
 
-	// Create client
-	client := NewMumbojumboClient(serverClientKeyBytes, domain, MaxFragDataLen)
+	// Create client - key parsing happens transparently in constructor
+	client, err := NewMumbojumboClient(key, domain, MaxFragDataLen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing client: %v\n", err)
+		os.Exit(1)
+	}
 
 	if verbose {
 		fragments := FragmentData(data, MaxFragDataLen)

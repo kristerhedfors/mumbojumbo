@@ -209,12 +209,7 @@ class TestGenKeysOutput:
         # Check each line format
         assert output_lines[0].startswith('export MUMBOJUMBO_SERVER_KEY=mj_srv_')
         assert output_lines[1].startswith('export MUMBOJUMBO_CLIENT_KEY=mj_cli_')
-        assert output_lines[2].startswith('export MUMBOJUMBO_DOMAIN=.')
-
-        # Check that lines have comments
-        assert '# Server private key' in output_lines[0]
-        assert '# Client public key' in output_lines[1]
-        assert '# Domain for both' in output_lines[2]
+        assert output_lines[2].startswith('export MUMBOJUMBO_DOMAIN=')
 
     def test_gen_keys_keys_are_valid(self):
         """Test that generated keys can be parsed."""

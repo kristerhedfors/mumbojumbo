@@ -15,27 +15,6 @@ const MAX_FRAG_DATA_LEN = 80;
 const DNS_LABEL_MAX_LEN = 63;
 
 /**
- * Parse mj_cli_<hex> format key to Uint8Array
- */
-function parseKeyHex(keyStr) {
-  if (!keyStr.startsWith('mj_cli_')) {
-    throw new Error('Key must start with "mj_cli_"');
-  }
-  const hexKey = keyStr.substring(7);
-  if (hexKey.length !== 64) {
-    throw new Error(`Invalid hex key length: expected 64, got ${hexKey.length}`);
-  }
-  if (!/^[0-9a-fA-F]{64}$/.test(hexKey)) {
-    throw new Error('Invalid hex characters in key');
-  }
-  const bytes = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    bytes[i] = parseInt(hexKey.substring(i * 2, i * 2 + 2), 16);
-  }
-  return bytes;
-}
-
-/**
  * Base32 encode data (lowercase, no padding)
  */
 function base32Encode(data) {
@@ -166,12 +145,15 @@ class MumbojumboClient {
   /**
    * Initialize client
    *
-   * @param {Uint8Array|Buffer} serverPublicKey - Server's public key (32 bytes)
+   * @param {string|Uint8Array|Buffer} serverPublicKey - Server's public key (mj_cli_ hex string, Uint8Array, or Buffer)
    * @param {string} domain - DNS domain suffix (e.g., '.asd.qwe')
    * @param {number} maxFragmentSize - Maximum bytes per fragment (default: 80)
    */
   constructor(serverPublicKey, domain, maxFragmentSize = MAX_FRAG_DATA_LEN) {
-    if (Buffer.isBuffer(serverPublicKey)) {
+    // Auto-parse hex key format if string is provided
+    if (typeof serverPublicKey === 'string') {
+      this.serverPubkey = this._parseKeyHex(serverPublicKey);
+    } else if (Buffer.isBuffer(serverPublicKey)) {
       this.serverPubkey = new Uint8Array(serverPublicKey);
     } else {
       this.serverPubkey = serverPublicKey;
@@ -180,6 +162,27 @@ class MumbojumboClient {
     this.domain = domain.startsWith('.') ? domain : '.' + domain;
     this.maxFragmentSize = maxFragmentSize;
     this._nextPacketId = Math.floor(Math.random() * 0x10000);
+  }
+
+  /**
+   * Parse mj_cli_<hex> format key to Uint8Array (internal use)
+   */
+  _parseKeyHex(keyStr) {
+    if (!keyStr.startsWith('mj_cli_')) {
+      throw new Error('Key must start with "mj_cli_"');
+    }
+    const hexKey = keyStr.substring(7);
+    if (hexKey.length !== 64) {
+      throw new Error(`Invalid hex key length: expected 64, got ${hexKey.length}`);
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(hexKey)) {
+      throw new Error('Invalid hex characters in key');
+    }
+    const bytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) {
+      bytes[i] = parseInt(hexKey.substring(i * 2, i * 2 + 2), 16);
+    }
+    return bytes;
   }
 
   /**
@@ -288,15 +291,6 @@ Examples:
     process.exit(1);
   }
 
-  // Parse server public key
-  let serverPubkeyBytes;
-  try {
-    serverPubkeyBytes = parseKeyHex(key);
-  } catch (err) {
-    console.error(`Error parsing key: ${err.message}`);
-    process.exit(1);
-  }
-
   // Validate domain
   if (!domain.startsWith('.')) {
     console.error(`Warning: domain should start with '.', got '${domain}'`);
@@ -321,10 +315,10 @@ Examples:
     console.error(`Read ${data.length} bytes of input`);
   }
 
-  // Create client
+  // Create client - key parsing happens transparently in constructor
   let client;
   try {
-    client = new MumbojumboClient(serverPubkeyBytes, domain);
+    client = new MumbojumboClient(key, domain);
   } catch (err) {
     console.error(`Error initializing client: ${err.message}`);
     process.exit(1);
@@ -406,7 +400,6 @@ function readStdin() {
 
 // Export for testing
 module.exports = {
-  parseKeyHex,
   base32Encode,
   splitToLabels,
   createFragment,

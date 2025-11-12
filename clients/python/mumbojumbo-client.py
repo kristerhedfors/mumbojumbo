@@ -20,19 +20,6 @@ MAX_FRAG_DATA_LEN = 80
 DNS_LABEL_MAX_LEN = 63
 
 
-def parse_key_hex(key_str):
-    """Parse mj_cli_<hex> format key to bytes."""
-    if not key_str.startswith('mj_cli_'):
-        raise ValueError('Key must start with "mj_cli_"')
-    hex_key = key_str[7:]
-    if len(hex_key) != 64:
-        raise ValueError(f'Invalid hex key length: expected 64, got {len(hex_key)}')
-    try:
-        return bytes.fromhex(hex_key)
-    except ValueError as e:
-        raise ValueError(f'Invalid hex key: {e}')
-
-
 def base32_encode(data):
     """Encode to lowercase base32 without padding."""
     return base64.b32encode(data).replace(b'=', b'').lower().decode('ascii')
@@ -140,11 +127,15 @@ class MumbojumboClient:
         Initialize client.
 
         Args:
-            server_client_key: Server's public key (bytes or nacl.public.PublicKey)
+            server_client_key: Server's public key (mj_cli_ hex string, bytes, or nacl.public.PublicKey)
             domain: DNS domain suffix (e.g., '.asd.qwe')
             max_fragment_size: Maximum bytes per fragment (default: 80)
         """
-        if isinstance(server_client_key, bytes):
+        # Auto-parse hex key format if string is provided
+        if isinstance(server_client_key, str):
+            key_bytes = self._parse_key_hex(server_client_key)
+            self.server_client_key = nacl.public.PublicKey(key_bytes)
+        elif isinstance(server_client_key, bytes):
             self.server_client_key = nacl.public.PublicKey(server_client_key)
         else:
             self.server_client_key = server_client_key
@@ -153,6 +144,19 @@ class MumbojumboClient:
         self.max_fragment_size = max_fragment_size
         # Initialize with cryptographically secure random u64
         self._next_packet_id = secrets.randbits(64)
+
+    @staticmethod
+    def _parse_key_hex(key_str):
+        """Parse mj_cli_<hex> format key to bytes."""
+        if not key_str.startswith('mj_cli_'):
+            raise ValueError('Key must start with "mj_cli_"')
+        hex_key = key_str[7:]
+        if len(hex_key) != 64:
+            raise ValueError(f'Invalid hex key length: expected 64, got {len(hex_key)}')
+        try:
+            return bytes.fromhex(hex_key)
+        except ValueError as e:
+            raise ValueError(f'Invalid hex key: {e}')
 
     def _get_next_packet_id(self):
         """Get next packet ID and increment counter (wraps at 2^64-1)."""
@@ -263,13 +267,6 @@ Configuration precedence: CLI args > Environment variables
         print("  Provide via -d argument or MUMBOJUMBO_DOMAIN environment variable", file=sys.stderr)
         return 1
 
-    # Parse server public key
-    try:
-        server_client_key_bytes = parse_key_hex(key_str)
-    except Exception as e:
-        print(f"Error parsing key: {e}", file=sys.stderr)
-        return 1
-
     # Validate domain
     if not domain.startswith('.'):
         if args.verbose:
@@ -291,9 +288,9 @@ Configuration precedence: CLI args > Environment variables
     if args.verbose:
         print(f"Read {len(data)} bytes of input", file=sys.stderr)
 
-    # Create client
+    # Create client - key parsing happens transparently in constructor
     try:
-        client_obj = MumbojumboClient(server_client_key_bytes, domain)
+        client_obj = MumbojumboClient(key_str, domain)
     except Exception as e:
         print(f"Error initializing client: {e}", file=sys.stderr)
         return 1

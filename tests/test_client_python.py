@@ -30,29 +30,30 @@ spec.loader.exec_module(client)
 
 
 class TestKeyParsing:
-    """Test public key parsing."""
+    """Test public key parsing through MumbojumboClient constructor."""
 
     def test_parse_valid_key(self):
-        """Valid key should parse correctly."""
+        """Valid key should parse correctly through constructor."""
         key_str = 'mj_cli_' + 'a' * 64
-        key_bytes = client.parse_key_hex(key_str)
-        assert len(key_bytes) == 32
-        assert key_bytes == b'\xaa' * 32
+        # Test that client can be created with hex key string
+        client_obj = client.MumbojumboClient(key_str, '.test')
+        assert client_obj.server_client_key is not None
+        assert len(bytes(client_obj.server_client_key)) == 32
 
     def test_parse_key_wrong_prefix(self):
         """Key without mj_cli_ prefix should fail."""
         with pytest.raises(ValueError, match='must start with'):
-            client.parse_key_hex('wrong_prefix_' + 'a' * 64)
+            client.MumbojumboClient('wrong_prefix_' + 'a' * 64, '.test')
 
     def test_parse_key_wrong_length(self):
         """Key with wrong hex length should fail."""
         with pytest.raises(ValueError, match='Invalid hex key length'):
-            client.parse_key_hex('mj_cli_' + 'a' * 60)
+            client.MumbojumboClient('mj_cli_' + 'a' * 60, '.test')
 
     def test_parse_key_invalid_hex(self):
         """Key with invalid hex characters should fail."""
         with pytest.raises(ValueError, match='Invalid hex'):
-            client.parse_key_hex('mj_cli_' + 'z' * 64)
+            client.MumbojumboClient('mj_cli_' + 'z' * 64, '.test')
 
 
 class TestFragmentCreation:

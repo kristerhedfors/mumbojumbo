@@ -155,6 +155,14 @@ class PublicFragment(Fragment):
         One-way anonymous encryption using only the server's public key.
     '''
     def __init__(self, server_key=None, client_key=None, **kw):
+        # Auto-parse hex keys if strings are provided
+        if isinstance(server_key, str):
+            server_key_bytes = decode_key_hex(server_key)
+            server_key = nacl.public.PrivateKey(server_key_bytes)
+        if isinstance(client_key, str):
+            client_key_bytes = decode_key_hex(client_key)
+            client_key = nacl.public.PublicKey(client_key_bytes)
+
         self._server_key = server_key
         self._client_key = client_key
         # For encryption (client side): only needs client_key
@@ -1122,17 +1130,16 @@ def main():
     # Client key always from config (not typically overridden)
     client_key_str = config.get('main', 'mumbojumbo-client-key')
 
-    # Decode and validate keys
+    # Validate key format before passing to bind()
+    # bind() will parse them transparently
     try:
-        server_key_bytes = decode_key_hex(server_key_str)
-        mumbojumbo_server_key = nacl.public.PrivateKey(server_key_bytes)
-    except (ValueError, nacl.exceptions.CryptoError) as e:
-        logger.error(f'Invalid server key: {e}')
-        print(f'ERROR: Invalid server key format: {e}')
+        # Just validate they're valid hex keys, don't parse yet
+        decode_key_hex(server_key_str)
+        decode_key_hex(client_key_str)
+    except ValueError as e:
+        logger.error(f'Invalid key format: {e}')
+        print(f'ERROR: Invalid key format: {e}')
         sys.exit(1)
-
-    client_key_bytes = decode_key_hex(client_key_str)
-    mumbojumbo_client_key = nacl.public.PublicKey(client_key_bytes)
 
     network_interface = config.get('main', 'network-interface')
 
@@ -1141,10 +1148,11 @@ def main():
 
     #
     # prepare packet fragment class - server uses server_key for decryption
+    # Keys are passed as strings and parsed transparently inside PublicFragment
     #
     pf_cls = DnsPublicFragment.bind(domain=domain,
-                                    server_key=mumbojumbo_server_key,
-                                    client_key=mumbojumbo_client_key)
+                                    server_key=server_key_str,
+                                    client_key=client_key_str)
     #
     # build packet engine based on fragment class
     #
