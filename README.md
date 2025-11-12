@@ -29,6 +29,13 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 - Optional SMTP forwarding
 - Client only needs server's public key (no client keypair required)
 
+## Protocol Capacity
+
+- **Maximum packet size:** ~320 GB (343,597,383,600 bytes)
+- **Fragment support:** Up to 4.3 billion fragments per packet
+- **Fragment data size:** 80 bytes per fragment
+- **Practical use:** Supports multi-GB file transfers
+
 ## Configuration
 
 The generated `mumbojumbo.conf` includes the configuration needed for both server and client:

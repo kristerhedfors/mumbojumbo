@@ -72,8 +72,8 @@ class Fragment(BaseFragment):
     '''
         Packet format:
             u16 packet_id (changed from u32)
-            u16 frag_index
-            u16 frag_count
+            u32 frag_index
+            u32 frag_count
             u16 len(frag_data)
             bytes frag_data
     '''
@@ -103,19 +103,19 @@ class Fragment(BaseFragment):
 
     def serialize(self):
         ser = b''
-        ser += self._htons_pack(self._packet_id)  # Changed from _htonl_pack (u32) to _htons_pack (u16)
-        ser += self._htons_pack(self._frag_index)
-        ser += self._htons_pack(self._frag_count)
-        ser += self._htons_pack(len(self._frag_data))
+        ser += self._htons_pack(self._packet_id)  # u16 (2 bytes)
+        ser += self._htonl_pack(self._frag_index)  # u32 (4 bytes)
+        ser += self._htonl_pack(self._frag_count)  # u32 (4 bytes)
+        ser += self._htons_pack(len(self._frag_data))  # u16 (2 bytes)
         ser += self._frag_data
         return ser
 
     def deserialize(self, raw):
-        packet_id = self._unpack_ntohs(raw[:2])  # Changed from _unpack_ntohl(raw[:4]) to read u16
-        frag_index = self._unpack_ntohs(raw[2:4])  # Shifted from 4:6 to 2:4
-        frag_count = self._unpack_ntohs(raw[4:6])  # Shifted from 6:8 to 4:6
-        frag_data_len = self._unpack_ntohs(raw[6:8])  # Shifted from 8:10 to 6:8
-        frag_data = raw[8:]  # Shifted from 10: to 8:
+        packet_id = self._unpack_ntohs(raw[:2])  # u16, bytes 0-2
+        frag_index = self._unpack_ntohl(raw[2:6])  # u32, bytes 2-6
+        frag_count = self._unpack_ntohl(raw[6:10])  # u32, bytes 6-10
+        frag_data_len = self._unpack_ntohs(raw[10:12])  # u16, bytes 10-12
+        frag_data = raw[12:]  # bytes 12+
         try:
             assert frag_data_len == len(frag_data)
         except:

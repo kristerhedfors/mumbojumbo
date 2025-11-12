@@ -1,0 +1,20 @@
+# Go compiled binaries
+mumbojumbo-client
+mumbojumbo-client-*
+*.test
+*.out
+
+# Go test coverage
+coverage.txt
+coverage.html
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
