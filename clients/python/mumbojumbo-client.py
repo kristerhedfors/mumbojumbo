@@ -164,16 +164,15 @@ class MumbojumboClient:
         self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFFFFFFFFFF
         return packet_id
 
-    def send_data(self, data, send_queries=True):
+    def _generate_dns_queries(self, data):
         """
-        Send data via DNS queries.
+        Internal method to generate DNS queries from data.
 
         Args:
             data: Bytes to send
-            send_queries: If True, actually send DNS queries; if False, just return queries
 
         Returns:
-            List of (dns_query, success) tuples
+            List of DNS query strings
         """
         packet_id = self._get_next_packet_id()
 
@@ -181,7 +180,7 @@ class MumbojumboClient:
         fragments = fragment_data(data, self.max_fragment_size)
         frag_count = len(fragments)
 
-        results = []
+        queries = []
         for frag_index, frag_data in enumerate(fragments):
             # Create fragment with header
             plaintext = create_fragment(packet_id, frag_index, frag_count, frag_data)
@@ -191,11 +190,25 @@ class MumbojumboClient:
 
             # Create DNS query name
             dns_name = create_dns_query(encrypted, self.domain)
+            queries.append(dns_name)
 
-            # Optionally send query
-            success = send_dns_query(dns_name) if send_queries else True
+        return queries
+
+    def send_data(self, data):
+        """
+        Send data via DNS queries.
+
+        Args:
+            data: Bytes to send
+
+        Returns:
+            List of (dns_query, success) tuples
+        """
+        queries = self._generate_dns_queries(data)
+        results = []
+        for dns_name in queries:
+            success = send_dns_query(dns_name)
             results.append((dns_name, success))
-
         return results
 
     def generate_queries(self, data):
@@ -208,8 +221,7 @@ class MumbojumboClient:
         Returns:
             List of DNS query strings
         """
-        results = self.send_data(data, send_queries=False)
-        return [dns_name for dns_name, _ in results]
+        return self._generate_dns_queries(data)
 
 
 def main():
@@ -302,7 +314,7 @@ Configuration precedence: CLI args > Environment variables
 
     # Send data
     try:
-        results = client_obj.send_data(data, send_queries=True)
+        results = client_obj.send_data(data)
     except Exception as e:
         print(f"Error sending data: {e}", file=sys.stderr)
         if args.verbose:

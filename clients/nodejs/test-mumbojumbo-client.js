@@ -437,16 +437,13 @@ describe('MumbojumboClient Class', () => {
     assert.ok(queries[0].endsWith(TEST_DOMAIN));
   });
 
-  test('send data dry-run', async () => {
+  test('generate queries only', async () => {
     const client = new MumbojumboClient(TEST_SERVER_PUBKEY, TEST_DOMAIN);
-    const results = await client.sendData(Buffer.from('test'), false);
+    const queries = await client.generateQueries(Buffer.from('test'));
 
-    assert.ok(Array.isArray(results));
-    assert.equal(results.length, 1);
-
-    const [query, success] = results[0];
-    assert.ok(query.endsWith(TEST_DOMAIN));
-    assert.equal(success, true);
+    assert.ok(Array.isArray(queries));
+    assert.equal(queries.length, 1);
+    assert.ok(queries[0].endsWith(TEST_DOMAIN));
   });
 
   test('packet ID increments', async () => {

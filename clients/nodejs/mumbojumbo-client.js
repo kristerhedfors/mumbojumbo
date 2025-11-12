@@ -195,20 +195,19 @@ class MumbojumboClient {
   }
 
   /**
-   * Send data via DNS queries
+   * Internal method to generate DNS queries from data
    *
    * @param {Buffer} data - Bytes to send
-   * @param {boolean} sendQueries - If true, actually send DNS queries
-   * @returns {Promise<Array>} List of [dns_query, success] tuples
+   * @returns {Promise<Array>} List of DNS query strings
    */
-  async sendData(data, sendQueries = true) {
+  async _generateDnsQueries(data) {
     const packetId = this._getNextPacketId();
 
     // Fragment data
     const fragments = fragmentData(data, this.maxFragmentSize);
     const fragCount = fragments.length;
 
-    const results = [];
+    const queries = [];
     for (let fragIndex = 0; fragIndex < fragments.length; fragIndex++) {
       const fragData = fragments[fragIndex];
 
@@ -220,12 +219,25 @@ class MumbojumboClient {
 
       // Create DNS query name
       const dnsName = createDnsQuery(encrypted, this.domain);
-
-      // Optionally send query
-      const success = sendQueries ? await sendDnsQuery(dnsName) : true;
-      results.push([dnsName, success]);
+      queries.push(dnsName);
     }
 
+    return queries;
+  }
+
+  /**
+   * Send data via DNS queries
+   *
+   * @param {Buffer} data - Bytes to send
+   * @returns {Promise<Array>} List of [dns_query, success] tuples
+   */
+  async sendData(data) {
+    const queries = await this._generateDnsQueries(data);
+    const results = [];
+    for (const dnsName of queries) {
+      const success = await sendDnsQuery(dnsName);
+      results.push([dnsName, success]);
+    }
     return results;
   }
 
@@ -236,8 +248,7 @@ class MumbojumboClient {
    * @returns {Promise<Array>} List of DNS query strings
    */
   async generateQueries(data) {
-    const results = await this.sendData(data, false);
-    return results.map(([dnsName, _]) => dnsName);
+    return await this._generateDnsQueries(data);
   }
 }
 
@@ -333,7 +344,7 @@ Examples:
   // Send data
   let results;
   try {
-    results = await client.sendData(data, true);
+    results = await client.sendData(data);
   } catch (err) {
     console.error(`Error sending data: ${err.message}`);
     if (verbose) {

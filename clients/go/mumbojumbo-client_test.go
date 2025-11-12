@@ -564,24 +564,20 @@ func TestGenerateQueriesWithoutSending(t *testing.T) {
 	}
 }
 
-func TestSendDataDryRun(t *testing.T) {
+func TestGenerateQueriesOnly(t *testing.T) {
 	client := NewMumbojumboClient(*testServerPub, ".asd.qwe", MaxFragDataLen)
-	results, err := client.SendData([]byte("test"), false)
+	queries, err := client.GenerateQueries([]byte("test"))
 
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got: %d", len(results))
+	if len(queries) != 1 {
+		t.Errorf("Expected 1 query, got: %d", len(queries))
 	}
 
-	if !strings.HasSuffix(results[0].Query, ".asd.qwe") {
-		t.Errorf("Query doesn't end with domain: %s", results[0].Query)
-	}
-
-	if !results[0].Success {
-		t.Error("Expected success=true for dry run")
+	if !strings.HasSuffix(queries[0], ".asd.qwe") {
+		t.Errorf("Query doesn't end with domain: %s", queries[0])
 	}
 }
 
