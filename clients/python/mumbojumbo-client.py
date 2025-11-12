@@ -7,10 +7,11 @@ Minimalist design: only requires pynacl for crypto.
 """
 
 import sys
+import os
 import argparse
 import base64
 import struct
-import random
+import secrets
 import subprocess
 import nacl.public
 
@@ -44,15 +45,15 @@ def split_to_labels(data, max_len=DNS_LABEL_MAX_LEN):
 
 def create_fragment(packet_id, frag_index, frag_count, frag_data):
     """
-    Create fragment with 12-byte header.
+    Create fragment with 18-byte header.
 
     Header format (big-endian):
-    - packet_id: u16 (0-65535)
+    - packet_id: u64 (0 to 2^64-1)
     - frag_index: u32 (0-based fragment index, up to 4.3 billion)
     - frag_count: u32 (total fragments in packet, up to 4.3 billion)
     - frag_data_len: u16 (length of fragment data, 0-65535)
     """
-    if not (0 <= packet_id <= 0xFFFF):
+    if not (0 <= packet_id <= 0xFFFFFFFFFFFFFFFF):
         raise ValueError(f'packet_id out of range: {packet_id}')
     if not (0 <= frag_index < frag_count):
         raise ValueError(f'Invalid frag_index {frag_index} for frag_count {frag_count}')
@@ -61,7 +62,7 @@ def create_fragment(packet_id, frag_index, frag_count, frag_data):
     if len(frag_data) > MAX_FRAG_DATA_LEN:
         raise ValueError(f'Fragment data too large: {len(frag_data)} > {MAX_FRAG_DATA_LEN}')
 
-    header = struct.pack('!HIIH', packet_id, frag_index, frag_count, len(frag_data))
+    header = struct.pack('!QIIH', packet_id, frag_index, frag_count, len(frag_data))
     return header + frag_data
 
 
@@ -150,12 +151,13 @@ class MumbojumboClient:
 
         self.domain = domain if domain.startswith('.') else '.' + domain
         self.max_fragment_size = max_fragment_size
-        self._next_packet_id = random.randint(0, 0xFFFF)
+        # Initialize with cryptographically secure random u64
+        self._next_packet_id = secrets.randbits(64)
 
     def _get_next_packet_id(self):
-        """Get next packet ID and increment counter (wraps at 0xFFFF)."""
+        """Get next packet ID and increment counter (wraps at 2^64-1)."""
         packet_id = self._next_packet_id
-        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFF
+        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFFFFFFFFFF
         return packet_id
 
     def send_data(self, data, send_queries=True):
@@ -212,25 +214,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 examples:
-  # Send from stdin
+  # Send from stdin with arguments
   echo "Hello World" | %(prog)s -k mj_cli_abc123... -d .asd.qwe
 
   # Send from file
   %(prog)s -k mj_cli_abc123... -d .asd.qwe -f message.txt
 
-  # Send from stdin (explicit)
-  %(prog)s -k mj_cli_abc123... -d .asd.qwe -f -
+  # Use environment variables (no arguments needed)
+  export MUMBOJUMBO_CLIENT_KEY=mj_cli_abc123...
+  export MUMBOJUMBO_DOMAIN=.asd.qwe
+  echo "Hello World" | %(prog)s
+
+Configuration precedence: CLI args > Environment variables
         '''
     )
     parser.add_argument(
         '-k', '--key',
-        required=True,
-        help='Server public key in mj_cli_<hex> format'
+        help='Server public key in mj_cli_<hex> format (or use MUMBOJUMBO_CLIENT_KEY env var)'
     )
     parser.add_argument(
         '-d', '--domain',
-        required=True,
-        help='DNS domain suffix (e.g., .asd.qwe)'
+        help='DNS domain suffix, e.g., .asd.qwe (or use MUMBOJUMBO_DOMAIN env var)'
     )
     parser.add_argument(
         '-f', '--file',
@@ -245,18 +249,32 @@ examples:
 
     args = parser.parse_args()
 
+    # Get key from CLI arg or environment variable
+    key_str = args.key or os.environ.get('MUMBOJUMBO_CLIENT_KEY')
+    if not key_str:
+        print("Error: Server public key required", file=sys.stderr)
+        print("  Provide via -k argument or MUMBOJUMBO_CLIENT_KEY environment variable", file=sys.stderr)
+        return 1
+
+    # Get domain from CLI arg or environment variable
+    domain = args.domain or os.environ.get('MUMBOJUMBO_DOMAIN')
+    if not domain:
+        print("Error: Domain required", file=sys.stderr)
+        print("  Provide via -d argument or MUMBOJUMBO_DOMAIN environment variable", file=sys.stderr)
+        return 1
+
     # Parse server public key
     try:
-        server_client_key_bytes = parse_key_hex(args.key)
+        server_client_key_bytes = parse_key_hex(key_str)
     except Exception as e:
         print(f"Error parsing key: {e}", file=sys.stderr)
         return 1
 
     # Validate domain
-    domain = args.domain
     if not domain.startswith('.'):
-        print(f"Warning: domain should start with '.', got '{domain}'", file=sys.stderr)
-        print(f"         Prepending '.' automatically", file=sys.stderr)
+        if args.verbose:
+            print(f"Warning: domain should start with '.', got '{domain}'", file=sys.stderr)
+            print(f"         Prepending '.' automatically", file=sys.stderr)
         domain = '.' + domain
 
     # Read input data
@@ -310,7 +328,7 @@ examples:
 
             # Calculate sizes for display
             frag_data_len = len(data[frag_index * MAX_FRAG_DATA_LEN:(frag_index + 1) * MAX_FRAG_DATA_LEN])
-            plaintext_len = 12 + frag_data_len  # 12-byte header (u16 + u32 + u32 + u16)
+            plaintext_len = 18 + frag_data_len  # 18-byte header (u64 + u32 + u32 + u16)
             encrypted_len = plaintext_len + 48  # SealedBox adds ~48 bytes overhead
 
             print(f"  Data length: {frag_data_len} bytes", file=sys.stderr)

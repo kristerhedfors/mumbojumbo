@@ -21,30 +21,31 @@ pip install pynacl
 ### Basic Examples
 
 ```bash
-# Send message from stdin
+# Option 1: Use environment variables (recommended)
+export MUMBOJUMBO_CLIENT_KEY=mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e
+export MUMBOJUMBO_DOMAIN=.asd.qwe
+echo "Hello World" | ./mumbojumbo-client.py
+
+# Option 2: Use command-line arguments
 echo "Hello World" | ./mumbojumbo-client.py \
   -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe
 
 # Send message from file
-./mumbojumbo-client.py \
-  -k mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
-  -d .asd.qwe \
-  -f message.txt
+./mumbojumbo-client.py -f message.txt
 
 # Verbose mode for debugging
-echo "test" | ./mumbojumbo-client.py \
-  -k mj_cli_... \
-  -d .asd.qwe \
-  -v
+echo "test" | ./mumbojumbo-client.py -v
 ```
 
 ### Command Line Options
 
-- `-k, --key <public_key>` - Server public key in `mj_cli_<hex>` format (required)
-- `-d, --domain <domain>` - DNS domain suffix, e.g., `.asd.qwe` (required)
+- `-k, --key <public_key>` - Server public key in `mj_cli_<hex>` format (or use `MUMBOJUMBO_CLIENT_KEY` env var)
+- `-d, --domain <domain>` - DNS domain suffix, e.g., `.asd.qwe` (or use `MUMBOJUMBO_DOMAIN` env var)
 - `-f, --file <path>` - Input file path, use `-` for stdin (default: stdin)
 - `-v, --verbose` - Enable verbose output to stderr
+
+**Configuration Precedence:** CLI arguments > Environment variables
 
 ## Protocol Details
 
