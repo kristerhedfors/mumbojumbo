@@ -97,15 +97,12 @@ int main(void) {
         return 1;
     }
 
-    // Parse server public key
-    uint8_t server_key[32];
-    if (parse_key_hex("mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e",
-                      server_key) != 0) {
-        return 1;
-    }
-
-    // Initialize client
-    MumbojumboClient *client = mumbojumbo_client_new(server_key, ".asd.qwe", MAX_FRAG_DATA_LEN);
+    // Initialize client with mj_cli_ format key (auto-parsed)
+    MumbojumboClient *client = mumbojumbo_client_new(
+        "mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e",
+        ".asd.qwe",
+        MAX_FRAG_DATA_LEN
+    );
 
     // Send data (actually sends DNS queries)
     QueryResult *results;
@@ -148,22 +145,12 @@ gcc -o myapp myapp.c mumbojumbo-client.c -lsodium
 
 ### API Reference
 
-#### `int parse_key_hex(const char *key_str, uint8_t key[32])`
-
-Parses a server public key in `mj_cli_<hex>` format.
-
-**Parameters:**
-- `key_str` - Key string in mj_cli_ format
-- `key` - Output buffer for 32-byte key
-
-**Returns:** 0 on success, -1 on error
-
-#### `MumbojumboClient *mumbojumbo_client_new(const uint8_t server_client_key[32], const char *domain, size_t max_fragment_size)`
+#### `MumbojumboClient *mumbojumbo_client_new(const char *server_client_key_input, const char *domain, size_t max_fragment_size)`
 
 Creates a new client instance.
 
 **Parameters:**
-- `server_client_key` - Server's public key (32 bytes)
+- `server_client_key_input` - Server's public key (mj_cli_ hex string, or raw 32-byte hex)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `max_fragment_size` - Maximum bytes per fragment (default: 80)
 
