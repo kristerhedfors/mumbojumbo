@@ -390,7 +390,25 @@ class DnsQueryReader(object):
 
 
 __usage__ = '''
-$ python mumbojumbo.py [options]
+Usage: python mumbojumbo.py [options]
+
+Quick Start:
+  1. Generate keys and domain:
+     $ ./mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+     $ source ~/.mumbojumbo_env
+
+  2. Run server (uses env vars automatically):
+     $ sudo ./mumbojumbo.py
+
+  3. Send data from client:
+     $ echo "data" | ./clients/python/mumbojumbo-client.py -k $MUMBOJUMBO_PUBKEY -d $MUMBOJUMBO_DOMAIN
+
+Environment Variables:
+  MUMBOJUMBO_PRIVKEY  Server private key (overrides config file)
+  MUMBOJUMBO_PUBKEY   Server public key (for client use with -k)
+  MUMBOJUMBO_DOMAIN   Domain suffix (overrides config file)
+
+Precedence: CLI args > Environment variables > Config file
 '''
 
 
@@ -448,7 +466,7 @@ def option_parser():
     p.add_option('-d', '--domain', metavar='domain',
                  help='override domain from config (e.g., .example.com)')
     p.add_option('', '--gen-keys', action='store_true',
-                 help='generate and print two NaCL key pairs')
+                 help='generate keys and domain as env var declarations (output can be sourced)')
     p.add_option('', '--gen-conf', action='store_true',
                  help='generate config skeleton file (mumbojumbo.conf)')
     p.add_option('', '--test-handlers', action='store_true',
@@ -897,8 +915,16 @@ def main():
 
     if opt.gen_keys:
         (priv, pub) = get_nacl_keypair_hex()
-        print(priv)
-        print(pub)
+
+        # Generate random domain suffix
+        import secrets
+        random_suffix = ''.join(secrets.choice('abcdefghijklmnopqrstuvwxyz0123456789') for _ in range(8))
+        domain = f'.{random_suffix[:4]}.{random_suffix[4:]}'
+
+        # Output as environment variable declarations for easy sourcing
+        print(f'export MUMBOJUMBO_PRIVKEY={priv}  # Server private key')
+        print(f'export MUMBOJUMBO_PUBKEY={pub}   # Client public key (use with -k)')
+        print(f'export MUMBOJUMBO_DOMAIN={domain}  # Domain for both server and client (use with -d)')
         sys.exit()
 
     # Default to mumbojumbo.conf if no config specified

@@ -182,3 +182,135 @@ class TestConfigPrecedence:
 
         # This test verifies the warning pattern is correct
         # The actual warning is logged in main() when opt.key is truthy
+
+
+class TestGenKeysOutput:
+    """Test --gen-keys output format for environment variable declarations."""
+
+    def test_gen_keys_outputs_env_vars(self):
+        """Test that --gen-keys outputs environment variable declarations."""
+        import subprocess
+        import sys
+
+        # Run mumbojumbo.py --gen-keys
+        result = subprocess.run(
+            [sys.executable, 'mumbojumbo.py', '--gen-keys'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        assert result.returncode == 0
+        output_lines = result.stdout.strip().split('\n')
+
+        # Should have exactly 3 lines
+        assert len(output_lines) == 3
+
+        # Check each line format
+        assert output_lines[0].startswith('export MUMBOJUMBO_PRIVKEY=mj_priv_')
+        assert output_lines[1].startswith('export MUMBOJUMBO_PUBKEY=mj_pub_')
+        assert output_lines[2].startswith('export MUMBOJUMBO_DOMAIN=.')
+
+        # Check that lines have comments
+        assert '# Server private key' in output_lines[0]
+        assert '# Client public key' in output_lines[1]
+        assert '# Domain for both' in output_lines[2]
+
+    def test_gen_keys_keys_are_valid(self):
+        """Test that generated keys can be parsed."""
+        import subprocess
+        import sys
+
+        # Run mumbojumbo.py --gen-keys
+        result = subprocess.run(
+            [sys.executable, 'mumbojumbo.py', '--gen-keys'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        output_lines = result.stdout.strip().split('\n')
+
+        # Extract keys from export statements
+        privkey_line = output_lines[0]
+        pubkey_line = output_lines[1]
+
+        # Extract key values (between = and #)
+        privkey = privkey_line.split('=')[1].split('#')[0].strip()
+        pubkey = pubkey_line.split('=')[1].split('#')[0].strip()
+
+        # Verify key formats
+        assert privkey.startswith('mj_priv_')
+        assert pubkey.startswith('mj_pub_')
+        assert len(privkey) == 72  # mj_priv_ (8) + 64 hex chars
+        assert len(pubkey) == 71   # mj_pub_ (7) + 64 hex chars
+
+        # Verify keys can be decoded
+        from mumbojumbo import decode_key_hex
+        priv_bytes = decode_key_hex(privkey)
+        pub_bytes = decode_key_hex(pubkey)
+
+        assert len(priv_bytes) == 32
+        assert len(pub_bytes) == 32
+
+    def test_gen_keys_domain_format(self):
+        """Test that generated domain has correct format."""
+        import subprocess
+        import sys
+
+        # Run mumbojumbo.py --gen-keys
+        result = subprocess.run(
+            [sys.executable, 'mumbojumbo.py', '--gen-keys'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        output_lines = result.stdout.strip().split('\n')
+        domain_line = output_lines[2]
+
+        # Extract domain value
+        domain = domain_line.split('=')[1].split('#')[0].strip()
+
+        # Verify domain format
+        assert domain.startswith('.')
+        assert domain.count('.') == 2  # Should be .xxxx.yyyy format
+        assert len(domain) == 10  # . + 4 chars + . + 4 chars = 10 total
+
+        # Verify domain passes validation
+        from mumbojumbo import validate_domain
+        assert validate_domain(domain) is True
+
+    def test_gen_keys_output_is_sourceable(self):
+        """Test that output can be sourced in bash."""
+        import subprocess
+        import sys
+
+        # Run mumbojumbo.py --gen-keys
+        result = subprocess.run(
+            [sys.executable, 'mumbojumbo.py', '--gen-keys'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        # Create a shell script that sources the output
+        shell_script = result.stdout + '\necho "$MUMBOJUMBO_PRIVKEY|$MUMBOJUMBO_PUBKEY|$MUMBOJUMBO_DOMAIN"'
+
+        # Run in bash
+        bash_result = subprocess.run(
+            ['bash', '-c', shell_script],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        assert bash_result.returncode == 0
+
+        # Verify all three env vars were set
+        output = bash_result.stdout.strip()
+        parts = output.split('|')
+        assert len(parts) == 3
+        assert parts[0].startswith('mj_priv_')
+        assert parts[1].startswith('mj_pub_')
+        assert parts[2].startswith('.')
