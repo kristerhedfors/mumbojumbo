@@ -54,11 +54,13 @@ echo "test" | ./mumbojumbo-client.js \
 ## Programmatic API
 
 ```javascript
-const { MumbojumboClient, parseKeyHex } = require('./mumbojumbo-client.js');
+const { MumbojumboClient } = require('./mumbojumbo-client.js');
 
-// Initialize client
-const serverKey = parseKeyHex('mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e');
-const client = new MumbojumboClient(serverKey, '.asd.qwe');
+// Initialize client with mj_cli_ format key (auto-parsed)
+const client = new MumbojumboClient(
+  'mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e',
+  '.asd.qwe'
+);
 
 // Send data (actually sends DNS queries)
 const results = await client.sendData(Buffer.from('Hello World'));
@@ -80,17 +82,16 @@ for (const query of queries) {
 Creates a new client instance.
 
 **Parameters:**
-- `serverPublicKey` - Server's public key (Uint8Array or Buffer, 32 bytes)
+- `serverPublicKey` - Server's public key (mj_cli_ hex string, Uint8Array, or Buffer)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `maxFragmentSize` - Maximum bytes per fragment (default: 80)
 
-#### `async sendData(data, sendQueries = true)`
+#### `async sendData(data)`
 
 Send data via DNS queries.
 
 **Parameters:**
 - `data` - Data to send (Buffer)
-- `sendQueries` - If true, actually sends DNS queries (default: true)
 
 **Returns:** `[[dnsQuery, success], ...]`
 
@@ -107,14 +108,14 @@ Generate DNS queries without sending them.
 
 ### Fragment Structure
 
-Each message is split into 80-byte fragments with a 12-byte header:
+Each message is split into 80-byte fragments with an 18-byte header:
 
 ```
-Bytes 0-1:   packet_id (u16 big-endian)
-Bytes 2-5:   frag_index (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 6-9:   frag_count (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 10-11: data_length (u16 big-endian)
-Bytes 12+:   fragment data (max 80 bytes)
+Bytes 0-7:   packet_id (u64 big-endian) - 64-bit packet ID
+Bytes 8-11:  frag_index (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 12-15: frag_count (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 16-17: data_length (u16 big-endian)
+Bytes 18+:   fragment data (max 80 bytes)
 ```
 
 ### Protocol Capacity
@@ -140,10 +141,10 @@ Bytes 12+:   fragment data (max 80 bytes)
 
 ```
 Input: "Hello World" (11 bytes)
-→ Fragment: 12-byte header + 11 bytes = 23 bytes
-→ Encrypt: 23 + 48 = 71 bytes (SealedBox overhead)
-→ Base32: ~114 characters
-→ DNS: <114-char-base32>.asd.qwe
+→ Fragment: 18-byte header + 11 bytes = 29 bytes
+→ Encrypt: 29 + 48 = 77 bytes (SealedBox overhead)
+→ Base32: ~124 characters
+→ DNS: <124-char-base32>.asd.qwe
 ```
 
 ## Testing

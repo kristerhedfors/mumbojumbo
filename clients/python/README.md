@@ -51,14 +51,14 @@ echo "test" | ./mumbojumbo-client.py -v
 
 ### Fragment Structure
 
-Each message is split into 80-byte fragments with a 12-byte header:
+Each message is split into 80-byte fragments with an 18-byte header:
 
 ```
-Bytes 0-1:   packet_id (u16 big-endian)
-Bytes 2-5:   frag_index (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 6-9:   frag_count (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 10-11: data_length (u16 big-endian)
-Bytes 12+:   fragment data (max 80 bytes)
+Bytes 0-7:   packet_id (u64 big-endian) - 64-bit packet ID
+Bytes 8-11:  frag_index (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 12-15: frag_count (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 16-17: data_length (u16 big-endian)
+Bytes 18+:   fragment data (max 80 bytes)
 ```
 
 ### Protocol Capacity
@@ -84,20 +84,71 @@ Bytes 12+:   fragment data (max 80 bytes)
 
 ```
 Input: "Hello World" (11 bytes)
-→ Fragment: 12-byte header + 11 bytes = 23 bytes
-→ Encrypt: 23 + 48 = 71 bytes (SealedBox overhead)
-→ Base32: ~114 characters
-→ DNS: <114-char-base32>.asd.qwe
+→ Fragment: 18-byte header + 11 bytes = 29 bytes
+→ Encrypt: 29 + 48 = 77 bytes (SealedBox overhead)
+→ Base32: ~124 characters
+→ DNS: <124-char-base32>.asd.qwe
 ```
+
+## Programmatic API
+
+```python
+from mumbojumbo_client import MumbojumboClient
+
+# Initialize client with mj_cli_ format key (auto-parsed)
+client = MumbojumboClient(
+    'mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e',
+    '.asd.qwe'
+)
+
+# Send data (actually sends DNS queries)
+results = client.send_data(b'Hello World')
+for dns_query, success in results:
+    print(f"{dns_query}: {'✓' if success else '✗'}")
+
+# Or just generate queries without sending
+queries = client.generate_queries(b'Test')
+for query in queries:
+    print(query)
+```
+
+### API Reference
+
+#### `MumbojumboClient(server_client_key, domain, max_fragment_size=80)`
+
+Creates a new client instance.
+
+**Parameters:**
+- `server_client_key` - Server's public key (mj_cli_ hex string, bytes, or nacl.public.PublicKey)
+- `domain` - DNS domain suffix (e.g., `.asd.qwe`)
+- `max_fragment_size` - Maximum bytes per fragment (default: 80)
+
+#### `send_data(data)`
+
+Send data via DNS queries.
+
+**Parameters:**
+- `data` - Data to send (bytes)
+
+**Returns:** List of `(dns_query, success)` tuples
+
+#### `generate_queries(data)`
+
+Generate DNS queries without sending them.
+
+**Parameters:**
+- `data` - Data to encode (bytes)
+
+**Returns:** List of DNS query strings
 
 ## Testing
 
 ```bash
 # Run all tests
-pytest tests/test_client_python.py -v
+./venv/bin/pytest tests/test_client_python.py -v
 
 # Run specific test class
-pytest tests/test_client_python.py::TestFragmentCreation -v
+./venv/bin/pytest tests/test_client_python.py::TestFragmentCreation -v
 ```
 
 ## Implementation Notes
