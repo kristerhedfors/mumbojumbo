@@ -212,27 +212,29 @@ describe('Fragment Creation', () => {
     const fragData = Buffer.from('test');
     const frag = createFragment(100, 0, 1, fragData);
 
-    assert.equal(frag.length, 12 + 4);
+    assert.equal(frag.length, 18 + 4);
 
-    // Parse header
-    const packetId = frag.readUInt16BE(0);
-    const fragIndex = frag.readUInt32BE(2);
-    const fragCount = frag.readUInt32BE(6);
-    const dataLen = frag.readUInt16BE(10);
+    // Parse header (18 bytes: u64 packet_id, u32 frag_index, u32 frag_count, u16 frag_data_len)
+    const packetIdHigh = frag.readUInt32BE(0);
+    const packetIdLow = frag.readUInt32BE(4);
+    const packetId = packetIdHigh * 0x100000000 + packetIdLow;
+    const fragIndex = frag.readUInt32BE(8);
+    const fragCount = frag.readUInt32BE(12);
+    const dataLen = frag.readUInt16BE(16);
 
     assert.equal(packetId, 100);
     assert.equal(fragIndex, 0);
     assert.equal(fragCount, 1);
     assert.equal(dataLen, 4);
-    assert.deepEqual(frag.slice(12), fragData);
+    assert.deepEqual(frag.slice(18), fragData);
   });
 
   test('create multi-fragment packet', () => {
     const fragData = Buffer.from('part1');
     const frag = createFragment(200, 2, 5, fragData);
 
-    const fragIndex = frag.readUInt32BE(2);
-    const fragCount = frag.readUInt32BE(6);
+    const fragIndex = frag.readUInt32BE(8);
+    const fragCount = frag.readUInt32BE(12);
 
     assert.equal(fragIndex, 2);
     assert.equal(fragCount, 5);
@@ -241,8 +243,8 @@ describe('Fragment Creation', () => {
   test('create empty fragment', () => {
     const frag = createFragment(1, 0, 1, Buffer.alloc(0));
 
-    assert.equal(frag.length, 12);
-    assert.equal(frag.readUInt16BE(10), 0);
+    assert.equal(frag.length, 18);
+    assert.equal(frag.readUInt16BE(16), 0);
   });
 
   test('reject oversized fragment', () => {
@@ -258,8 +260,9 @@ describe('Fragment Creation', () => {
       createFragment(-1, 0, 1, Buffer.from('test'));
     }, /packet_id out of range/);
 
+    // u64 max is Number.MAX_SAFE_INTEGER in JavaScript
     assert.throws(() => {
-      createFragment(0x10000, 0, 1, Buffer.from('test'));
+      createFragment(Number.MAX_SAFE_INTEGER + 1, 0, 1, Buffer.from('test'));
     }, /packet_id out of range/);
   });
 
@@ -277,7 +280,7 @@ describe('Fragment Creation', () => {
     const largeCount = 0xFFFFFFFF;
     const frag = createFragment(1, 0, largeCount, Buffer.from('test'));
 
-    const fragCount = frag.readUInt32BE(6);
+    const fragCount = frag.readUInt32BE(12);
     assert.equal(fragCount, largeCount);
   });
 
@@ -285,7 +288,7 @@ describe('Fragment Creation', () => {
     const largeIndex = 1000000;
     const frag = createFragment(1, largeIndex, largeIndex + 1, Buffer.from('test'));
 
-    const fragIndex = frag.readUInt32BE(2);
+    const fragIndex = frag.readUInt32BE(8);
     assert.equal(fragIndex, largeIndex);
   });
 });
@@ -454,14 +457,14 @@ describe('MumbojumboClient Class', () => {
     assert.notEqual(queries1[0], queries2[0]);
   });
 
-  test('packet ID wraps at 0xFFFF', () => {
+  test('packet ID wraps at MAX_SAFE_INTEGER', () => {
     const client = new MumbojumboClient(TEST_SERVER_PUBKEY, TEST_DOMAIN);
-    client._nextPacketId = 0xFFFF;
+    client._nextPacketId = Number.MAX_SAFE_INTEGER - 1;
 
     const id1 = client._getNextPacketId();
     const id2 = client._getNextPacketId();
 
-    assert.equal(id1, 0xFFFF);
+    assert.equal(id1, Number.MAX_SAFE_INTEGER - 1);
     assert.equal(id2, 0);
   });
 
@@ -491,10 +494,10 @@ describe('End-to-End Flow', () => {
     const encrypted = base32Decode(base32Part);
     const decrypted = decryptSealedBox(encrypted, TEST_SERVER_PUBKEY, TEST_SERVER_PRIVKEY);
 
-    const header = Buffer.from(decrypted.slice(0, 12));
-    const data = Buffer.from(decrypted.slice(12));
+    const header = Buffer.from(decrypted.slice(0, 18));
+    const data = Buffer.from(decrypted.slice(18));
 
-    const dataLen = header.readUInt16BE(10);
+    const dataLen = header.readUInt16BE(16);
     assert.equal(dataLen, message.length);
     assert.deepEqual(data, message);
   });
@@ -514,15 +517,17 @@ describe('End-to-End Flow', () => {
       const encrypted = base32Decode(base32Part);
       const decrypted = decryptSealedBox(encrypted, TEST_SERVER_PUBKEY, TEST_SERVER_PRIVKEY);
 
-      const header = Buffer.from(decrypted.slice(0, 12));
-      const data = Buffer.from(decrypted.slice(12));
+      const header = Buffer.from(decrypted.slice(0, 18));
+      const data = Buffer.from(decrypted.slice(18));
 
-      const packetId = header.readUInt16BE(0);
-      const fragIndex = header.readUInt32BE(2);
-      const fragCount = header.readUInt32BE(6);
-      const dataLen = header.readUInt16BE(10);
+      const packetIdHigh = header.readUInt32BE(0);
+      const packetIdLow = header.readUInt32BE(4);
+      const packetId = packetIdHigh * 0x100000000 + packetIdLow;
+      const fragIndex = header.readUInt32BE(8);
+      const fragCount = header.readUInt32BE(12);
+      const dataLen = header.readUInt16BE(16);
 
-      fragments.push({ packetId, fragIndex, fragCount, data: data.slice(0, dataLen) });
+      fragments.push({ packetId, fragIndex, fragCount, data: data.subarray(0, dataLen) });
     }
 
     assert.equal(fragments.length, 3);
