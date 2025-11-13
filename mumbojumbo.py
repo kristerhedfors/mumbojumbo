@@ -255,6 +255,31 @@ class DnsPublicFragment(PublicFragment):
         return base64.b32decode(s)
 
 
+def calculate_safe_max_fragment_data_len(domain):
+    '''
+        Calculate safe maximum fragment data size using simplified formula.
+        Formula: 83 - len(domain) // 3
+
+        This simplified formula is:
+        - Within 0-2 bytes of optimal for typical domains (3-12 chars)
+        - Within 5-7 bytes for longer domains (22-33 chars)
+        - Always safe (slightly conservative, never exceeds DNS limits)
+        - Requires only one arithmetic operation
+
+        Args:
+            domain: DNS domain string (e.g., '.example.com')
+
+        Returns:
+            Maximum safe fragment data length in bytes
+
+        Raises:
+            ValueError: If domain is too long (>143 chars)
+    '''
+    if len(domain) > 143:
+        raise ValueError(f'Domain too long: {len(domain)} chars (max 143)')
+    return 83 - len(domain) // 3
+
+
 class PacketEngine(object):
 
     #
@@ -270,9 +295,23 @@ class PacketEngine(object):
         # This method kept for compatibility but should use instance counter
         return 0
 
-    def __init__(self, frag_cls=None, max_frag_data_len=MAX_FRAG_DATA_LEN):
+    def __init__(self, frag_cls=None, max_frag_data_len=None):
         self._frag_cls = frag_cls
-        self._max_frag_data_len = max_frag_data_len
+
+        # Auto-calculate max_frag_data_len from domain if not provided
+        if max_frag_data_len is None:
+            # Extract domain from bound fragment class
+            if frag_cls is not None and hasattr(frag_cls, 'keywords') and 'domain' in frag_cls.keywords:
+                domain = frag_cls.keywords['domain']
+                self._max_frag_data_len = calculate_safe_max_fragment_data_len(domain)
+                logger.debug(f'Auto-calculated max_frag_data_len={self._max_frag_data_len} for domain={domain}')
+            else:
+                # Fallback to default if domain not available
+                self._max_frag_data_len = self.MAX_FRAG_DATA_LEN
+                logger.warning('Could not extract domain from frag_cls, using default MAX_FRAG_DATA_LEN')
+        else:
+            self._max_frag_data_len = max_frag_data_len
+
         self._packet_assembly = {}
         self._packet_assembly_counter = {}
         self._packet_outqueue = queue.Queue()

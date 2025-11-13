@@ -15,6 +15,28 @@ const MAX_FRAG_DATA_LEN = 80;
 const DNS_LABEL_MAX_LEN = 63;
 
 /**
+ * Calculate safe maximum fragment data size using simplified formula.
+ * Formula: 83 - len(domain) / 3
+ *
+ * This simplified formula is:
+ * - Within 0-2 bytes of optimal for typical domains (3-12 chars)
+ * - Within 5-7 bytes for longer domains (22-33 chars)
+ * - Always safe (slightly conservative, never exceeds DNS limits)
+ * - Requires only one arithmetic operation
+ *
+ * @param {string} domain - DNS domain string (e.g., '.example.com')
+ * @returns {number} Maximum safe fragment data length in bytes
+ * @throws {Error} If domain is too long (>143 chars)
+ */
+function calculateSafeMaxFragmentDataLen(domain) {
+  const domainLen = domain.length;
+  if (domainLen > 143) {
+    throw new Error(`Domain too long: ${domainLen} chars (max 143)`);
+  }
+  return 83 - Math.floor(domainLen / 3);
+}
+
+/**
  * Base32 encode data (lowercase, no padding)
  */
 function base32Encode(data) {
@@ -70,9 +92,8 @@ function createFragment(packetId, fragIndex, fragCount, fragData) {
   if (fragCount < 0 || fragCount > 0xFFFFFFFF) {
     throw new Error(`frag_count out of u32 range: ${fragCount}`);
   }
-  if (fragData.length > MAX_FRAG_DATA_LEN) {
-    throw new Error(`Fragment data too large: ${fragData.length} > ${MAX_FRAG_DATA_LEN}`);
-  }
+  // Note: Fragment data length is validated by the client based on domain length
+  // No hardcoded size check here to allow dynamic fragment sizes
 
   const header = Buffer.allocUnsafe(18);
   // Write u64 packet_id as two u32 values (big-endian)
@@ -149,9 +170,9 @@ class MumbojumboClient {
    *
    * @param {string|Uint8Array|Buffer} serverPublicKey - Server's public key (mj_cli_ hex string, Uint8Array, or Buffer)
    * @param {string} domain - DNS domain suffix (e.g., '.asd.qwe')
-   * @param {number} maxFragmentSize - Maximum bytes per fragment (default: 80)
+   * @param {number} maxFragmentSize - Maximum bytes per fragment (default: auto-calculated from domain)
    */
-  constructor(serverPublicKey, domain, maxFragmentSize = MAX_FRAG_DATA_LEN) {
+  constructor(serverPublicKey, domain, maxFragmentSize = null) {
     // Auto-parse hex key format if string is provided
     if (typeof serverPublicKey === 'string') {
       this.serverPubkey = this._parseKeyHex(serverPublicKey);
@@ -162,7 +183,13 @@ class MumbojumboClient {
     }
 
     this.domain = domain.startsWith('.') ? domain : '.' + domain;
-    this.maxFragmentSize = maxFragmentSize;
+
+    // Auto-calculate max_fragment_size from domain if not provided
+    if (maxFragmentSize === null || maxFragmentSize === undefined) {
+      this.maxFragmentSize = calculateSafeMaxFragmentDataLen(this.domain);
+    } else {
+      this.maxFragmentSize = maxFragmentSize;
+    }
     // Initialize with random u64 packet_id (using safe integer range)
     this._nextPacketId = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
   }

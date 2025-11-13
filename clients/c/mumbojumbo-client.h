@@ -25,6 +25,9 @@ typedef struct {
     uint64_t next_packet_id;
 } MumbojumboClient;
 
+// Fragment size calculation
+int calculate_safe_max_fragment_data_len(const char *domain);
+
 // Base32 encoding
 char *base32_encode(const uint8_t *data, size_t len);
 

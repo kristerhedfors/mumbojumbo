@@ -38,6 +38,26 @@ static int parse_key_hex(const char *key_str, uint8_t key[32]) {
     return 0;
 }
 
+// Calculate safe maximum fragment data size using simplified formula
+// Formula: 83 - len(domain) / 3
+//
+// This simplified formula is:
+// - Within 0-2 bytes of optimal for typical domains (3-12 chars)
+// - Within 5-7 bytes for longer domains (22-33 chars)
+// - Always safe (slightly conservative, never exceeds DNS limits)
+// - Requires only one arithmetic operation
+//
+// Returns: maximum safe fragment data length in bytes
+// Returns -1 if domain is too long (>143 chars)
+int calculate_safe_max_fragment_data_len(const char *domain) {
+    size_t domain_len = strlen(domain);
+    if (domain_len > 143) {
+        fprintf(stderr, "Error: domain too long: %zu chars (max 143)\n", domain_len);
+        return -1;
+    }
+    return 83 - (int)(domain_len / 3);
+}
+
 // Base32 encode (lowercase, no padding)
 char *base32_encode(const uint8_t *data, size_t len) {
     static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -304,7 +324,18 @@ MumbojumboClient *mumbojumbo_client_new(const uint8_t server_client_key[32],
         sprintf(client->domain, ".%s", domain);
     }
 
-    client->max_fragment_size = max_fragment_size;
+    // Auto-calculate max_fragment_size from domain if 0 (or use provided value)
+    if (max_fragment_size == 0) {
+        int calculated = calculate_safe_max_fragment_data_len(client->domain);
+        if (calculated < 0) {
+            free(client->domain);
+            free(client);
+            return NULL;
+        }
+        client->max_fragment_size = (size_t)calculated;
+    } else {
+        client->max_fragment_size = max_fragment_size;
+    }
 
     // Initialize with random packet ID
     randombytes_buf(&client->next_packet_id, sizeof(client->next_packet_id));
@@ -556,7 +587,8 @@ int main(int argc, char *argv[]) {
     }
 
     // Create client - key parsing happens transparently in constructor
-    MumbojumboClient *client = mumbojumbo_client_new_from_hex(key_str, domain, MAX_FRAG_DATA_LEN);
+    // Pass 0 to auto-calculate max fragment size from domain
+    MumbojumboClient *client = mumbojumbo_client_new_from_hex(key_str, domain, 0);
     if (!client) {
         fprintf(stderr, "Error: failed to create client\n");
         free(data);

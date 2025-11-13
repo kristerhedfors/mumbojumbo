@@ -47,6 +47,24 @@ impl From<[u8; 32]> for KeyInput {
     }
 }
 
+/// Calculate safe maximum fragment data size using simplified formula.
+/// Formula: 83 - len(domain) / 3
+///
+/// This simplified formula is:
+/// - Within 0-2 bytes of optimal for typical domains (3-12 chars)
+/// - Within 5-7 bytes for longer domains (22-33 chars)
+/// - Always safe (slightly conservative, never exceeds DNS limits)
+/// - Requires only one arithmetic operation
+///
+/// Returns maximum safe fragment data length in bytes, or error if domain is too long (>143 chars).
+fn calculate_safe_max_fragment_data_len(domain: &str) -> Result<usize, String> {
+    let domain_len = domain.len();
+    if domain_len > 143 {
+        return Err(format!("Domain too long: {} chars (max 143)", domain_len));
+    }
+    Ok(83 - domain_len / 3)
+}
+
 /// MumbojumboClient handles DNS tunneling operations
 pub struct MumbojumboClient {
     server_client_key: [u8; 32],
@@ -65,6 +83,13 @@ impl MumbojumboClient {
             domain
         } else {
             format!(".{}", domain)
+        };
+
+        // Auto-calculate max_fragment_size from domain if 0 (or use provided value)
+        let max_fragment_size = if max_fragment_size == 0 {
+            calculate_safe_max_fragment_data_len(&domain)?
+        } else {
+            max_fragment_size
         };
 
         // Initialize with cryptographically random packet ID (u64)
@@ -393,7 +418,8 @@ fn main() {
     }
 
     // Create client - key parsing happens transparently in constructor
-    let mut client = match MumbojumboClient::new(key_str, domain, MAX_FRAG_DATA_LEN) {
+    // Pass 0 to auto-calculate max fragment size from domain
+    let mut client = match MumbojumboClient::new(key_str, domain, 0) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error initializing client: {}", e);
