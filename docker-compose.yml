@@ -1,0 +1,70 @@
+# Docker Compose for Mumbojumbo DNS Covert Channel Server
+# For local testing and development
+
+version: '3.8'
+
+services:
+  mumbojumbo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mumbojumbo:latest
+    container_name: mumbojumbo-server
+
+    # Use host network mode to capture DNS traffic
+    # This gives the container direct access to the host's network interfaces
+    network_mode: host
+
+    # Required capabilities for packet capture
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    # Run as root (required for tshark packet capture)
+    user: root
+
+    # Environment variables - configure your keys and domain
+    # Generate keys with: ./mumbojumbo.py --gen-keys
+    environment:
+      - MUMBOJUMBO_SERVER_KEY=mj_srv_REPLACE_WITH_YOUR_64_CHAR_HEX_KEY
+      - MUMBOJUMBO_CLIENT_KEY=mj_cli_REPLACE_WITH_YOUR_64_CHAR_HEX_KEY
+      - MUMBOJUMBO_DOMAIN=.asd.qwe
+
+    # Alternative: Use env_file to load from .env
+    # env_file:
+    #   - .env
+
+    # Volume mounts
+    volumes:
+      # Mount log directory to persist logs
+      - ./logs:/var/log/mumbojumbo
+      # Optional: Mount custom config
+      # - ./mumbojumbo.conf:/etc/mumbojumbo.conf:ro
+
+    # Command override - run in daemon mode with verbose logging
+    command: ["--daemon", "--verbose"]
+    # Or with custom config:
+    # command: ["--daemon", "--verbose", "--config", "/etc/mumbojumbo.conf"]
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Health check
+    healthcheck:
+      test: ["/app/mumbojumbo.py", "--health-check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# Optional: Create a named volume for logs
+# volumes:
+#   mumbojumbo-logs:
+#     driver: local

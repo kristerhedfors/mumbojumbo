@@ -218,6 +218,358 @@ Use only for:
 - CTF challenges
 - Research
 
+## Cloud Deployment
+
+Mumbojumbo can be deployed to cloud environments for production-ready DNS covert channel operations. The server has been enhanced with daemon mode, health checks, and cloud-aware network interface detection.
+
+### Prerequisites
+
+1. **A domain or subdomain** you control (e.g., `asd.qwe.foo`)
+2. **Access to DNS configuration** for the parent domain
+3. **Cloud platform account** (GCP, AWS, Azure) or Docker/Kubernetes environment
+
+### DNS Configuration (All Cloud Providers)
+
+To use mumbojumbo, you must **delegate a subdomain** to your server using DNS NS records.
+
+#### Example: Delegating `asd.qwe.foo` to server at `34.123.45.67`
+
+At your DNS provider (Cloudflare, Route53, Google Cloud DNS, etc.), add these records in the **parent zone** (`qwe.foo`):
+
+```
+# NS Record - Delegates subdomain to your server
+asd.qwe.foo.  IN  NS  ns1.asd.qwe.foo.
+
+# A Record - Glue record for nameserver
+ns1.asd.qwe.foo.  IN  A  34.123.45.67
+```
+
+**What this does:**
+- DNS queries for `*.asd.qwe.foo` are routed to your server at `34.123.45.67`
+- Your server captures these queries (doesn't need to respond)
+- Works with **any DNS provider** - just add the records manually
+
+**Test delegation:**
+```bash
+./test-dns-delegation.sh asd.qwe.foo 34.123.45.67
+```
+
+### Deployment Option 1: Google Cloud Platform VM (Recommended)
+
+Automated deployment script for GCP Compute Engine:
+
+```bash
+# Deploy to GCP with one command
+./deploy-gcp-vm.sh \
+  --project my-gcp-project \
+  --zone us-central1-a \
+  --domain .asd.qwe.foo
+
+# Script will:
+# - Create VM with static external IP
+# - Configure firewall (allow UDP 53)
+# - Install dependencies (tshark, python3, pynacl)
+# - Generate encryption keys
+# - Install systemd service
+# - Output DNS configuration instructions
+```
+
+**Manual GCP deployment:**
+
+```bash
+# 1. Create VM
+gcloud compute instances create mumbojumbo-server \
+  --project=my-project \
+  --zone=us-central1-a \
+  --machine-type=e2-micro \
+  --image-family=debian-12 \
+  --image-project=debian-cloud \
+  --tags=mumbojumbo-server
+
+# 2. Create firewall rule
+gcloud compute firewall-rules create mumbojumbo-allow-dns \
+  --project=my-project \
+  --network=default \
+  --allow=udp:53 \
+  --source-ranges=0.0.0.0/0 \
+  --target-tags=mumbojumbo-server
+
+# 3. SSH to server and run installation
+gcloud compute ssh mumbojumbo-server --zone=us-central1-a
+sudo bash < startup-script.sh
+
+# 4. Configure keys
+sudo /opt/mumbojumbo/venv/bin/python3 /opt/mumbojumbo/mumbojumbo.py --gen-keys
+sudo nano /etc/mumbojumbo/mumbojumbo.env
+
+# 5. Start service
+sudo systemctl start mumbojumbo
+```
+
+**Service management:**
+```bash
+# View logs
+sudo journalctl -u mumbojumbo -f
+
+# Check status
+sudo systemctl status mumbojumbo
+
+# Restart service
+sudo systemctl restart mumbojumbo
+```
+
+### Deployment Option 2: Docker
+
+Run mumbojumbo in a Docker container with host networking:
+
+```bash
+# 1. Build image
+docker build -t mumbojumbo .
+
+# 2. Generate keys
+./mumbojumbo.py --gen-keys
+
+# 3. Run container
+docker run -d \
+  --name mumbojumbo-server \
+  --network host \
+  --cap-add NET_ADMIN \
+  --cap-add NET_RAW \
+  -e MUMBOJUMBO_SERVER_KEY=mj_srv_... \
+  -e MUMBOJUMBO_CLIENT_KEY=mj_cli_... \
+  -e MUMBOJUMBO_DOMAIN=.asd.qwe.foo \
+  mumbojumbo:latest \
+  --daemon --verbose
+
+# 4. View logs
+docker logs -f mumbojumbo-server
+
+# 5. Health check
+docker exec mumbojumbo-server /app/mumbojumbo.py --health-check
+```
+
+**Using Docker Compose:**
+
+```bash
+# 1. Copy env template and configure
+cp config/env.example .env
+nano .env  # Add your keys and domain
+
+# 2. Start service
+docker-compose up -d
+
+# 3. View logs
+docker-compose logs -f
+```
+
+### Deployment Option 3: Kubernetes (GKE)
+
+Deploy to Google Kubernetes Engine or any Kubernetes cluster:
+
+```bash
+# 1. Build and push image to GCR
+docker build -t gcr.io/my-project/mumbojumbo:latest .
+docker push gcr.io/my-project/mumbojumbo:latest
+
+# 2. Create secret with keys
+kubectl create namespace mumbojumbo
+kubectl create secret generic mumbojumbo-keys -n mumbojumbo \
+  --from-literal=server-key='mj_srv_...' \
+  --from-literal=client-key='mj_cli_...' \
+  --from-literal=domain='.asd.qwe.foo'
+
+# 3. Deploy
+kubectl apply -f k8s-deployment.yaml
+
+# 4. Check status
+kubectl get pods -n mumbojumbo
+kubectl logs -f -n mumbojumbo deployment/mumbojumbo
+
+# 5. Health check
+kubectl exec -n mumbojumbo deployment/mumbojumbo -- \
+  /app/mumbojumbo.py --health-check
+```
+
+**Important K8s requirements:**
+- `hostNetwork: true` - Required to capture DNS traffic
+- `NET_ADMIN` + `NET_RAW` capabilities - Required for packet capture
+- Run as root - Required for tshark
+
+### Deployment Option 4: AWS EC2
+
+```bash
+# 1. Launch EC2 instance (Ubuntu/Debian)
+# Instance type: t3.micro or t3.nano
+# Security Group: Allow UDP 53 inbound
+
+# 2. SSH to instance
+ssh ubuntu@ec2-instance-ip
+
+# 3. Run installation script
+sudo bash < startup-script.sh
+
+# 4. Configure (similar to GCP)
+sudo nano /etc/mumbojumbo/mumbojumbo.env
+
+# 5. Start service
+sudo systemctl start mumbojumbo
+```
+
+**AWS DNS Configuration (Route53):**
+Add NS and A records in your hosted zone for domain delegation.
+
+### Deployment Option 5: Azure VM
+
+```bash
+# 1. Create Azure VM (Ubuntu/Debian)
+# VM size: B1s or B1ls
+# NSG: Allow UDP 53 inbound
+
+# 2. SSH to VM
+ssh azureuser@vm-ip
+
+# 3. Run installation script
+sudo bash < startup-script.sh
+
+# 4. Configure
+sudo nano /etc/mumbojumbo/mumbojumbo.env
+
+# 5. Start service
+sudo systemctl start mumbojumbo
+```
+
+### Server Features
+
+**Daemon mode:**
+```bash
+# Run with daemon mode (handles SIGTERM, SIGINT gracefully)
+./mumbojumbo.py --daemon --verbose
+```
+
+**Health checks:**
+```bash
+# Check if server is healthy (for monitoring/K8s probes)
+./mumbojumbo.py --health-check
+```
+
+**Startup validation:**
+- Automatically checks tshark availability
+- Validates root permissions
+- Auto-detects network interface (cloud-aware)
+- Validates domain format
+- Checks log file writability
+
+### Architecture Diagram
+
+```
+Client → DNS Query (*.asd.qwe.foo)
+       ↓
+Public DNS Resolver
+       ↓
+NS lookup (qwe.foo zone) → ns1.asd.qwe.foo (34.123.45.67)
+       ↓
+UDP 53 to Server IP
+       ↓
+GCP VM / Docker / K8s (tshark captures packet)
+       ↓
+mumbojumbo.py processes query
+       ↓
+Reassembles data → Handlers (stdout, SMTP, file, execute)
+```
+
+### Configuration Files
+
+- **`config/mumbojumbo-server.conf.example`** - Annotated server config template
+- **`config/env.example`** - Environment variable template
+- **`mumbojumbo.service`** - systemd service unit file
+- **`Dockerfile`** - Container image definition
+- **`k8s-deployment.yaml`** - Kubernetes deployment manifest
+- **`docker-compose.yml`** - Docker Compose configuration
+
+### Deployment Scripts
+
+- **`deploy-gcp-vm.sh`** - Automated GCP VM deployment
+- **`startup-script.sh`** - Server installation script (any Debian/Ubuntu)
+- **`test-dns-delegation.sh`** - Verify DNS delegation is working
+
+### Cost Estimates (Monthly)
+
+- **GCP e2-micro:** ~$7/month (24/7 uptime)
+- **AWS t3.micro:** ~$7-10/month
+- **Azure B1s:** ~$8-10/month
+- **Data transfer:** Minimal (DNS queries are tiny)
+
+### Troubleshooting
+
+**DNS delegation not working:**
+```bash
+# Test delegation
+./test-dns-delegation.sh asd.qwe.foo 34.123.45.67
+
+# Check NS records
+dig NS asd.qwe.foo
+
+# Check glue record
+dig A ns1.asd.qwe.foo
+```
+
+**Server not receiving queries:**
+```bash
+# Check if service is running
+sudo systemctl status mumbojumbo
+
+# Check firewall (allow UDP 53)
+sudo iptables -L -n | grep 53
+
+# Test with tcpdump
+sudo tcpdump -i any 'udp port 53'
+
+# Check logs
+sudo journalctl -u mumbojumbo -f
+```
+
+**Permission issues:**
+```bash
+# Verify running as root
+ps aux | grep mumbojumbo
+
+# Check capabilities (systemd)
+sudo systemctl show mumbojumbo | grep Cap
+
+# Manual run for debugging
+sudo /opt/mumbojumbo/venv/bin/python3 /opt/mumbojumbo/mumbojumbo.py --verbose
+```
+
+**Container networking issues:**
+```bash
+# Verify host network mode
+docker inspect mumbojumbo-server | grep NetworkMode
+
+# Check capabilities
+docker inspect mumbojumbo-server | grep CapAdd
+
+# Test health check
+docker exec mumbojumbo-server /app/mumbojumbo.py --health-check
+```
+
+### Security Considerations
+
+- **Firewall:** Only allow UDP 53 (no other ports needed)
+- **Key storage:** Use secrets management (K8s Secrets, GCP Secret Manager, etc.)
+- **Logging:** Logs may contain sensitive data - secure log files
+- **Rate limiting:** Consider DNS-level rate limiting for DoS protection
+- **Monitoring:** Monitor for unusual DNS query volumes
+
+### Production Recommendations
+
+1. **Use environment variables** instead of config files (more secure in cloud)
+2. **Store keys in secrets manager** (not in code or config)
+3. **Monitor logs** via centralized logging (Cloud Logging, CloudWatch, etc.)
+4. **Set up alerts** for service failures
+5. **Use static IPs** to avoid DNS record updates
+6. **Test DNS delegation** before client deployment
+7. **Document your keys** securely (password manager)
+
 ## License
 
 BSD 2-Clause (see mumbojumbo.py)

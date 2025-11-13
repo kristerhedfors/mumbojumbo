@@ -1,0 +1,108 @@
+#
+# Mumbojumbo Server Configuration Example
+# Copy this file to mumbojumbo.conf and customize for your deployment
+#
+# Security: chmod 600 mumbojumbo.conf (keep keys private!)
+#
+# Usage:
+#   ./mumbojumbo.py --config mumbojumbo.conf
+#
+# Generate keys:
+#   ./mumbojumbo.py --gen-keys > keys.txt
+#
+# Precedence: CLI args > Environment variables > Config file
+#
+
+[main]
+# Domain suffix for DNS queries (include leading dot)
+# This domain should be delegated to your server via NS record
+domain = .asd.qwe
+
+# Network interface for packet capture
+# Leave empty for auto-detection (recommended for cloud environments)
+# Examples: eth0 (Linux/AWS), ens4 (GCP), en0 (macOS)
+network-interface =
+
+# Handler pipeline: comma-separated list of handlers to process packets
+# Available handlers: stdout, smtp, file, execute
+# Each handler processes every reassembled packet in order
+handlers = stdout
+
+# Server private key (mj_srv_<64_hex_chars>)
+# REQUIRED: Generate with --gen-keys
+mumbojumbo-server-key = mj_srv_0000000000000000000000000000000000000000000000000000000000000000
+
+# Client public key (mj_cli_<64_hex_chars>)
+# Optional: Used for validation, clients encrypt with server's public key
+mumbojumbo-client-key = mj_cli_0000000000000000000000000000000000000000000000000000000000000000
+
+
+#
+# SMTP Handler Configuration (optional)
+# Forwards reassembled packets via email
+# Uncomment and configure if using 'smtp' in handlers list
+#
+# [smtp]
+# server = smtp.gmail.com
+# port = 587
+# start-tls
+# username = your-email@gmail.com
+# password = your-app-password
+# from = mumbojumbo@yourdomain.com
+# to = recipient@example.com
+
+
+#
+# File Handler Configuration (optional)
+# Writes reassembled packets to a file
+# Uncomment and configure if using 'file' in handlers list
+#
+# [file]
+# path = /var/log/mumbojumbo/packets.log
+# # Format: raw (binary), hex (hexadecimal), or base64
+# format = hex
+
+
+#
+# Execute Handler Configuration (optional)
+# Executes a command with packet data as stdin
+# Uncomment and configure if using 'execute' in handlers list
+#
+# [execute]
+# command = /usr/local/bin/process-packet.sh
+# # Timeout in seconds
+# timeout = 30
+# #
+# # Environment variables passed to command:
+# #   MUMBOJUMBO_QUERY     - DNS query that completed the packet
+# #   MUMBOJUMBO_TIMESTAMP - ISO 8601 timestamp
+# #   MUMBOJUMBO_LENGTH    - Packet size in bytes
+
+
+#
+# Cloud Deployment Notes
+#
+
+# Google Cloud Platform (GCP):
+#   - Network interface: Usually auto-detected as ens4
+#   - Firewall: Allow UDP 53 ingress (create firewall rule)
+#   - Instance type: e2-micro sufficient for light traffic
+#   - DNS: Delegate domain with NS record pointing to instance external IP
+
+# Amazon Web Services (AWS):
+#   - Network interface: Usually eth0 or ens5 (Nitro instances)
+#   - Security Group: Allow UDP 53 inbound
+#   - Instance type: t3.micro or t3.nano
+#   - Route53: Create NS record for subdomain delegation
+
+# Microsoft Azure:
+#   - Network interface: Usually eth0
+#   - NSG: Allow UDP 53 inbound
+#   - VM size: B1s or B1ls
+#   - Azure DNS: Add NS record for delegation
+
+# Docker/Kubernetes:
+#   - Use environment variables instead of config file (more secure)
+#   - Requires hostNetwork: true in K8s
+#   - Requires NET_ADMIN + NET_RAW capabilities
+#   - See k8s-deployment.yaml for complete example

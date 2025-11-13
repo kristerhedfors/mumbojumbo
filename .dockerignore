@@ -1,0 +1,75 @@
+# .dockerignore - Optimize Docker build context
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+env/
+ENV/
+
+# Tests
+test.py
+tests/
+*.test
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation (include README for reference if needed)
+# README.md
+CLAUDE.md
+*.md
+!README.md
+
+# Deployment files (not needed in container)
+Dockerfile
+docker-compose.yml
+k8s-deployment.yaml
+.dockerignore
+
+# Scripts (deployment scripts not needed in container)
+deploy-*.sh
+startup-script.sh
+test-dns-delegation.sh
+
+# Config examples and templates
+config/
+*.conf
+*.example
+!mumbojumbo.conf.example
+
+# Logs
+*.log
+*.log.*
+logs/
+mumbojumbo.log*
+
+# Client implementations (not needed in server container)
+clients/
+
+# Development
+.env
+.env.*
+*.bak
+*.tmp
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.circleci/
