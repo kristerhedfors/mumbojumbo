@@ -153,10 +153,13 @@ static int test_create_basic_fragment(void) {
     ASSERT(create_fragment(100, 0, 1, frag_data, 4, &frag, &frag_len) == 0, "fragment creation should succeed");
     ASSERT(frag_len == HEADER_SIZE + 4, "fragment length should be correct");
 
-    uint16_t packet_id = (frag[0] << 8) | frag[1];
-    uint32_t frag_index = (frag[2] << 24) | (frag[3] << 16) | (frag[4] << 8) | frag[5];
-    uint32_t frag_count = (frag[6] << 24) | (frag[7] << 16) | (frag[8] << 8) | frag[9];
-    uint16_t data_len = (frag[10] << 8) | frag[11];
+    uint64_t packet_id = ((uint64_t)frag[0] << 56) | ((uint64_t)frag[1] << 48) |
+                         ((uint64_t)frag[2] << 40) | ((uint64_t)frag[3] << 32) |
+                         ((uint64_t)frag[4] << 24) | ((uint64_t)frag[5] << 16) |
+                         ((uint64_t)frag[6] << 8) | (uint64_t)frag[7];
+    uint32_t frag_index = (frag[8] << 24) | (frag[9] << 16) | (frag[10] << 8) | frag[11];
+    uint32_t frag_count = (frag[12] << 24) | (frag[13] << 16) | (frag[14] << 8) | frag[15];
+    uint16_t data_len = (frag[16] << 8) | frag[17];
 
     ASSERT(packet_id == 100, "packet_id should be 100");
     ASSERT(frag_index == 0, "frag_index should be 0");
@@ -175,7 +178,7 @@ static int test_create_empty_fragment(void) {
     ASSERT(create_fragment(1, 0, 1, NULL, 0, &frag, &frag_len) == 0, "empty fragment creation should succeed");
     ASSERT(frag_len == HEADER_SIZE, "empty fragment length should be HEADER_SIZE");
 
-    uint16_t data_len = (frag[10] << 8) | frag[11];
+    uint16_t data_len = (frag[16] << 8) | frag[17];
     ASSERT(data_len == 0, "data_len should be 0");
 
     free(frag);
