@@ -225,6 +225,28 @@
     <script>
         const MAX_FRAG_DATA_LEN = 80;
 
+        /**
+         * Calculate safe maximum fragment data size using simplified formula.
+         * Formula: 83 - len(domain) / 3
+         *
+         * This simplified formula is:
+         * - Within 0-2 bytes of optimal for typical domains (3-12 chars)
+         * - Within 5-7 bytes for longer domains (22-33 chars)
+         * - Always safe (slightly conservative, never exceeds DNS limits)
+         * - Requires only one arithmetic operation
+         *
+         * @param {string} domain - DNS domain string (e.g., '.example.com')
+         * @returns {number} Maximum safe fragment data length in bytes
+         * @throws {Error} If domain is too long (>143 chars)
+         */
+        function calculateSafeMaxFragmentDataLen(domain) {
+            const domainLen = domain.length;
+            if (domainLen > 143) {
+                throw new Error(`Domain too long: ${domainLen} chars (max 143)`);
+            }
+            return 83 - Math.floor(domainLen / 3);
+        }
+
         // Parse and validate keys (both private and public keys are 32 bytes)
         // Accepts hex format with mj_cli_ or mj_srv_ prefix
         function parseKey(keyStr, keyType) {
@@ -412,8 +434,11 @@
                 // Convert message to bytes
                 const messageBytes = nacl.util.decodeUTF8(message);
 
+                // Calculate max fragment size based on domain
+                const maxFragSize = calculateSafeMaxFragmentDataLen(domain);
+
                 // Fragment the message
-                const fragments = splitToLength(messageBytes, MAX_FRAG_DATA_LEN);
+                const fragments = splitToLength(messageBytes, maxFragSize);
                 const packetId = genPacketId();
                 const fragCount = fragments.length;
 

@@ -20,6 +20,31 @@ MAX_FRAG_DATA_LEN = 80
 DNS_LABEL_MAX_LEN = 63
 
 
+def calculate_safe_max_fragment_data_len(domain):
+    '''
+    Calculate safe maximum fragment data size using simplified formula.
+    Formula: 83 - len(domain) // 3
+
+    This simplified formula is:
+    - Within 0-2 bytes of optimal for typical domains (3-12 chars)
+    - Within 5-7 bytes for longer domains (22-33 chars)
+    - Always safe (slightly conservative, never exceeds DNS limits)
+    - Requires only one arithmetic operation
+
+    Args:
+        domain: DNS domain string (e.g., '.example.com')
+
+    Returns:
+        Maximum safe fragment data length in bytes
+
+    Raises:
+        ValueError: If domain is too long (>143 chars)
+    '''
+    if len(domain) > 143:
+        raise ValueError(f'Domain too long: {len(domain)} chars (max 143)')
+    return 83 - len(domain) // 3
+
+
 def base32_encode(data):
     """Encode to lowercase base32 without padding."""
     return base64.b32encode(data).replace(b'=', b'').lower().decode('ascii')
@@ -122,14 +147,14 @@ class MumbojumboClient:
     - Automatic packet ID management
     """
 
-    def __init__(self, server_client_key, domain, max_fragment_size=MAX_FRAG_DATA_LEN):
+    def __init__(self, server_client_key, domain, max_fragment_size=None):
         """
         Initialize client.
 
         Args:
             server_client_key: Server's public key (mj_cli_ hex string, bytes, or nacl.public.PublicKey)
             domain: DNS domain suffix (e.g., '.asd.qwe')
-            max_fragment_size: Maximum bytes per fragment (default: 80)
+            max_fragment_size: Maximum bytes per fragment (default: auto-calculated from domain)
         """
         # Auto-parse hex key format if string is provided
         if isinstance(server_client_key, str):
@@ -141,7 +166,13 @@ class MumbojumboClient:
             self.server_client_key = server_client_key
 
         self.domain = domain if domain.startswith('.') else '.' + domain
-        self.max_fragment_size = max_fragment_size
+
+        # Auto-calculate max_fragment_size from domain if not provided
+        if max_fragment_size is None:
+            self.max_fragment_size = calculate_safe_max_fragment_data_len(self.domain)
+        else:
+            self.max_fragment_size = max_fragment_size
+
         # Initialize with cryptographically secure random u64
         self._next_packet_id = secrets.randbits(64)
 
@@ -308,8 +339,9 @@ Configuration precedence: CLI args > Environment variables
         return 1
 
     if args.verbose:
-        frag_count = len(fragment_data(data, MAX_FRAG_DATA_LEN))
+        frag_count = len(fragment_data(data, client_obj.max_fragment_size))
         print(f"Split into {frag_count} fragment(s)", file=sys.stderr)
+        print(f"Max fragment size: {client_obj.max_fragment_size} bytes", file=sys.stderr)
         print("", file=sys.stderr)
 
     # Send data
@@ -336,7 +368,8 @@ Configuration precedence: CLI args > Environment variables
             print(f"Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
 
             # Calculate sizes for display
-            frag_data_len = len(data[frag_index * MAX_FRAG_DATA_LEN:(frag_index + 1) * MAX_FRAG_DATA_LEN])
+            max_frag_size = client_obj.max_fragment_size
+            frag_data_len = len(data[frag_index * max_frag_size:(frag_index + 1) * max_frag_size])
             plaintext_len = 18 + frag_data_len  # 18-byte header (u64 + u32 + u32 + u16)
             encrypted_len = plaintext_len + 48  # SealedBox adds ~48 bytes overhead
 

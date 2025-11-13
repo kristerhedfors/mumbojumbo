@@ -247,13 +247,7 @@ describe('Fragment Creation', () => {
     assert.equal(frag.readUInt16BE(16), 0);
   });
 
-  test('reject oversized fragment', () => {
-    const oversized = Buffer.alloc(MAX_FRAG_DATA_LEN + 1);
-
-    assert.throws(() => {
-      createFragment(1, 0, 1, oversized);
-    }, /Fragment data too large/);
-  });
+  // Note: Fragment size validation removed - now handled dynamically by client based on domain
 
   test('reject invalid packet_id', () => {
     assert.throws(() => {
@@ -415,7 +409,8 @@ describe('MumbojumboClient Class', () => {
 
     assert.ok(client.serverPubkey);
     assert.equal(client.domain, TEST_DOMAIN);
-    assert.equal(client.maxFragmentSize, MAX_FRAG_DATA_LEN);
+    // Auto-calculated based on domain length: 83 - 8 // 3 = 81
+    assert.equal(client.maxFragmentSize, 81);
   });
 
   test('initialize with Buffer public key', () => {

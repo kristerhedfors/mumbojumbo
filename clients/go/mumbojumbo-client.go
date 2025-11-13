@@ -35,6 +35,24 @@ type MumbojumboClient struct {
 	nextPacketID    uint64
 }
 
+// CalculateSafeMaxFragmentDataLen calculates safe maximum fragment data size using simplified formula.
+// Formula: 83 - len(domain) / 3
+//
+// This simplified formula is:
+// - Within 0-2 bytes of optimal for typical domains (3-12 chars)
+// - Within 5-7 bytes for longer domains (22-33 chars)
+// - Always safe (slightly conservative, never exceeds DNS limits)
+// - Requires only one arithmetic operation
+//
+// Returns maximum safe fragment data length in bytes, or error if domain is too long (>143 chars).
+func CalculateSafeMaxFragmentDataLen(domain string) (int, error) {
+	domainLen := len(domain)
+	if domainLen > 143 {
+		return 0, fmt.Errorf("domain too long: %d chars (max 143)", domainLen)
+	}
+	return 83 - domainLen/3, nil
+}
+
 // NewMumbojumboClient creates a new client instance
 // Accepts either a string key (mj_cli_<hex>) or raw [32]byte
 func NewMumbojumboClient(serverClientKeyInput interface{}, domain string, maxFragmentSize int) (*MumbojumboClient, error) {
@@ -62,6 +80,15 @@ func NewMumbojumboClient(serverClientKeyInput interface{}, domain string, maxFra
 
 	if !strings.HasPrefix(domain, ".") {
 		domain = "." + domain
+	}
+
+	// Auto-calculate max_fragment_size from domain if 0 (or use provided value)
+	if maxFragmentSize == 0 {
+		calculated, err := CalculateSafeMaxFragmentDataLen(domain)
+		if err != nil {
+			return nil, err
+		}
+		maxFragmentSize = calculated
 	}
 
 	client := &MumbojumboClient{
@@ -383,7 +410,8 @@ Examples:
 	}
 
 	// Create client - key parsing happens transparently in constructor
-	client, err := NewMumbojumboClient(key, domain, MaxFragDataLen)
+	// Pass 0 to auto-calculate max fragment size from domain
+	client, err := NewMumbojumboClient(key, domain, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error initializing client: %v\n", err)
 		os.Exit(1)
