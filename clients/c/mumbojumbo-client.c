@@ -122,8 +122,8 @@ void free_labels(char **labels, size_t count) {
     free(labels);
 }
 
-// Create fragment with 12-byte header
-int create_fragment(uint16_t packet_id, uint32_t frag_index, uint32_t frag_count,
+// Create fragment with 18-byte header
+int create_fragment(uint64_t packet_id, uint32_t frag_index, uint32_t frag_count,
                    const uint8_t *frag_data, size_t frag_data_len,
                    uint8_t **out_fragment, size_t *out_len) {
     if (frag_index >= frag_count) {
@@ -142,25 +142,31 @@ int create_fragment(uint16_t packet_id, uint32_t frag_index, uint32_t frag_count
 
     uint8_t *header = *out_fragment;
 
-    // Packet ID (big-endian u16)
-    header[0] = (packet_id >> 8) & 0xFF;
-    header[1] = packet_id & 0xFF;
+    // Packet ID (big-endian u64)
+    header[0] = (packet_id >> 56) & 0xFF;
+    header[1] = (packet_id >> 48) & 0xFF;
+    header[2] = (packet_id >> 40) & 0xFF;
+    header[3] = (packet_id >> 32) & 0xFF;
+    header[4] = (packet_id >> 24) & 0xFF;
+    header[5] = (packet_id >> 16) & 0xFF;
+    header[6] = (packet_id >> 8) & 0xFF;
+    header[7] = packet_id & 0xFF;
 
     // Frag index (big-endian u32)
-    header[2] = (frag_index >> 24) & 0xFF;
-    header[3] = (frag_index >> 16) & 0xFF;
-    header[4] = (frag_index >> 8) & 0xFF;
-    header[5] = frag_index & 0xFF;
+    header[8] = (frag_index >> 24) & 0xFF;
+    header[9] = (frag_index >> 16) & 0xFF;
+    header[10] = (frag_index >> 8) & 0xFF;
+    header[11] = frag_index & 0xFF;
 
     // Frag count (big-endian u32)
-    header[6] = (frag_count >> 24) & 0xFF;
-    header[7] = (frag_count >> 16) & 0xFF;
-    header[8] = (frag_count >> 8) & 0xFF;
-    header[9] = frag_count & 0xFF;
+    header[12] = (frag_count >> 24) & 0xFF;
+    header[13] = (frag_count >> 16) & 0xFF;
+    header[14] = (frag_count >> 8) & 0xFF;
+    header[15] = frag_count & 0xFF;
 
     // Data length (big-endian u16)
-    header[10] = (frag_data_len >> 8) & 0xFF;
-    header[11] = frag_data_len & 0xFF;
+    header[16] = (frag_data_len >> 8) & 0xFF;
+    header[17] = frag_data_len & 0xFF;
 
     // Copy fragment data
     if (frag_data_len > 0) {
@@ -328,8 +334,8 @@ void mumbojumbo_client_free(MumbojumboClient *client) {
 // Send data via DNS queries
 int mumbojumbo_send_data(MumbojumboClient *client, const uint8_t *data, size_t data_len,
                          bool send_queries, QueryResult **out_results, size_t *out_count) {
-    uint16_t packet_id = client->next_packet_id;
-    client->next_packet_id = (client->next_packet_id + 1) & 0xFFFF;
+    uint64_t packet_id = client->next_packet_id;
+    client->next_packet_id = (client->next_packet_id + 1) & 0xFFFFFFFFFFFFFFFFULL;
 
     uint8_t **fragments;
     size_t *frag_lens;

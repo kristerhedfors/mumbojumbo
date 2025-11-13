@@ -188,22 +188,22 @@ for query in queries:
 ### Packet ID Management
 
 - Each `MumbojumboClient` instance maintains an internal packet ID counter
-- Starts at a random u16 value (0-65535)
+- Starts at a random u64 value (0 to 2^64-1)
 - Automatically increments with each `send_data()` or `generate_queries()` call
-- Wraps around at 0xFFFF back to 0x0000
+- Wraps around at 2^64-1 back to 0
 - Completely internal - not exposed to users
 - Thread-safe for single-client usage
 
 ### Fragment Structure
 
 ```
-Bytes 0-1:   packet_id (u16 big-endian)
-Bytes 2-5:   frag_index (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 6-9:   frag_count (u32 big-endian) - supports up to 4.3 billion fragments
-Bytes 10-11: data_length (u16 big-endian)
-Bytes 12+:   fragment data (max 80 bytes)
+Bytes 0-7:   packet_id (u64 big-endian)
+Bytes 8-11:  frag_index (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 12-15: frag_count (u32 big-endian) - supports up to 4.3 billion fragments
+Bytes 16-17: data_length (u16 big-endian)
+Bytes 18+:   fragment data (max 80 bytes)
 
-Total header: 12 bytes
+Total header: 18 bytes
 ```
 
 ### Protocol Capacity

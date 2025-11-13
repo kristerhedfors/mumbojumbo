@@ -18,7 +18,7 @@ Building clean, minimal reference implementations of mumbojumbo clients across 5
   - `generate_queries(data)` → `[query1, query2, ...]`
 - **CLI:** `-k`, `-d`, `-f`, `-v` flags
 - **Dependencies:** `pynacl` only
-- **Protocol:** 12-byte header (u16 + u32 + u32 + u16)
+- **Protocol:** 18-byte header (u64 + u32 + u32 + u16)
 
 ### Testing
 - **43 tests** - all passing ✅
@@ -56,7 +56,7 @@ Building clean, minimal reference implementations of mumbojumbo clients across 5
   - `generateQueries(data)` → `[query1, query2, ...]`
 - **CLI:** `-k`, `-d`, `-f`, `-v` flags
 - **Dependencies:** `tweetnacl`, `tweetnacl-sealedbox-js`
-- **Protocol:** 12-byte header (u16 + u32 + u32 + u16)
+- **Protocol:** 18-byte header (u64 + u32 + u32 + u16)
 
 ### Testing
 - **50 tests** - all passing ✅
@@ -95,7 +95,7 @@ Building clean, minimal reference implementations of mumbojumbo clients across 5
   - `GenerateQueries(data)` → `[]string`
 - **CLI:** `-k`, `-d`, `-f`, `-v` flags
 - **Dependencies:** `golang.org/x/crypto` (nacl/box + blake2b)
-- **Protocol:** 12-byte header (u16 + u32 + u32 + u16)
+- **Protocol:** 18-byte header (u64 + u32 + u32 + u16)
 
 ### Testing
 - **43 tests** - all passing ✅
@@ -142,7 +142,7 @@ Building clean, minimal reference implementations of mumbojumbo clients across 5
   - `generate_queries(data)` → `Vec<String>`
 - **CLI:** `-k`, `-d`, `-f`, `-v` flags
 - **Dependencies:** `crypto_box`, `blake2`, `hex`, `getrandom`
-- **Protocol:** 12-byte header (u16 + u32 + u32 + u16)
+- **Protocol:** 18-byte header (u64 + u32 + u32 + u16)
 
 ### Testing
 - **21 unit tests** - all passing ✅
@@ -189,7 +189,7 @@ Building clean, minimal reference implementations of mumbojumbo clients across 5
   - `mumbojumbo_generate_queries(client, data, len, &queries, &count)` → `int`
 - **CLI:** `-k`, `-d`, `-f`, `-v` flags
 - **Dependencies:** `libsodium` only
-- **Protocol:** 12-byte header (u16 + u32 + u32 + u16)
+- **Protocol:** 18-byte header (u64 + u32 + u32 + u16)
 
 ### Testing
 - **23 tests** - all passing ✅
@@ -254,14 +254,14 @@ Test matrix ensuring all clients work together:
 
 ## Protocol Specification
 
-### Fragment Header (12 bytes)
+### Fragment Header (18 bytes)
 
 ```
-Bytes  0-1:  packet_id      (u16 big-endian)
-Bytes  2-5:  frag_index     (u32 big-endian)
-Bytes  6-9:  frag_count     (u32 big-endian)
-Bytes 10-11: frag_data_len  (u16 big-endian)
-Bytes 12+:   frag_data      (max 80 bytes)
+Bytes  0-7:  packet_id      (u64 big-endian)
+Bytes  8-11: frag_index     (u32 big-endian)
+Bytes 12-15: frag_count     (u32 big-endian)
+Bytes 16-17: frag_data_len  (u16 big-endian)
+Bytes 18+:   frag_data      (max 80 bytes)
 ```
 
 ### Encryption

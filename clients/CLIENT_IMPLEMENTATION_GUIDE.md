@@ -10,62 +10,72 @@ The Python client ([clients/python/mumbojumbo-client.py](python/mumbojumbo-clien
 
 ## Protocol Specification
 
-### Fragment Header Format (12 bytes)
+### Fragment Header Format (18 bytes)
 
 All fields in **big-endian** (network byte order):
 
 ```
-Bytes  0-1:  packet_id      (u16) - Packet identifier (0-65535)
-Bytes  2-5:  frag_index     (u32) - Fragment index (0 to count-1)
-Bytes  6-9:  frag_count     (u32) - Total fragments (up to 4.3 billion)
-Bytes 10-11: frag_data_len  (u16) - Fragment data length (0-80 bytes)
-Bytes 12+:   frag_data      (var) - Actual data (max 80 bytes)
+Bytes  0-7:  packet_id      (u64) - Packet identifier (0 to 2^64-1)
+Bytes  8-11: frag_index     (u32) - Fragment index (0 to count-1)
+Bytes 12-15: frag_count     (u32) - Total fragments (up to 4.3 billion)
+Bytes 16-17: frag_data_len  (u16) - Fragment data length (0-80 bytes)
+Bytes 18+:   frag_data      (var) - Actual data (max 80 bytes)
 ```
 
 ### Struct Definitions by Language
 
 **Python:**
 ```python
-struct.pack('!HIIH', packet_id, frag_index, frag_count, data_len)
-# ! = big-endian, H = u16, I = u32
+struct.pack('!QIIH', packet_id, frag_index, frag_count, data_len)
+# ! = big-endian, Q = u64, I = u32, H = u16
 ```
 
 **Node.js / JavaScript:**
 ```javascript
-const buffer = Buffer.allocUnsafe(12);
-buffer.writeUInt16BE(packet_id, 0);
-buffer.writeUInt32BE(frag_index, 2);
-buffer.writeUInt32BE(frag_count, 6);
-buffer.writeUInt16BE(data_len, 10);
+const buffer = Buffer.allocUnsafe(18);
+// Write u64 as two u32 values
+buffer.writeUInt32BE(Math.floor(packet_id / 0x100000000), 0); // high 32 bits
+buffer.writeUInt32BE(packet_id >>> 0, 4);                      // low 32 bits
+buffer.writeUInt32BE(frag_index, 8);
+buffer.writeUInt32BE(frag_count, 12);
+buffer.writeUInt16BE(data_len, 16);
 ```
 
 **Go:**
 ```go
-binary.BigEndian.PutUint16(header[0:2], packet_id)
-binary.BigEndian.PutUint32(header[2:6], frag_index)
-binary.BigEndian.PutUint32(header[6:10], frag_count)
-binary.BigEndian.PutUint16(header[10:12], data_len)
+binary.BigEndian.PutUint64(header[0:8], packet_id)
+binary.BigEndian.PutUint32(header[8:12], frag_index)
+binary.BigEndian.PutUint32(header[12:16], frag_count)
+binary.BigEndian.PutUint16(header[16:18], data_len)
 ```
 
 **Rust:**
 ```rust
-header[0..2].copy_from_slice(&packet_id.to_be_bytes());
-header[2..6].copy_from_slice(&frag_index.to_be_bytes());
-header[6..10].copy_from_slice(&frag_count.to_be_bytes());
-header[10..12].copy_from_slice(&data_len.to_be_bytes());
+header[0..8].copy_from_slice(&packet_id.to_be_bytes());
+header[8..12].copy_from_slice(&frag_index.to_be_bytes());
+header[12..16].copy_from_slice(&frag_count.to_be_bytes());
+header[16..18].copy_from_slice(&data_len.to_be_bytes());
 ```
 
 **C:**
 ```c
-uint16_t packet_id_be = htons(packet_id);
+// Write u64 manually (no direct htonll on all platforms)
+header[0] = (packet_id >> 56) & 0xFF;
+header[1] = (packet_id >> 48) & 0xFF;
+header[2] = (packet_id >> 40) & 0xFF;
+header[3] = (packet_id >> 32) & 0xFF;
+header[4] = (packet_id >> 24) & 0xFF;
+header[5] = (packet_id >> 16) & 0xFF;
+header[6] = (packet_id >> 8) & 0xFF;
+header[7] = packet_id & 0xFF;
+
 uint32_t frag_index_be = htonl(frag_index);
 uint32_t frag_count_be = htonl(frag_count);
 uint16_t data_len_be = htons(data_len);
 
-memcpy(header + 0, &packet_id_be, 2);
-memcpy(header + 2, &frag_index_be, 4);
-memcpy(header + 6, &frag_count_be, 4);
-memcpy(header + 10, &data_len_be, 2);
+memcpy(header + 8, &frag_index_be, 4);
+memcpy(header + 12, &frag_count_be, 4);
+memcpy(header + 16, &data_len_be, 2);
 ```
 
 ---
@@ -86,7 +96,7 @@ MumbojumboClient(server_public_key, domain, [max_fragment_size=80])
 2. `generate_queries(data)` → `[query1, query2, ...]` - Generate queries without sending
 
 **Internal State:**
-- `_next_packet_id` - Auto-incrementing u16 counter (wraps at 0xFFFF)
+- `_next_packet_id` - Auto-incrementing u64 counter (wraps at 2^64-1)
 - `server_client_key` - Server's public key (32 bytes)
 - `domain` - DNS domain suffix (e.g., `.asd.qwe`)
 - `max_fragment_size` - Max bytes per fragment (default: 80)
@@ -96,7 +106,7 @@ MumbojumboClient(server_public_key, domain, [max_fragment_size=80])
 All clients MUST provide these helpers (can be private):
 
 1. **`parse_key_hex(key_str)`** - Parse `mj_cli_<hex>` format
-2. **`create_fragment(packet_id, frag_index, frag_count, frag_data)`** - Build 12-byte header + data
+2. **`create_fragment(packet_id, frag_index, frag_count, frag_data)`** - Build 18-byte header + data
 3. **`encrypt_fragment(plaintext, server_client_key)`** - NaCl SealedBox encryption
 4. **`base32_encode(data)`** - Lowercase, no padding
 5. **`split_to_labels(data, max_len=63)`** - Split into DNS labels

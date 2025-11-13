@@ -52,16 +52,16 @@ function splitToLabels(data, maxLen = DNS_LABEL_MAX_LEN) {
 }
 
 /**
- * Create fragment with 12-byte header
+ * Create fragment with 18-byte header
  *
  * Header format (big-endian):
- * - packet_id: u16 (0-65535)
+ * - packet_id: u64 (0 to 2^64-1)
  * - frag_index: u32 (0-based fragment index)
  * - frag_count: u32 (total fragments in packet)
  * - frag_data_len: u16 (length of fragment data)
  */
 function createFragment(packetId, fragIndex, fragCount, fragData) {
-  if (packetId < 0 || packetId > 0xFFFF) {
+  if (packetId < 0 || packetId > Number.MAX_SAFE_INTEGER) {
     throw new Error(`packet_id out of range: ${packetId}`);
   }
   if (fragIndex < 0 || fragIndex >= fragCount) {
@@ -74,11 +74,13 @@ function createFragment(packetId, fragIndex, fragCount, fragData) {
     throw new Error(`Fragment data too large: ${fragData.length} > ${MAX_FRAG_DATA_LEN}`);
   }
 
-  const header = Buffer.allocUnsafe(12);
-  header.writeUInt16BE(packetId, 0);
-  header.writeUInt32BE(fragIndex, 2);
-  header.writeUInt32BE(fragCount, 6);
-  header.writeUInt16BE(fragData.length, 10);
+  const header = Buffer.allocUnsafe(18);
+  // Write u64 packet_id as two u32 values (big-endian)
+  header.writeUInt32BE(Math.floor(packetId / 0x100000000), 0); // high 32 bits
+  header.writeUInt32BE(packetId >>> 0, 4); // low 32 bits
+  header.writeUInt32BE(fragIndex, 8);
+  header.writeUInt32BE(fragCount, 12);
+  header.writeUInt16BE(fragData.length, 16);
 
   return Buffer.concat([header, fragData]);
 }
@@ -161,7 +163,8 @@ class MumbojumboClient {
 
     this.domain = domain.startsWith('.') ? domain : '.' + domain;
     this.maxFragmentSize = maxFragmentSize;
-    this._nextPacketId = Math.floor(Math.random() * 0x10000);
+    // Initialize with random u64 packet_id (using safe integer range)
+    this._nextPacketId = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
   }
 
   /**
@@ -186,11 +189,11 @@ class MumbojumboClient {
   }
 
   /**
-   * Get next packet ID and increment counter (wraps at 0xFFFF)
+   * Get next packet ID and increment counter (wraps at MAX_SAFE_INTEGER)
    */
   _getNextPacketId() {
     const packetId = this._nextPacketId;
-    this._nextPacketId = (this._nextPacketId + 1) & 0xFFFF;
+    this._nextPacketId = (this._nextPacketId + 1) % Number.MAX_SAFE_INTEGER;
     return packetId;
   }
 
@@ -371,7 +374,7 @@ Examples:
 
       // Calculate sizes for display
       const fragDataLen = Math.min(data.length - fragIndex * MAX_FRAG_DATA_LEN, MAX_FRAG_DATA_LEN);
-      const plaintextLen = 12 + fragDataLen;
+      const plaintextLen = 18 + fragDataLen;
       const encryptedLen = plaintextLen + 48;
 
       console.error(`  Data length: ${fragDataLen} bytes`);

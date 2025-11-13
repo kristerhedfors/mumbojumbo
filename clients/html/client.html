@@ -305,10 +305,30 @@
             ]);
         }
 
-        // Generate random packet ID (u16: 0-65535)
+        // Generate random packet ID (u64: 0 to 2^53-1, using JavaScript safe integers)
         function genPacketId() {
-            const bytes = nacl.randomBytes(2);
-            return (bytes[0] << 8) | bytes[1];
+            // Generate random 64-bit value within JavaScript's safe integer range
+            return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+        }
+
+        // Convert u64 to big-endian bytes (8 bytes)
+        function u64ToBytes(val) {
+            const bytes = new Uint8Array(8);
+            // JavaScript can safely represent integers up to 2^53-1
+            // Split into high and low 32-bit parts
+            const high = Math.floor(val / 0x100000000);
+            const low = val >>> 0;
+
+            bytes[0] = (high >>> 24) & 0xFF;
+            bytes[1] = (high >>> 16) & 0xFF;
+            bytes[2] = (high >>> 8) & 0xFF;
+            bytes[3] = high & 0xFF;
+            bytes[4] = (low >>> 24) & 0xFF;
+            bytes[5] = (low >>> 16) & 0xFF;
+            bytes[6] = (low >>> 8) & 0xFF;
+            bytes[7] = low & 0xFF;
+
+            return bytes;
         }
 
         // Concatenate Uint8Arrays
@@ -323,18 +343,18 @@
             return result;
         }
 
-        // Create fragment (u16 packet_id)
+        // Create fragment with 18-byte header (u64 packet_id + u32 frag_index + u32 frag_count + u16 data_len)
         function createFragment(packetId, fragIndex, fragCount, fragData) {
             const fragDataBytes = typeof fragData === 'string'
                 ? nacl.util.decodeUTF8(fragData)
                 : fragData;
 
             return concatUint8Arrays(
-                htons(packetId),  // Changed from htonl (u32) to htons (u16)
-                htons(fragIndex),
-                htons(fragCount),
-                htons(fragDataBytes.length),
-                fragDataBytes
+                u64ToBytes(packetId),     // u64 (8 bytes)
+                htonl(fragIndex),          // u32 (4 bytes)
+                htonl(fragCount),          // u32 (4 bytes)
+                htons(fragDataBytes.length), // u16 (2 bytes)
+                fragDataBytes              // variable length data
             );
         }
 

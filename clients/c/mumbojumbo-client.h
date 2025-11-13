@@ -7,7 +7,7 @@
 
 #define MAX_FRAG_DATA_LEN 80
 #define DNS_LABEL_MAX_LEN 63
-#define HEADER_SIZE 12
+#define HEADER_SIZE 18
 #define SEALED_BOX_OH 48  // 32-byte ephemeral pubkey + 16-byte tag
 #define PUBLIC_KEY_SIZE 32
 
@@ -22,7 +22,7 @@ typedef struct {
     uint8_t server_client_key[32];
     char *domain;
     size_t max_fragment_size;
-    uint16_t next_packet_id;
+    uint64_t next_packet_id;
 } MumbojumboClient;
 
 // Base32 encoding
@@ -33,7 +33,7 @@ char **split_to_labels(const char *data, size_t max_len, size_t *count);
 void free_labels(char **labels, size_t count);
 
 // Fragment creation
-int create_fragment(uint16_t packet_id, uint32_t frag_index, uint32_t frag_count,
+int create_fragment(uint64_t packet_id, uint32_t frag_index, uint32_t frag_count,
                    const uint8_t *frag_data, size_t frag_data_len,
                    uint8_t **out_fragment, size_t *out_len);
 
