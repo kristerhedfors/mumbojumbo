@@ -126,215 +126,44 @@ Mumbojumbo is a DNS tunneling protocol that provides covert, encrypted communica
 
 Mumbojumbo automatically calculates the maximum safe fragment data size based on the domain name length. This ensures DNS name constraints are never violated while maximizing throughput.
 
+**Formula:** `83 - len(domain) / 3`
+
+**Why this formula?**
+
+To fit data within DNS constraints, we need to account for:
+- **Fragment header:** 18 bytes (packet_id + index + count + length)
+- **Encryption overhead:** 48 bytes (NaCl SealedBox: 32-byte ephemeral key + 16-byte auth tag)
+- **Base32 encoding:** 1.6× expansion (5 bits per character)
+- **DNS label limits:** Maximum 63 characters per label, 253 total name length
+- **Domain suffix:** Variable length (e.g., `.asd.qwe` = 8 bytes)
+
+The formula `83 - len(domain) / 3` provides a simple linear approximation that:
+- **Stays well within DNS limits** for all reasonable domain lengths
+- **Is within 2 bytes of optimal** for typical domains (3-12 characters)
+- **Requires only one arithmetic operation** instead of complex calculations
+- **Trades ~5% efficiency for extreme simplicity and safety**
+
 ### DNS Constraints
 
 ```
 RFC 1035 DNS Limits:
-┌──────────────────────────────────────────────────────────────┐
-│ • Maximum DNS name length: 253 bytes                          │
-│ • Maximum DNS label length: 63 bytes                          │
-│ • Label separator: 1 byte (dot)                              │
-│ • Domain suffix: variable (e.g., ".asd.qwe" = 8 bytes)      │
-└──────────────────────────────────────────────────────────────┘
+• Maximum DNS name length: 253 bytes
+• Maximum DNS label length: 63 bytes
+• Domain suffix: variable (e.g., ".asd.qwe" = 8 bytes)
 ```
-
-### Size Calculation Algorithm
-
-The maximum fragment data size is calculated from the domain name:
-
-```
-Given:
-  domain = ".asd.qwe"  (8 bytes)
-
-Constants:
-  HEADER_SIZE = 18 bytes (u64 + u32 + u32 + u16)
-  SEALED_BOX_OH = 48 bytes (32-byte ephemeral key + 16-byte auth tag)
-  DNS_LABEL_MAX = 63 bytes
-  DNS_NAME_MAX = 253 bytes
-  SAFETY_MARGIN = 0.95 (5% reduction for safety)
-  BASE32_RATIO = 5/8 (5 bits per character, 8 bits per byte)
-
-Step 1: Calculate available DNS name space
-  available_chars = DNS_NAME_MAX - len(domain)
-  available_chars = 253 - 8 = 245
-
-Step 2: Calculate maximum base32 characters
-  # Each full DNS label = 63 chars + 1 dot = 64 chars consumed
-  full_labels = floor(available_chars / 64)
-  full_labels = floor(245 / 64) = 3
-
-  remaining_chars = available_chars - (full_labels * 64)
-  remaining_chars = 245 - (3 * 64) = 245 - 192 = 53
-
-  # Can we add a partial label?
-  if remaining_chars > 1:  # Need space for at least 1 char + 1 dot
-    max_base32_chars = (full_labels * 63) + (remaining_chars - 1)
-  else:
-    max_base32_chars = full_labels * 63
-
-  max_base32_chars = (3 * 63) + (53 - 1) = 189 + 52 = 241
-
-Step 3: Convert base32 characters to encrypted bytes
-  # Base32: 5 bits per character = 5/8 bytes per character
-  max_encrypted_bytes = floor(max_base32_chars * 5 / 8)
-  max_encrypted_bytes = floor(241 * 0.625) = floor(150.625) = 150
-
-Step 4: Subtract encryption overhead
-  max_plaintext_bytes = max_encrypted_bytes - SEALED_BOX_OH
-  max_plaintext_bytes = 150 - 48 = 102
-
-Step 5: Subtract header size
-  max_fragment_data_bytes = max_plaintext_bytes - HEADER_SIZE
-  max_fragment_data_bytes = 102 - 18 = 84
-
-Step 6: Apply safety margin (5% reduction)
-  safe_max_fragment_data_bytes = floor(max_fragment_data_bytes * SAFETY_MARGIN)
-  safe_max_fragment_data_bytes = floor(84 * 0.95) = floor(79.8) = 79
-```
-
-**Result:** For domain `.asd.qwe` (8 bytes), the safe maximum fragment data size is **79 bytes**.
-
-### Formula Implementation
-
-#### Simple Linear Formula (Recommended)
-
-For maximum simplicity with near-optimal accuracy:
-
-```python
-def calculate_safe_max_fragment_data_len(domain):
-    """
-    Calculate safe maximum fragment data length.
-
-    Simple linear approximation: 83 - len(domain) / 3
-
-    Accuracy:
-    - Within 2 bytes for typical domains (3-12 chars)
-    - Within 5 bytes for longer domains (up to 30 chars)
-
-    Returns:
-        int: Fragment data size in bytes
-    """
-    # Ensure domain isn't absurdly long (>143 chars makes communication impossible)
-    if len(domain) > 143:
-        raise ValueError(f"Domain too long: {domain} ({len(domain)} bytes). Maximum is ~143 characters.")
-
-    return 83 - len(domain) // 3
-```
-
-**Why this formula?**
-- **Simple**: Single arithmetic operation
-- **Accurate**: Within 2 bytes of optimal for typical domains
-- **Safe**: Slightly conservative (won't exceed DNS limits)
-- **Predictable**: Linear relationship between domain length and fragment size
-
-#### Precise Formula (Optional)
-
-For applications that need to maximize throughput and accept additional complexity:
-
-```python
-def calculate_precise_max_fragment_data_len(domain):
-    """
-    Calculate precise maximum fragment data length based on domain.
-    More complex but optimizes throughput for each specific domain.
-    """
-    HEADER_SIZE = 18
-    SEALED_BOX_OH = 48
-    DNS_LABEL_MAX = 63
-    DNS_NAME_MAX = 253
-    SAFETY_MARGIN = 0.95
-
-    domain_len = len(domain)
-    available_chars = DNS_NAME_MAX - domain_len
-
-    # Calculate max base32 characters accounting for label dots
-    full_labels = available_chars // (DNS_LABEL_MAX + 1)
-    remaining_chars = available_chars - (full_labels * (DNS_LABEL_MAX + 1))
-
-    if remaining_chars > 1:
-        max_base32_chars = (full_labels * DNS_LABEL_MAX) + (remaining_chars - 1)
-    else:
-        max_base32_chars = full_labels * DNS_LABEL_MAX
-
-    # Convert base32 chars to bytes (5 bits per char = 5/8 bytes per char)
-    max_encrypted_bytes = int(max_base32_chars * 5 / 8)
-
-    # Subtract overhead
-    max_plaintext_bytes = max_encrypted_bytes - SEALED_BOX_OH
-    max_data_bytes = max_plaintext_bytes - HEADER_SIZE
-
-    # Apply safety margin
-    safe_max = int(max_data_bytes * SAFETY_MARGIN)
-
-    if safe_max < 1:
-        raise ValueError(f"Domain too long: {domain} (max fragment would be {safe_max} bytes)")
-
-    return safe_max
-```
-
-**Comparison:**
-- **Simple (83 - len/3)**: One line, within 2-5 bytes of optimal
-- **Precise formula**: Exact calculation, adds 20+ lines of code
-
-**Recommendation:** Use the simple linear formula (83 - len/3) for best balance of simplicity and efficiency.
 
 ### Domain Length Examples
 
-| Domain | Domain Length | Simple (83 - len/3) | Precise Formula | Difference |
-|--------|---------------|---------------------|-----------------|------------|
-| `.xy` | 3 bytes | 82 | 82 | 0 bytes ✓ |
-| `.asd.qwe` | 8 bytes | 81 | 79 | +2 bytes |
-| `.example.com` | 12 bytes | 79 | 77 | +2 bytes |
-| `.subdomain.example.com` | 22 bytes | 76 | 71 | +5 bytes |
-| `.very.long.subdomain.example.com` | 33 bytes | 72 | 65 | +7 bytes |
+| Domain | Length | Fragment Size |
+|--------|--------|---------------|
+| `.xy` | 3 bytes | 82 bytes |
+| `.asd.qwe` | 8 bytes | 81 bytes |
+| `.example.com` | 12 bytes | 79 bytes |
+| `.subdomain.example.com` | 22 bytes | 76 bytes |
 
-**Analysis:**
-- **Simple formula (83 - len/3)**: One arithmetic operation, very close to optimal
-- **Precise formula**: Exact calculation, more complex
-- For typical domains (3-12 chars): Simple is within 0-2 bytes of precise
-- For longer domains (22-33 chars): Simple is 5-7 bytes over (slightly more conservative)
+### Maximum Domain Length
 
-### Why Safety Margin?
-
-The 5% safety margin accounts for:
-
-1. **Base32 padding variability:** Padding removal can cause off-by-one errors in edge cases
-2. **DNS resolver quirks:** Some resolvers may enforce stricter limits (e.g., 250 vs 253)
-3. **Label boundary alignment:** Splitting at 63-char boundaries may not align perfectly with base32 blocks
-4. **Implementation variations:** Different DNS software may have subtle interpretation differences
-
-**Better safe than sorry:** A 5% margin ensures compatibility across all DNS implementations while losing minimal throughput.
-
-### Practical Impact
-
-```
-Example: Sending 1 KB message
-
-With short domain (.xy, 82-byte fragments):
-  ├─ Fragments: ceil(1024 / 82) = 13 fragments
-  └─ DNS queries: 13
-
-With medium domain (.asd.qwe, 79-byte fragments):
-  ├─ Fragments: ceil(1024 / 79) = 13 fragments
-  └─ DNS queries: 13
-
-With long domain (.very.long.subdomain.example.com, 71-byte fragments):
-  ├─ Fragments: ceil(1024 / 71) = 15 fragments
-  └─ DNS queries: 15
-
-Impact: +2 queries (15.4% overhead for 1KB message with long domain)
-```
-
-### Minimum Viable Domain
-
-For communication to work at all, we need:
-- At least 1 byte of fragment data
-- 18 bytes header + 1 byte data + 48 bytes encryption = 67 bytes plaintext minimum
-- 67 bytes → ~108 base32 chars
-- 108 chars needs ~2 DNS labels
-- Available space: 108 chars + 2 dots = 110 chars minimum
-- Maximum domain length: 253 - 110 = **~143 characters**
-
-**If your domain is longer than 143 characters, mumbojumbo cannot function.**
+For communication to work, domains cannot exceed **~143 characters** (which would leave room for only 1 byte of fragment data).
 
 ---
 
