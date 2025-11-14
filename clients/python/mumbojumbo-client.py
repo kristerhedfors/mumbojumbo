@@ -55,15 +55,16 @@ def split_to_labels(data, max_len=DNS_LABEL_MAX_LEN):
     return [data[i:i+max_len] for i in range(0, len(data), max_len)]
 
 
-def create_fragment(packet_id, frag_index, frag_count, frag_data):
+def create_fragment(packet_id, frag_index, frag_count, frag_data, key_len=0):
     """
-    Create fragment with 18-byte header.
+    Create fragment with 19-byte header.
 
     Header format (big-endian):
     - packet_id: u64 (0 to 2^64-1)
     - frag_index: u32 (0-based fragment index, up to 4.3 billion)
     - frag_count: u32 (total fragments in packet, up to 4.3 billion)
-    - frag_data_len: u16 (length of fragment data, 0-65535)
+    - frag_data_len: u8 (length of fragment data, 0-255)
+    - key_len: u8 (length of key in reassembled packet, 0-255)
     """
     if not (0 <= packet_id <= 0xFFFFFFFFFFFFFFFF):
         raise ValueError(f'packet_id out of range: {packet_id}')
@@ -73,8 +74,10 @@ def create_fragment(packet_id, frag_index, frag_count, frag_data):
         raise ValueError(f'frag_count out of u32 range: {frag_count}')
     if len(frag_data) > MAX_FRAG_DATA_LEN:
         raise ValueError(f'Fragment data too large: {len(frag_data)} > {MAX_FRAG_DATA_LEN}')
+    if not (0 <= key_len <= 255):
+        raise ValueError(f'key_len out of u8 range: {key_len}')
 
-    header = struct.pack('!QIIH', packet_id, frag_index, frag_count, len(frag_data))
+    header = struct.pack('!QIIBB', packet_id, frag_index, frag_count, len(frag_data), key_len)
     return header + frag_data
 
 
@@ -195,12 +198,13 @@ class MumbojumboClient:
         self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFFFFFFFFFF
         return packet_id
 
-    def _generate_dns_queries(self, data):
+    def _generate_dns_queries(self, data, key_len=0):
         """
         Internal method to generate DNS queries from data.
 
         Args:
             data: Bytes to send
+            key_len: Length of key in data (0 for data-only mode)
 
         Returns:
             List of DNS query strings
@@ -213,8 +217,8 @@ class MumbojumboClient:
 
         queries = []
         for frag_index, frag_data in enumerate(fragments):
-            # Create fragment with header
-            plaintext = create_fragment(packet_id, frag_index, frag_count, frag_data)
+            # Create fragment with header (key_len same for all fragments)
+            plaintext = create_fragment(packet_id, frag_index, frag_count, frag_data, key_len)
 
             # Encrypt with SealedBox
             encrypted = encrypt_fragment(plaintext, self.server_client_key)
@@ -225,58 +229,100 @@ class MumbojumboClient:
 
         return queries
 
-    def send_data(self, data):
+    def send_key_val(self, key, value):
         """
-        Send data via DNS queries.
+        Send key-value pair via DNS queries.
 
         Args:
-            data: Bytes to send
+            key: Key bytes or None (for null key)
+            value: Value bytes or None (for null value)
 
         Returns:
             List of (dns_query, success) tuples
         """
-        queries = self._generate_dns_queries(data)
+        # Handle None values
+        if key is None:
+            key = b''
+        if value is None:
+            value = b''
+
+        if not isinstance(key, bytes):
+            raise TypeError('Key must be bytes or None')
+        if not isinstance(value, bytes):
+            raise TypeError('Value must be bytes or None')
+        if len(key) > 255:
+            raise ValueError('Key length cannot exceed 255 bytes')
+
+        # Combine key and value
+        data = key + value
+        key_len = len(key)
+
+        # Generate queries with key_len
+        queries = self._generate_dns_queries(data, key_len)
+
+        # Send queries
         results = []
         for dns_name in queries:
             success = send_dns_query(dns_name)
             results.append((dns_name, success))
         return results
 
-    def generate_queries(self, data):
+    def generate_queries_key_val(self, key, value):
         """
-        Generate DNS queries without sending them.
+        Generate key-value DNS queries without sending them.
 
         Args:
-            data: Bytes to send
+            key: Key bytes or None (for null key)
+            value: Value bytes or None (for null value)
 
         Returns:
             List of DNS query strings
         """
-        return self._generate_dns_queries(data)
+        # Handle None values
+        if key is None:
+            key = b''
+        if value is None:
+            value = b''
+
+        if not isinstance(key, bytes):
+            raise TypeError('Key must be bytes or None')
+        if not isinstance(value, bytes):
+            raise TypeError('Value must be bytes or None')
+        if len(key) > 255:
+            raise ValueError('Key length cannot exceed 255 bytes')
+
+        # Combine key and value
+        data = key + value
+        key_len = len(key)
+
+        return self._generate_dns_queries(data, key_len)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Mumbojumbo DNS Client - Send data via DNS queries',
+        description='Mumbojumbo DNS Client - Send key-value pairs via DNS queries',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 examples:
-  # Send from stdin with arguments
-  echo "Hello World" | %(prog)s -k mj_cli_abc123... -d .asd.qwe
+  # Send key-value pair explicitly
+  %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey -v myvalue
 
-  # Send from file
-  %(prog)s -k mj_cli_abc123... -d .asd.qwe -f message.txt
+  # Send files (filename as key, contents as value)
+  %(prog)s --client-key mj_cli_abc123... -d .asd.qwe file1.txt file2.txt
+
+  # Send from stdin with null key
+  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe
 
   # Use environment variables (no arguments needed)
   export MUMBOJUMBO_CLIENT_KEY=mj_cli_abc123...
   export MUMBOJUMBO_DOMAIN=.asd.qwe
-  echo "Hello World" | %(prog)s
+  %(prog)s file.txt
 
 Configuration precedence: CLI args > Environment variables
         '''
     )
     parser.add_argument(
-        '-k', '--key',
+        '--client-key',
         help='Server public key in mj_cli_<hex> format (or use MUMBOJUMBO_CLIENT_KEY env var)'
     )
     parser.add_argument(
@@ -284,23 +330,31 @@ Configuration precedence: CLI args > Environment variables
         help='DNS domain suffix, e.g., .asd.qwe (or use MUMBOJUMBO_DOMAIN env var)'
     )
     parser.add_argument(
-        '-f', '--file',
-        default='-',
-        help='Input file path (use "-" for stdin, default: stdin)'
+        '-k', '--key',
+        help='Transmission key (if not provided with files, defaults to None)'
     )
     parser.add_argument(
-        '-v', '--verbose',
+        '-v', '--value',
+        help='Transmission value (if not provided, reads from stdin or files)'
+    )
+    parser.add_argument(
+        '--verbose',
         action='store_true',
         help='Verbose output'
+    )
+    parser.add_argument(
+        'files',
+        nargs='*',
+        help='Files to send (filename as key, contents as value)'
     )
 
     args = parser.parse_args()
 
-    # Get key from CLI arg or environment variable
-    key_str = args.key or os.environ.get('MUMBOJUMBO_CLIENT_KEY')
-    if not key_str:
+    # Get client key from CLI arg or environment variable
+    client_key_str = args.client_key or os.environ.get('MUMBOJUMBO_CLIENT_KEY')
+    if not client_key_str:
         print("Error: Server public key required", file=sys.stderr)
-        print("  Provide via -k argument or MUMBOJUMBO_CLIENT_KEY environment variable", file=sys.stderr)
+        print("  Provide via --client-key argument or MUMBOJUMBO_CLIENT_KEY environment variable", file=sys.stderr)
         return 1
 
     # Get domain from CLI arg or environment variable
@@ -317,79 +371,82 @@ Configuration precedence: CLI args > Environment variables
             print(f"         Prepending '.' automatically", file=sys.stderr)
         domain = '.' + domain
 
-    # Read input data
-    try:
-        if args.file == '-':
-            data = sys.stdin.buffer.read()
-        else:
-            with open(args.file, 'rb') as f:
-                data = f.read()
-    except Exception as e:
-        print(f"Error reading input: {e}", file=sys.stderr)
-        return 1
-
-    if args.verbose:
-        print(f"Read {len(data)} bytes of input", file=sys.stderr)
-
     # Create client - key parsing happens transparently in constructor
     try:
-        client_obj = MumbojumboClient(key_str, domain)
+        client_obj = MumbojumboClient(client_key_str, domain)
     except Exception as e:
         print(f"Error initializing client: {e}", file=sys.stderr)
         return 1
 
-    if args.verbose:
-        frag_count = len(fragment_data(data, client_obj.max_fragment_size))
-        print(f"Split into {frag_count} fragment(s)", file=sys.stderr)
-        print(f"Max fragment size: {client_obj.max_fragment_size} bytes", file=sys.stderr)
-        print("", file=sys.stderr)
+    # Determine what to send
+    key_value_pairs = []
 
-    # Send data
-    try:
-        results = client_obj.send_data(data)
-    except Exception as e:
-        print(f"Error sending data: {e}", file=sys.stderr)
+    if args.key is not None and args.value is not None:
+        # Explicit key-value pair
+        key_value_pairs.append((args.key.encode('utf-8'), args.value.encode('utf-8')))
+    elif args.files:
+        # Send files (filename as key, contents as value)
+        for filepath in args.files:
+            try:
+                with open(filepath, 'rb') as f:
+                    file_contents = f.read()
+                key_value_pairs.append((filepath.encode('utf-8'), file_contents))
+            except Exception as e:
+                print(f"Error reading file {filepath}: {e}", file=sys.stderr)
+                return 1
+    else:
+        # Read from stdin with null key
+        try:
+            stdin_data = sys.stdin.buffer.read()
+            key_value_pairs.append((None, stdin_data))
+        except Exception as e:
+            print(f"Error reading stdin: {e}", file=sys.stderr)
+            return 1
+
+    # Send all key-value pairs
+    total_success = 0
+    total_queries = 0
+
+    for kv_index, (key, value) in enumerate(key_value_pairs):
         if args.verbose:
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-        return 1
+            key_display = key.decode('utf-8') if key else 'None'
+            value_len = len(value) if value else 0
+            print(f"Sending pair {kv_index + 1}/{len(key_value_pairs)}: key='{key_display}', value={value_len} bytes", file=sys.stderr)
 
-    # Process results
-    success_count = 0
-    for frag_index, (dns_name, success) in enumerate(results):
-        # Output query for inspection
-        print(dns_name)
+        try:
+            results = client_obj.send_key_val(key, value)
+        except Exception as e:
+            print(f"Error sending key-value pair: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+            return 1
 
-        if success:
-            success_count += 1
-
-        if args.verbose:
-            frag_count = len(results)
-            print(f"Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
-
-            # Calculate sizes for display
-            max_frag_size = client_obj.max_fragment_size
-            frag_data_len = len(data[frag_index * max_frag_size:(frag_index + 1) * max_frag_size])
-            plaintext_len = 18 + frag_data_len  # 18-byte header (u64 + u32 + u32 + u16)
-            encrypted_len = plaintext_len + 48  # SealedBox adds ~48 bytes overhead
-
-            print(f"  Data length: {frag_data_len} bytes", file=sys.stderr)
-            print(f"  Plaintext length: {plaintext_len} bytes", file=sys.stderr)
-            print(f"  Encrypted length: {encrypted_len} bytes", file=sys.stderr)
-            print(f"  DNS name length: {len(dns_name)} chars", file=sys.stderr)
-            print(f"  Sending query...", file=sys.stderr)
+        # Process results
+        for frag_index, (dns_name, success) in enumerate(results):
+            # Output query for inspection
+            print(dns_name)
 
             if success:
-                print(f"  ✓ Sent successfully", file=sys.stderr)
-            else:
-                print(f"  ✗ Send failed (DNS query timed out or failed)", file=sys.stderr)
+                total_success += 1
+            total_queries += 1
 
+            if args.verbose:
+                frag_count = len(results)
+                print(f"  Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
+
+                if success:
+                    print(f"    ✓ Sent successfully", file=sys.stderr)
+                else:
+                    print(f"    ✗ Send failed (DNS query timed out or failed)", file=sys.stderr)
+
+        if args.verbose:
             print("", file=sys.stderr)
 
     if args.verbose:
-        print(f"Sent {success_count}/{len(results)} fragment(s) successfully", file=sys.stderr)
+        print(f"Sent {total_success}/{total_queries} fragment(s) successfully", file=sys.stderr)
 
-    return 0 if success_count == len(results) else 1
+    return 0 if total_success == total_queries else 1
 
 
 if __name__ == '__main__':

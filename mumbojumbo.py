@@ -77,13 +77,15 @@ class Fragment(BaseFragment):
             u64 packet_id
             u32 frag_index
             u32 frag_count
-            u16 len(frag_data)
+            u8 len(frag_data)
+            u8 key_len
             bytes frag_data
     '''
-    def __init__(self, packet_id=None, frag_index=0, frag_count=1, **kw):
+    def __init__(self, packet_id=None, frag_index=0, frag_count=1, key_len=0, **kw):
         self._packet_id = packet_id or PacketEngine.gen_packet_id()
         self._frag_index = frag_index
         self._frag_count = frag_count
+        self._key_len = key_len
         super(Fragment, self).__init__(**kw)
 
     def _htonl_pack(self, val):
@@ -118,7 +120,8 @@ class Fragment(BaseFragment):
         ser += self._htonll_pack(self._packet_id)  # u64 (8 bytes)
         ser += self._htonl_pack(self._frag_index)  # u32 (4 bytes)
         ser += self._htonl_pack(self._frag_count)  # u32 (4 bytes)
-        ser += self._htons_pack(len(self._frag_data))  # u16 (2 bytes)
+        ser += struct.pack('B', len(self._frag_data))  # u8 (1 byte)
+        ser += struct.pack('B', self._key_len)  # u8 (1 byte)
         ser += self._frag_data
         return ser
 
@@ -126,7 +129,8 @@ class Fragment(BaseFragment):
         packet_id = self._unpack_ntohll(raw[:8])  # u64, bytes 0-8
         frag_index = self._unpack_ntohl(raw[8:12])  # u32, bytes 8-12
         frag_count = self._unpack_ntohl(raw[12:16])  # u32, bytes 12-16
-        frag_data_len = self._unpack_ntohs(raw[16:18])  # u16, bytes 16-18
+        frag_data_len = struct.unpack('B', raw[16:17])[0]  # u8, byte 16
+        key_len = struct.unpack('B', raw[17:18])[0]  # u8, byte 17
         frag_data = raw[18:]  # bytes 18+
         try:
             assert frag_data_len == len(frag_data)
@@ -141,7 +145,7 @@ class Fragment(BaseFragment):
             raise
         # Pass keys if they exist (for PublicFragment subclasses)
         kw = {'packet_id': packet_id, 'frag_index': frag_index,
-              'frag_count': frag_count, 'frag_data': frag_data}
+              'frag_count': frag_count, 'frag_data': frag_data, 'key_len': key_len}
         if hasattr(self, '_server_key'):
             kw['server_key'] = self._server_key
         if hasattr(self, '_client_key'):
@@ -316,6 +320,7 @@ class PacketEngine(object):
 
         self._packet_assembly = {}
         self._packet_assembly_counter = {}
+        self._packet_key_len = {}  # Track key_len for each packet
         self._packet_outqueue = queue.Queue()
         # Packet ID counter (u64: 0 to 2^64-1, wraps around)
         # Initialize with cryptographically secure random value
@@ -327,9 +332,10 @@ class PacketEngine(object):
     def packet_outqueue(self):
         return self._packet_outqueue
 
-    def to_wire(self, packet_data):
+    def to_wire(self, packet_data, key_len=0):
         '''
             Generator yielding zero or more fragments from data.
+            If key_len > 0, the first key_len bytes are the key, rest is value.
         '''
         logger.debug('to_wire() len(packet_data)==' + str(len(packet_data)))
         # Use packet ID and increment counter
@@ -340,7 +346,7 @@ class PacketEngine(object):
         frag_index = 0
         for frag_data in frag_data_lst:
             frag = self._frag_cls(packet_id=packet_id, frag_index=frag_index,
-                                  frag_count=frag_count, frag_data=frag_data)
+                                  frag_count=frag_count, frag_data=frag_data, key_len=key_len)
             wire_data = frag.serialize()
             yield wire_data
             frag_index += 1
@@ -355,6 +361,11 @@ class PacketEngine(object):
         if frag is not None:
             packet_assembly = self._packet_assembly
             packet_id = frag._packet_id
+            #
+            # Store key_len from first fragment (all fragments should have same key_len)
+            #
+            if packet_id not in self._packet_key_len:
+                self._packet_key_len[packet_id] = frag._key_len
             #
             # get frag_data_lst for packet
             #
@@ -396,7 +407,24 @@ class PacketEngine(object):
 
         frag_data_lst = self._packet_assembly[packet_id]
         packet_data = b''.join(frag_data_lst)
-        self.packet_outqueue.put(packet_data)
+
+        # Get key_len for this packet
+        key_len = self._packet_key_len.get(packet_id, 0)
+
+        # Always output as key-value tuple
+        if key_len > 0:
+            key = packet_data[:key_len]
+            value = packet_data[key_len:]
+        else:
+            # Zero-length key (legacy or null key)
+            key = b''
+            value = packet_data
+
+        self.packet_outqueue.put({'key': key, 'value': value, 'key_len': key_len})
+
+        # Cleanup key_len tracking
+        if packet_id in self._packet_key_len:
+            del self._packet_key_len[packet_id]
 
 
 class DnsQueryReader(object):
@@ -641,28 +669,43 @@ class StdoutHandler(PacketHandler):
     '''
         Output packet metadata as JSON to stdout.
     '''
-    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+    def handle_kv(self, key: bytes, value: bytes, query: str, timestamp: datetime.datetime) -> bool:
+        '''Handle key-value packets with separate fields.'''
         try:
-            # Convert data to string for preview
+            # Handle null/empty keys
+            if len(key) == 0:
+                key_display = None
+            else:
+                # Convert key to string for preview
+                try:
+                    key_str = key.decode('utf-8')
+                except UnicodeDecodeError:
+                    key_str = key.hex()
+                    logger.debug('Key is binary, showing as hex in preview')
+                key_display = key_str[:100] + '...' if len(key_str) > 100 else key_str
+
+            # Convert value to string for preview
             try:
-                data_str = data.decode('utf-8')
+                value_str = value.decode('utf-8')
             except UnicodeDecodeError:
-                data_str = data.hex()
-                logger.debug('Data is binary, showing as hex in preview')
+                value_str = value.hex()
+                logger.debug('Value is binary, showing as hex in preview')
 
-            # Prepare data preview
-            data_preview = data_str[:100] + '...' if len(data_str) > 100 else data_str
+            # Prepare value preview
+            value_preview = value_str[:100] + '...' if len(value_str) > 100 else value_str
 
-            # Output JSON
+            # Output JSON with key-value fields (key can be null)
             output = {
                 'timestamp': timestamp.isoformat(),
                 'event': 'packet_reassembled',
                 'query': query,
-                'data_length': len(data),
-                'data_preview': data_preview
+                'key': key_display,
+                'key_length': len(key) if len(key) > 0 else None,
+                'value_length': len(value),
+                'value_preview': value_preview
             }
             print(json.dumps(output), flush=True)
-            logger.info(f'Stdout handler: JSON output written')
+            logger.info(f'Stdout handler: Key-value JSON output written (key={key_display})')
             return True
         except Exception as e:
             logger.error(f'Stdout handler error: {type(e).__name__}: {e}')
@@ -683,20 +726,32 @@ class SMTPHandler(PacketHandler):
         self._username = username
         self._password = password
 
-    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
-        '''Send packet data via email.'''
-        # Convert data to string for email
+    def handle_kv(self, key: bytes, value: bytes, query: str, timestamp: datetime.datetime) -> bool:
+        '''Send key-value packet via email.'''
+        # Convert key to string
+        if len(key) == 0:
+            key_str = '(null)'
+        else:
+            try:
+                key_str = key.decode('utf-8')
+            except UnicodeDecodeError:
+                key_str = key.hex()
+                logger.debug('Binary key, sending as hex in email')
+
+        # Convert value to string for email
         try:
-            data_str = data.decode('utf-8')
+            value_str = value.decode('utf-8')
         except UnicodeDecodeError:
-            data_str = data.hex()
-            logger.debug('Binary data, sending as hex in email')
+            value_str = value.hex()
+            logger.debug('Binary value, sending as hex in email')
 
         smtp = None
         try:
-            msg = MIMEText(data_str)
+            # Create email body with key-value format
+            body = f'Key: {key_str}\n\nValue:\n{value_str}'
+            msg = MIMEText(body)
             msg.set_charset('utf-8')
-            msg['Subject'] = f'Mumbojumbo Packet from {query}'
+            msg['Subject'] = f'Mumbojumbo Packet: {key_str[:50]}'
             msg['From'] = self._from
             msg['To'] = self._to
 
@@ -716,7 +771,7 @@ class SMTPHandler(PacketHandler):
             logger.debug(f'SMTP handler: sending email to {self._to}')
             smtp.sendmail(self._from, [self._to], msg.as_string())
             smtp.quit()
-            logger.info(f'SMTP handler: email sent successfully to {self._to}')
+            logger.info(f'SMTP handler: email sent successfully to {self._to} (key={key_str[:30]})')
             return True
 
         except (socket.gaierror, socket.herror) as e:
@@ -765,29 +820,38 @@ class FileHandler(PacketHandler):
             raise ValueError(f'Invalid format: {format}. Must be raw, hex, or base64')
         self._format = format
 
-    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+    def handle_kv(self, key: bytes, value: bytes, query: str, timestamp: datetime.datetime) -> bool:
         try:
-            # Format data according to config
+            # Convert key for display
+            if len(key) == 0:
+                key_str = '(null)'
+            else:
+                try:
+                    key_str = key.decode('utf-8')
+                except UnicodeDecodeError:
+                    key_str = key.hex()
+
+            # Format value according to config
             if self._format == 'hex':
-                output_data = data.hex()
+                output_value = value.hex()
             elif self._format == 'base64':
-                output_data = base64.b64encode(data).decode('ascii')
+                output_value = base64.b64encode(value).decode('ascii')
             else:  # raw
-                output_data = data
+                output_value = value
 
             # Write to file with metadata header
             with open(self._path, 'ab') as f:
-                header = f'# {timestamp.isoformat()} - query: {query} - length: {len(data)} - format: {self._format}\n'
+                header = f'# {timestamp.isoformat()} - query: {query} - key: {key_str} - value_length: {len(value)} - format: {self._format}\n'
                 f.write(header.encode('utf-8'))
 
-                if isinstance(output_data, str):
-                    f.write(output_data.encode('utf-8'))
+                if isinstance(output_value, str):
+                    f.write(output_value.encode('utf-8'))
                 else:
-                    f.write(output_data)
+                    f.write(output_value)
 
                 f.write(b'\n')
 
-            logger.info(f'File handler: wrote {len(data)} bytes to {self._path} (format: {self._format})')
+            logger.info(f'File handler: wrote key-value to {self._path} (key={key_str[:30]}, value_length={len(value)}, format={self._format})')
             return True
 
         except IOError as e:
@@ -801,26 +865,37 @@ class FileHandler(PacketHandler):
 
 class ExecuteHandler(PacketHandler):
     '''
-        Execute a command with packet data as stdin. Passes metadata as environment variables.
+        Execute a command with packet value as stdin. Passes key and metadata as environment variables.
     '''
     def __init__(self, command: str, timeout: int = 30):
         self._command = command
         self._timeout = timeout
 
-    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+    def handle_kv(self, key: bytes, value: bytes, query: str, timestamp: datetime.datetime) -> bool:
         try:
+            # Convert key for environment variable
+            if len(key) == 0:
+                key_str = ''
+            else:
+                try:
+                    key_str = key.decode('utf-8')
+                except UnicodeDecodeError:
+                    key_str = key.hex()
+
             # Prepare environment variables with metadata
             env = os.environ.copy()
             env['MUMBOJUMBO_QUERY'] = query
             env['MUMBOJUMBO_TIMESTAMP'] = timestamp.isoformat()
-            env['MUMBOJUMBO_LENGTH'] = str(len(data))
+            env['MUMBOJUMBO_KEY'] = key_str
+            env['MUMBOJUMBO_KEY_LENGTH'] = str(len(key))
+            env['MUMBOJUMBO_VALUE_LENGTH'] = str(len(value))
 
             logger.debug(f'Execute handler: running command: {self._command}')
 
-            # Execute command with data as stdin
+            # Execute command with value as stdin
             result = subprocess.run(
                 self._command,
-                input=data,
+                input=value,
                 shell=True,
                 capture_output=True,
                 timeout=self._timeout,
@@ -828,7 +903,7 @@ class ExecuteHandler(PacketHandler):
             )
 
             if result.returncode == 0:
-                logger.info(f'Execute handler: command succeeded (exit code 0)')
+                logger.info(f'Execute handler: command succeeded (exit code 0, key={key_str[:30]})')
                 if result.stdout:
                     logger.debug(f'Execute handler stdout: {result.stdout.decode("utf-8", errors="replace")}')
                 return True
@@ -1449,25 +1524,32 @@ def main():
         # did a packet complete after reading the last fragment?
         #
         if not packet_engine.packet_outqueue.empty():
-            data = packet_engine.packet_outqueue.get()
+            packet = packet_engine.packet_outqueue.get()
 
-            # Ensure data is bytes for handlers
-            if not isinstance(data, bytes):
-                if isinstance(data, str):
-                    data = data.encode('utf-8')
-                else:
-                    data = str(data).encode('utf-8')
+            # All packets are now key-value tuples
+            if isinstance(packet, dict):
+                key = packet['key']
+                value = packet['value']
+                key_len = packet['key_len']
+            else:
+                # Should never happen with new implementation
+                logger.error(f'Unexpected packet type: {type(packet)}')
+                continue
 
             # Get timestamp for this packet
             timestamp = datetime.datetime.now(datetime.timezone.utc)
 
-            logger.info(f'Packet reassembled from query: {name}, length: {len(data)} bytes')
+            total_length = len(key) + len(value)
+            if key_len == 0:
+                logger.info(f'Packet reassembled from query: {name}, key: null, value_length: {len(value)} bytes')
+            else:
+                logger.info(f'Packet reassembled from query: {name}, key_len: {key_len}, value_length: {len(value)}, total: {total_length} bytes')
             logger.debug(f'Running handler pipeline with {len(handlers)} handler(s)')
 
-            # Run handler pipeline
+            # Run handler pipeline - all handlers now use handle_kv()
             for handler, handler_name in zip(handlers, handler_names):
                 try:
-                    success = handler.handle(data, name, timestamp)
+                    success = handler.handle_kv(key, value, name, timestamp)
                     if success:
                         logger.debug(f'{handler_name} handler completed successfully')
                     else:
