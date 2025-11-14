@@ -42,34 +42,38 @@ echo "Hello World" | ./mumbojumbo_client.py \
   -d .asd.qwe -
 
 # Send files (filename as key, contents as value)
-./mumbojumbo_client.py file1.txt file2.txt
+./mumbojumbo_client.py -r file1.txt file2.txt
 
 # Send explicit key-value pair
 ./mumbojumbo_client.py -k mykey -v myvalue
 
+# Send value only (null key)
+./mumbojumbo_client.py -v myvalue
+
 # Verbose mode with progress and statistics
-echo "test" | ./mumbojumbo_client.py --verbose
+echo "test" | ./mumbojumbo_client.py - --verbose
 
 # Control transmission rate (queries per second)
-./mumbojumbo_client.py file.bin --rate 20  # Send at 20 queries/second
+./mumbojumbo_client.py -r file.bin --rate 20  # Send at 20 queries/second
 ```
 
 ### Command Line Options
 
 - `--client-key <public_key>` - Server public key in `mj_cli_<hex>` format (or use `MUMBOJUMBO_CLIENT_KEY` env var)
 - `-d, --domain <domain>` - DNS domain suffix, e.g., `.asd.qwe` (or use `MUMBOJUMBO_DOMAIN` env var)
-- `-k, --key <key>` - Transmission key (for stdin or with -v; NOT allowed with files where filename is key)
-- `-v, --value <value>` - Transmission value (if not provided, reads from stdin or files)
+- `-k, --key <key>` - Transmission key (optional, for use with `-v` or `-`; NOT allowed with `-r` where filename is key)
+- `-v, --value <value>` - Transmission value (explicit value mode)
+- `-r, --read <file> [<file> ...]` - Files to send (filename as key, contents as value)
+- `-` - Read from stdin (POSIX-compliant, positional argument)
 - `--verbose` - Enable verbose output with real-time progress and statistics
 - `--rate <qps>` - Queries per second rate limit (default: 10)
-- `files` - Files to send (filename as key, contents as value), or `-` to read from stdin (POSIX-compliant)
 
 **Configuration Precedence:** CLI arguments > Environment variables
 
 ### Verbose Output Example
 
 ```bash
-$ ./mumbojumbo_client.py largefile.bin --verbose --rate 20
+$ ./mumbojumbo_client.py -r largefile.bin --verbose --rate 20
 Sending pair 1/1: key='largefile.bin', value=102400 bytes
 Progress: 1280/1280 sent (1250 succeeded, 30 failed)
 ✓ Sent 1280 queries: 1250 succeeded, 30 failed
@@ -93,15 +97,20 @@ The client operates in **key-value mode**, where every transmission consists of:
    echo "data" | ./mumbojumbo_client.py -k mykey -  # key="mykey"
    ```
 
-3. **Explicit key-value** (both `-k` and `-v`):
+3. **Value only** (null key with `-v`):
+   ```bash
+   ./mumbojumbo_client.py -v myvalue  # key=None, value="myvalue"
+   ```
+
+4. **Explicit key-value** (both `-k` and `-v`):
    ```bash
    ./mumbojumbo_client.py -k mykey -v myvalue
    ```
 
-4. **Files** (filename as key):
+5. **Files** (filename as key, use `-r` flag):
    ```bash
-   ./mumbojumbo_client.py file.txt  # key="file.txt", value=<file contents>
-   # Note: -k flag is NOT allowed with files
+   ./mumbojumbo_client.py -r file.txt  # key="file.txt", value=<file contents>
+   # Note: -k flag is NOT allowed with -r (filename becomes key)
    ```
 
 ## Protocol Details

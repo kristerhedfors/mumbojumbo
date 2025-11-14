@@ -647,7 +647,7 @@ class TestCLIIntegration:
         assert b'.test.com' in result.stdout
 
     def test_file_input(self):
-        """Should accept input from file (filename as key)."""
+        """Should accept input from file (filename as key) with -r flag."""
         # Generate test key
         server_privkey = nacl.public.PrivateKey.generate()
         key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
@@ -662,7 +662,7 @@ class TestCLIIntegration:
                 ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
                  '--client-key', key_str,
                  '-d', '.test.com',
-                 temp_path],  # File as positional argument
+                 '-r', temp_path],  # File with -r flag
                 capture_output=True
             )
             assert result.returncode == 0
@@ -735,7 +735,7 @@ class TestCLIIntegration:
                  '--client-key', key_str,
                  '-d', '.test.com',
                  '-k', 'should-be-rejected',  # This should cause error
-                 temp_path],
+                 '-r', temp_path],  # File with -r flag
                 capture_output=True
             )
             # Should fail with error about -k not allowed with files
