@@ -629,7 +629,7 @@ class TestCLIIntegration:
         assert result.returncode != 0
 
     def test_stdin_input(self):
-        """Should accept input from stdin with null key."""
+        """Should accept input from stdin with null key (POSIX-compliant -)."""
         # Generate test key
         server_privkey = nacl.public.PrivateKey.generate()
         key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
@@ -637,7 +637,8 @@ class TestCLIIntegration:
         result = subprocess.run(
             ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
              '--client-key', key_str,
-             '-d', '.test.com'],
+             '-d', '.test.com',
+             '-'],  # POSIX-compliant stdin marker
             input=b'test',
             capture_output=True
         )
@@ -693,7 +694,8 @@ class TestCLIIntegration:
         result = subprocess.run(
             ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
              '--client-key', key_str,
-             '-d', 'test.com'],  # No leading dot
+             '-d', 'test.com',  # No leading dot
+             '-'],  # POSIX-compliant stdin marker
             input=b'test',
             capture_output=True
         )
@@ -701,7 +703,7 @@ class TestCLIIntegration:
         assert b'Warning' in result.stderr or b'.test.com' in result.stdout
 
     def test_stdin_with_custom_key(self):
-        """Should accept -k argument with stdin input."""
+        """Should accept -k argument with stdin input (POSIX-compliant -)."""
         server_privkey = nacl.public.PrivateKey.generate()
         key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
 
@@ -709,7 +711,8 @@ class TestCLIIntegration:
             ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
              '--client-key', key_str,
              '-d', '.test.com',
-             '-k', 'my-custom-key'],
+             '-k', 'my-custom-key',
+             '-'],  # POSIX-compliant stdin marker
             input=b'test data from stdin',
             capture_output=True
         )

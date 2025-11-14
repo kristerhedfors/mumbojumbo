@@ -423,11 +423,11 @@ examples:
   # Note: -k/--key is NOT allowed with files
   %(prog)s --client-key mj_cli_abc123... -d .asd.qwe file1.txt file2.txt
 
-  # Send from stdin with null key (key=None)
-  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe
+  # Send from stdin with null key (key=None) - POSIX-compliant
+  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -
 
   # Send from stdin with custom key
-  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey
+  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey -
 
   # Use environment variables (no arguments needed)
   export MUMBOJUMBO_CLIENT_KEY=mj_cli_abc123...
@@ -467,7 +467,7 @@ Configuration precedence: CLI args > Environment variables
     parser.add_argument(
         'files',
         nargs='*',
-        help='Files to send (filename as key, contents as value)'
+        help='Files to send (filename as key, contents as value), or "-" to read from stdin'
     )
 
     args = parser.parse_args()
@@ -540,27 +540,30 @@ Configuration precedence: CLI args > Environment variables
             print("", file=sys.stderr)
 
     elif args.files:
-        # Reject -k/--key when sending files (filenames are keys)
-        if args.key is not None:
-            print("Error: Cannot use -k/--key with files (filenames are used as keys)", file=sys.stderr)
-            return 1
-
-        # Send files one at a time - load, send, release
-        for file_index, filepath in enumerate(args.files):
-            # Load current file only
-            try:
-                with open(filepath, 'rb') as f:
-                    file_contents = f.read()
-            except Exception as e:
-                print(f"Error reading file {filepath}: {e}", file=sys.stderr)
+        # Check if files contains "-" (stdin)
+        if '-' in args.files:
+            # POSIX-compliant: "-" means read from stdin
+            if len(args.files) > 1:
+                print("Error: Cannot mix '-' (stdin) with other files", file=sys.stderr)
                 return 1
 
-            # Send it immediately
-            key = filepath.encode('utf-8')
-            value = file_contents
+            # Read from stdin with optional key from -k/--key argument
+            try:
+                stdin_data = sys.stdin.buffer.read()
+            except Exception as e:
+                print(f"Error reading stdin: {e}", file=sys.stderr)
+                return 1
+
+            # Use key from -k/--key argument if provided, otherwise None (null key)
+            if args.key is not None:
+                key = args.key.encode('utf-8')
+            else:
+                key = None
+            value = stdin_data
 
             if args.verbose:
-                print(f"Sending pair {file_index + 1}/{len(args.files)}: key='{filepath}', value={len(value)} bytes", file=sys.stderr)
+                key_display = f"'{args.key}'" if args.key is not None else "'None'"
+                print(f"Sending pair 1/1: key={key_display}, value={len(value)} bytes", file=sys.stderr)
 
             try:
                 summary = await client_obj.send_async(
@@ -572,58 +575,66 @@ Configuration precedence: CLI args > Environment variables
                 if args.verbose:
                     print("", file=sys.stderr)  # Newline after progress
                     print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
-                    print("", file=sys.stderr)
             except Exception as e:
                 if args.verbose:
                     print("", file=sys.stderr)  # Newline after progress
-                print(f"Error sending file {filepath}: {e}", file=sys.stderr)
+                print(f"Error sending data: {e}", file=sys.stderr)
                 if args.verbose:
                     import traceback
                     traceback.print_exc(file=sys.stderr)
                 return 1
 
-            # file_contents goes out of scope here, can be garbage collected
+            if args.verbose:
+                print("", file=sys.stderr)
+        else:
+            # Reject -k/--key when sending files (filenames are keys)
+            if args.key is not None:
+                print("Error: Cannot use -k/--key with files (filenames are used as keys)", file=sys.stderr)
+                return 1
+
+            # Send files one at a time - load, send, release
+            for file_index, filepath in enumerate(args.files):
+                # Load current file only
+                try:
+                    with open(filepath, 'rb') as f:
+                        file_contents = f.read()
+                except Exception as e:
+                    print(f"Error reading file {filepath}: {e}", file=sys.stderr)
+                    return 1
+
+                # Send it immediately
+                key = filepath.encode('utf-8')
+                value = file_contents
+
+                if args.verbose:
+                    print(f"Sending pair {file_index + 1}/{len(args.files)}: key='{filepath}', value={len(value)} bytes", file=sys.stderr)
+
+                try:
+                    summary = await client_obj.send_async(
+                        key, value,
+                        rate_qps=args.rate,
+                        progress_callback=progress_callback if args.verbose else None,
+                        query_callback=query_callback
+                    )
+                    if args.verbose:
+                        print("", file=sys.stderr)  # Newline after progress
+                        print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
+                        print("", file=sys.stderr)
+                except Exception as e:
+                    if args.verbose:
+                        print("", file=sys.stderr)  # Newline after progress
+                    print(f"Error sending file {filepath}: {e}", file=sys.stderr)
+                    if args.verbose:
+                        import traceback
+                        traceback.print_exc(file=sys.stderr)
+                    return 1
+
+                # file_contents goes out of scope here, can be garbage collected
 
     else:
-        # Read from stdin with optional key from -k/--key argument
-        try:
-            stdin_data = sys.stdin.buffer.read()
-        except Exception as e:
-            print(f"Error reading stdin: {e}", file=sys.stderr)
-            return 1
-
-        # Use key from -k/--key argument if provided, otherwise None (null key)
-        if args.key is not None:
-            key = args.key.encode('utf-8')
-        else:
-            key = None
-        value = stdin_data
-
-        if args.verbose:
-            key_display = f"'{args.key}'" if args.key is not None else "'None'"
-            print(f"Sending pair 1/1: key={key_display}, value={len(value)} bytes", file=sys.stderr)
-
-        try:
-            summary = await client_obj.send_async(
-                key, value,
-                rate_qps=args.rate,
-                progress_callback=progress_callback if args.verbose else None,
-                query_callback=query_callback
-            )
-            if args.verbose:
-                print("", file=sys.stderr)  # Newline after progress
-                print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
-        except Exception as e:
-            if args.verbose:
-                print("", file=sys.stderr)  # Newline after progress
-            print(f"Error sending data: {e}", file=sys.stderr)
-            if args.verbose:
-                import traceback
-                traceback.print_exc(file=sys.stderr)
-            return 1
-
-        if args.verbose:
-            print("", file=sys.stderr)
+        # No files provided and no explicit -k/-v - error
+        print("Error: Must provide either files, '-' for stdin, or -k/-v for explicit key-value pair", file=sys.stderr)
+        return 1
 
     return 0
 
