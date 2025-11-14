@@ -190,12 +190,18 @@ class PublicFragment(Fragment):
         return ciphertext
 
     def deserialize(self, ciphertext):
+        # Validate ciphertext length before attempting decryption
+        # SealedBox requires at least 48 bytes (32 for ephemeral pubkey + 16 for MAC)
+        if len(ciphertext) < 48:
+            logger.debug(f'Ciphertext too short: {len(ciphertext)} bytes (minimum 48)')
+            return None
+
         plaintext = b''
         try:
             plaintext = self._sealedbox_decrypt.decrypt(ciphertext)
-        except:
-            logger.debug('decrypt exception:' + traceback.format_exc())
-            raise
+        except Exception as e:
+            logger.debug(f'Decrypt failed: {type(e).__name__}: {e}')
+            return None
         logger.debug('decrypted {0} bytes of data'.format(len(plaintext)))
         logger.debug('{0}'.format(repr(plaintext)))
         return super(PublicFragment, self).deserialize(plaintext)
@@ -238,7 +244,13 @@ class DnsPublicFragment(PublicFragment):
         logger.debug('DnsPublicFragment: deserialize() enter')
         if dnsname.endswith(self._domain):
             serb32 = dnsname[:-len(self._domain)].replace('.', '')
-            ser = self._b32dec(serb32)
+            try:
+                ser = self._b32dec(serb32)
+            except Exception as e:
+                # Invalid base32 encoding - likely not a mumbojumbo fragment
+                logger.debug(f'Base32 decode failed for {dnsname[:30]}: {type(e).__name__}')
+                return None
+
             val = super(DnsPublicFragment, self).deserialize(ser)
             if val is None:
                 logger.debug('DnsPublicFragment: deserialize() error')
@@ -249,6 +261,7 @@ class DnsPublicFragment(PublicFragment):
             msg = 'DnsPublicFragment: deserialize() invalid domain: '
             msg += dnsname[:10]
             logger.debug(msg)
+            return None
 
     def _b32enc(self, s):
         return base64.b32encode(s).replace(b'=', b'').lower().decode('ascii')
@@ -534,8 +547,9 @@ __config_skel__ = '''\
 [main]
 # Domain including leading dot
 domain = .asd.qwe
-# Network interface - macOS: en0, en1; Linux: eth0, wlan0
-network-interface = en0
+# Network interface - auto-detected or platform default
+# Common values: macOS (en0, en1), Linux (eth0, ens4, ens5, wlan0)
+network-interface = {network_interface}
 # Handler pipeline: comma-separated list of handlers (REQUIRED)
 # Available handlers: stdout, smtp, file, execute
 handlers = stdout
@@ -1233,6 +1247,16 @@ def main():
     if opt.gen_conf:
         (mumbojumbo_server_key, mumbojumbo_client_key) = get_nacl_keypair_hex()
 
+        # Auto-detect network interface
+        detected_interface = detect_cloud_network_interface()
+        if not detected_interface:
+            # Fallback to sensible defaults based on platform
+            import platform
+            if platform.system() == 'Darwin':
+                detected_interface = 'en0'  # macOS default
+            else:
+                detected_interface = 'eth0'  # Linux default
+
         # Find available filename: mumbojumbo.conf, mumbojumbo.conf.1, etc.
         filename = 'mumbojumbo.conf'
         counter = 0
@@ -1243,12 +1267,14 @@ def main():
         # Write config to file
         config_content = __config_skel__.format(
             mumbojumbo_server_key=mumbojumbo_server_key,
-            mumbojumbo_client_key=mumbojumbo_client_key
+            mumbojumbo_client_key=mumbojumbo_client_key,
+            network_interface=detected_interface
         )
         with open(filename, 'w') as f:
             f.write(config_content)
 
         print(f'Created {filename}')
+        print(f'Auto-detected network interface: {detected_interface}')
         sys.exit()
 
     if opt.gen_keys:
@@ -1497,8 +1523,7 @@ def main():
     # Keys are passed as strings and parsed transparently inside PublicFragment
     #
     pf_cls = DnsPublicFragment.bind(domain=domain,
-                                    server_key=server_key_str,
-                                    client_key=client_key_str)
+                                    server_key=server_key_str)
     #
     # build packet engine based on fragment class
     #
@@ -1526,14 +1551,14 @@ def main():
         logger.debug('read DNS query for: ' + name)
         #
         # try-catch to prevent deserialization exceptions from causing
-        # a DOS attack.
+        # a DOS attack. Most errors are now handled gracefully in deserialize()
+        # methods, so this is a safety net for unexpected errors only.
         #
         try:
             packet_engine.from_wire(name)
-        except:
-            msg = 'exception in from_wire(): '
-            msg += traceback.format_exc()
-            logger.info(msg)
+        except Exception as e:
+            # Log at debug level - most "errors" are just invalid DNS queries
+            logger.debug(f'from_wire() error for {name[:30]}: {type(e).__name__}: {e}')
             continue
         #
         # did a packet complete after reading the last fragment?

@@ -39,6 +39,74 @@ class TestPublicFragment:
         multi_serialize_deserialize(Fragment)
 
 
+class TestInvalidInputHandling:
+    """Test graceful handling of invalid inputs."""
+
+    def test_public_fragment_short_ciphertext(self):
+        """Test that PublicFragment handles ciphertext < 48 bytes gracefully."""
+        server_privkey = nacl.public.PrivateKey.generate()
+        pfcls = PublicFragment.bind(server_key=server_privkey)
+        pf = pfcls()
+
+        # Test various short ciphertext lengths (all < 48 bytes)
+        for length in [0, 1, 10, 20, 47]:
+            short_ciphertext = b'x' * length
+            result = pf.deserialize(short_ciphertext)
+            assert result is None, f"Should return None for {length}-byte ciphertext"
+
+    def test_public_fragment_invalid_ciphertext(self):
+        """Test that PublicFragment handles corrupted ciphertext gracefully."""
+        server_privkey = nacl.public.PrivateKey.generate()
+        pfcls = PublicFragment.bind(server_key=server_privkey)
+        pf = pfcls()
+
+        # Test with random data that's long enough but not valid ciphertext
+        invalid_ciphertext = nacl.public.random(100)
+        result = pf.deserialize(invalid_ciphertext)
+        assert result is None, "Should return None for invalid ciphertext"
+
+    def test_dns_public_fragment_invalid_base32(self):
+        """Test that DnsPublicFragment handles invalid base32 encoding gracefully."""
+        server_privkey = nacl.public.PrivateKey.generate()
+        dpfcls = DnsPublicFragment.bind(server_key=server_privkey, domain='.example.com')
+        dpf = dpfcls()
+
+        # Test with DNS names that are not valid base32
+        invalid_names = [
+            'ns1.example.com',  # Not base32 data
+            'test-invalid.example.com',  # Contains hyphens (not base32)
+            'hello.world.example.com',  # Contains non-base32 chars
+            '!!!invalid!!!.example.com',  # Special characters
+        ]
+
+        for name in invalid_names:
+            result = dpf.deserialize(name)
+            assert result is None, f"Should return None for invalid DNS name: {name}"
+
+    def test_dns_public_fragment_wrong_domain(self):
+        """Test that DnsPublicFragment handles wrong domain gracefully."""
+        server_privkey = nacl.public.PrivateKey.generate()
+        dpfcls = DnsPublicFragment.bind(server_key=server_privkey, domain='.example.com')
+        dpf = dpfcls()
+
+        # DNS name with wrong domain
+        wrong_domain = 'valid.base32.data.wrongdomain.org'
+        result = dpf.deserialize(wrong_domain)
+        assert result is None, "Should return None for wrong domain"
+
+    def test_dns_public_fragment_valid_base32_invalid_ciphertext(self):
+        """Test DNS fragment with valid base32 but invalid/short ciphertext."""
+        server_privkey = nacl.public.PrivateKey.generate()
+        dpfcls = DnsPublicFragment.bind(server_key=server_privkey, domain='.example.com')
+        dpf = dpfcls()
+
+        # Create a valid base32 string that decodes to short data
+        # 'aaaa' in base32 decodes to 3 bytes
+        short_valid_base32 = 'aaaa.example.com'
+        result = dpf.deserialize(short_valid_base32)
+        assert result is None, "Should return None for short but valid base32"
+
+
 class TestPacketEngine:
     """Test packet assembly and fragment handling."""
 
