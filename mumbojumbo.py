@@ -534,8 +534,9 @@ __config_skel__ = '''\
 [main]
 # Domain including leading dot
 domain = .asd.qwe
-# Network interface - macOS: en0, en1; Linux: eth0, wlan0
-network-interface = en0
+# Network interface - auto-detected or platform default
+# Common values: macOS (en0, en1), Linux (eth0, ens4, ens5, wlan0)
+network-interface = {network_interface}
 # Handler pipeline: comma-separated list of handlers (REQUIRED)
 # Available handlers: stdout, smtp, file, execute
 handlers = stdout
@@ -1233,6 +1234,16 @@ def main():
     if opt.gen_conf:
         (mumbojumbo_server_key, mumbojumbo_client_key) = get_nacl_keypair_hex()
 
+        # Auto-detect network interface
+        detected_interface = detect_cloud_network_interface()
+        if not detected_interface:
+            # Fallback to sensible defaults based on platform
+            import platform
+            if platform.system() == 'Darwin':
+                detected_interface = 'en0'  # macOS default
+            else:
+                detected_interface = 'eth0'  # Linux default
+
         # Find available filename: mumbojumbo.conf, mumbojumbo.conf.1, etc.
         filename = 'mumbojumbo.conf'
         counter = 0
@@ -1243,12 +1254,14 @@ def main():
         # Write config to file
         config_content = __config_skel__.format(
             mumbojumbo_server_key=mumbojumbo_server_key,
-            mumbojumbo_client_key=mumbojumbo_client_key
+            mumbojumbo_client_key=mumbojumbo_client_key,
+            network_interface=detected_interface
         )
         with open(filename, 'w') as f:
             f.write(config_content)
 
         print(f'Created {filename}')
+        print(f'Auto-detected network interface: {detected_interface}')
         sys.exit()
 
     if opt.gen_keys:
