@@ -59,7 +59,7 @@ def multi_serialize_deserialize(serialize_deserialize):
     Tests with:
     - zero-length data
     - one byte length data
-    - 100 random data lengths between 0 and 4096
+    - 100 random data lengths between 0 and 255 (u8 constraint)
     """
     def _multi_serialize_deserialize(frag_cls):
         """Test deserialize(serialize()) with various data sizes."""
@@ -67,7 +67,8 @@ def multi_serialize_deserialize(serialize_deserialize):
         frag_count = random.randint(frag_index + 1, frag_index + 100)
         datalist = [b'']
         datalist += [b'a']
-        datalist += [os.urandom(random.randint(0, 4096)) for i in range(100)]
+        # Fragment data limited to 255 bytes max (u8 data_len constraint)
+        datalist += [os.urandom(random.randint(0, 255)) for i in range(100)]
         for data in datalist:
             serialize_deserialize(frag_cls, frag_index, frag_count, data)
     return _multi_serialize_deserialize
@@ -102,7 +103,7 @@ def multi_public_serialize_deserialize(public_serialize_deserialize):
     Tests with:
     - zero-length data
     - one byte length data
-    - 100 random data lengths between 0 and 4096
+    - 100 random data lengths between 0 and 255 (u8 constraint)
     """
     def _multi_public_serialize_deserialize(pfcls1, pfcls2):
         """Test encrypted deserialize(serialize()) with various data sizes."""
@@ -110,7 +111,8 @@ def multi_public_serialize_deserialize(public_serialize_deserialize):
         frag_count = random.randint(frag_index + 1, frag_index + 100)
         datalist = [b'']
         datalist += [b'a']
-        datalist += [nacl.public.random(random.randint(0, 4096))
+        # Fragment data limited to 255 bytes max (u8 data_len constraint)
+        datalist += [nacl.public.random(random.randint(0, 255))
                      for i in range(100)]
         for data in datalist:
             public_serialize_deserialize(pfcls1, pfcls2, frag_index,

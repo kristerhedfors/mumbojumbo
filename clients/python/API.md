@@ -2,21 +2,21 @@
 
 ## Programmatic Interface
 
-The `MumbojumboClient` class provides a clean, modular interface for sending data via DNS queries.
+The `MumbojumboClient` class provides a clean, user-friendly interface for sending key-value pairs via DNS queries.
 
 ### Basic Usage
 
 ```python
-from mumbojumbo_client import MumbojumboClient, parse_key_hex
+from mumbojumbo_client import MumbojumboClient
 
-# Parse server public key
-server_client_key = parse_key_hex('mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e')
+# Initialize client (key parsing is automatic)
+client = MumbojumboClient(
+    server_client_key='mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e',
+    domain='.example.com'
+)
 
-# Initialize client
-client = MumbojumboClient(server_client_key, '.asd.qwe')
-
-# Send data
-results = client.send_data(b"Hello World")
+# Send key-value pair
+results = client.send(b'filename.txt', b'Hello World')
 
 # Check results
 for dns_query, success in results:
@@ -27,7 +27,7 @@ for dns_query, success in results:
 
 ```python
 # Just generate DNS queries without sending them
-queries = client.generate_queries(b"Test data")
+queries = client.generate_queries(b'mykey', b'myvalue')
 
 for query in queries:
     print(query)
@@ -36,81 +36,73 @@ for query in queries:
 
 ### API Reference
 
-#### `MumbojumboClient(server_public_key, domain, max_fragment_size=80)`
+#### `MumbojumboClient(server_client_key, domain, max_fragment_size=None)`
 
 Initialize a new client instance.
 
 **Parameters:**
-- `server_public_key`: Server's public key (bytes or `nacl.public.PublicKey`)
-- `domain`: DNS domain suffix (e.g., `'.asd.qwe'`)
-- `max_fragment_size`: Maximum bytes per fragment (default: 80)
+- `server_client_key`: Server's public key (accepts `mj_cli_<hex>` string, bytes, or `nacl.public.PublicKey`)
+- `domain`: DNS domain suffix (e.g., `'.example.com'`)
+- `max_fragment_size`: Maximum bytes per fragment (default: auto-calculated from domain)
 
 **Features:**
-- Automatic packet ID management (increments with each send)
+- Automatic key parsing (handles `mj_cli_` hex format)
+- Automatic packet ID management (cryptographically random, auto-increments)
+- Auto-calculated fragment sizing based on domain length
 - Auto-prepends dot to domain if missing
 - Accepts public key as bytes or NaCl PublicKey object
 
-#### `send_data(data)`
+#### `send(key, value)`
 
-Send data via DNS queries.
+Send key-value pair via DNS queries.
 
 **Parameters:**
-- `data`: Bytes to send
+- `key`: Key bytes or `None` (for null/zero-length key)
+- `value`: Value bytes (MUST be at least 1 byte, cannot be `None` or empty)
 
 **Returns:**
 - `list`: List of `(dns_query, success)` tuples
 
 **Example:**
 ```python
-results = client.send_data(b"My message")
+results = client.send(b'filename.txt', b'Hello, World!')
 
 # Check if all fragments sent successfully
 all_success = all(success for _, success in results)
 print(f"All fragments sent: {all_success}")
 ```
 
-#### `generate_queries(data)`
+#### `generate_queries(key, value)`
 
-Generate DNS queries without sending them.
+Generate DNS queries for key-value pair without sending them.
 
 **Parameters:**
-- `data`: Bytes to send
+- `key`: Key bytes or `None` (for null/zero-length key)
+- `value`: Value bytes (MUST be at least 1 byte, cannot be `None` or empty)
 
 **Returns:**
 - `list`: List of DNS query strings
 
 **Example:**
 ```python
-queries = client.generate_queries(b"Test")
+queries = client.generate_queries(b'mykey', b'myvalue')
 print(f"Generated {len(queries)} queries")
 ```
 
-### Helper Functions
+### Low-Level Functions (Advanced)
 
-#### `parse_key_hex(key_str)`
+The following functions are available for custom implementations or understanding internals:
 
-Parse a hex-encoded public key in `mj_cli_<hex>` format.
-
-**Parameters:**
-- `key_str`: Key string (e.g., `'mj_cli_abc123...'`)
-
-**Returns:**
-- `bytes`: 32-byte public key
-
-**Raises:**
-- `ValueError`: If key format is invalid
-
-#### Low-Level Functions
-
-The following functions are available for custom implementations:
-
-- `create_fragment(packet_id, frag_index, frag_count, frag_data)` - Build fragment with 12-byte header
+- `create_fragment(packet_id, frag_index, frag_count, frag_data, key_len=0)` - Build fragment with 19-byte header
 - `encrypt_fragment(plaintext, server_client_key)` - Encrypt with NaCl SealedBox
 - `base32_encode(data)` - Base32 encode (lowercase, no padding)
 - `split_to_labels(data, max_len=63)` - Split into DNS labels
 - `create_dns_query(encrypted, domain)` - Create full DNS query name
 - `send_dns_query(dns_name)` - Send query via `dig` command
-- `fragment_data(data, max_fragment_size=80)` - Split data into chunks
+- `fragment_data(data, max_fragment_size)` - Split data into chunks
+- `calculate_safe_max_fragment_data_len(domain)` - Calculate safe max fragment size
+
+**Note:** You typically don't need these functions - `MumbojumboClient` handles everything internally.
 
 ## Example Scripts
 
@@ -118,58 +110,58 @@ The following functions are available for custom implementations:
 
 ```python
 #!/usr/bin/env python3
-from mumbojumbo_client import MumbojumboClient, parse_key_hex
+from mumbojumbo_client import MumbojumboClient
 
 # Configuration
 SERVER_KEY = 'mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e'
-DOMAIN = '.asd.qwe'
+DOMAIN = '.example.com'
 
 # Read file
 with open('message.txt', 'rb') as f:
-    data = f.read()
+    file_data = f.read()
 
-# Send via DNS
-client = MumbojumboClient(parse_key_hex(SERVER_KEY), DOMAIN)
-results = client.send_data(data)
+# Send via DNS with filename as key
+client = MumbojumboClient(SERVER_KEY, DOMAIN)
+results = client.send(b'message.txt', file_data)
 
 # Report
 success_count = sum(1 for _, success in results if success)
 print(f"Sent {success_count}/{len(results)} fragments")
 ```
 
-### Send Multiple Messages
+### Send Multiple Key-Value Pairs
 
 ```python
 #!/usr/bin/env python3
-from mumbojumbo_client import MumbojumboClient, parse_key_hex
+from mumbojumbo_client import MumbojumboClient
 
-SERVER_KEY = parse_key_hex('mj_cli_...')
-client = MumbojumboClient(SERVER_KEY, '.asd.qwe')
+client = MumbojumboClient('mj_cli_...', '.example.com')
 
-messages = [
-    b"First message",
-    b"Second message",
-    b"Third message"
+# Send multiple key-value pairs
+pairs = [
+    (b'config.json', b'{"setting": "value"}'),
+    (b'data.csv', b'col1,col2\n1,2'),
+    (None, b'Anonymous message')  # None key = null/empty key
 ]
 
-for msg in messages:
-    results = client.send_data(msg)
+for key, value in pairs:
+    results = client.send(key, value)
     success = all(s for _, s in results)
-    print(f"Sent '{msg.decode()}': {'✓' if success else '✗'}")
+    key_display = key.decode() if key else 'None'
+    print(f"Sent key='{key_display}': {'✓' if success else '✗'}")
 ```
 
 ### Custom DNS Sending
 
 ```python
 #!/usr/bin/env python3
-from mumbojumbo_client import MumbojumboClient, parse_key_hex
+from mumbojumbo_client import MumbojumboClient
 import dns.resolver  # dnspython library
 
-SERVER_KEY = parse_key_hex('mj_cli_...')
-client = MumbojumboClient(SERVER_KEY, '.asd.qwe')
+client = MumbojumboClient('mj_cli_...', '.example.com')
 
 # Generate queries without sending
-queries = client.generate_queries(b"Test data")
+queries = client.generate_queries(b'mykey', b'myvalue')
 
 # Send via custom DNS resolver
 resolver = dns.resolver.Resolver()
