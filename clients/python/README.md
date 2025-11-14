@@ -28,24 +28,24 @@ export MUMBOJUMBO_CLIENT_KEY=mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526f
 export MUMBOJUMBO_DOMAIN=.asd.qwe
 
 # Send from stdin with null key (key=None)
-echo "Hello World" | ./mumbojumbo-client.py
+echo "Hello World" | ./mumbojumbo_client.py
 
 # Send from stdin with custom key
-echo "Hello World" | ./mumbojumbo-client.py -k mykey
+echo "Hello World" | ./mumbojumbo_client.py -k mykey
 
 # Option 2: Use command-line arguments
-echo "Hello World" | ./mumbojumbo-client.py \
+echo "Hello World" | ./mumbojumbo_client.py \
   --client-key mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
   -d .asd.qwe
 
 # Send files (filename as key, contents as value)
-./mumbojumbo-client.py file1.txt file2.txt
+./mumbojumbo_client.py file1.txt file2.txt
 
 # Send explicit key-value pair
-./mumbojumbo-client.py -k mykey -v myvalue
+./mumbojumbo_client.py -k mykey -v myvalue
 
 # Verbose mode for debugging
-echo "test" | ./mumbojumbo-client.py --verbose
+echo "test" | ./mumbojumbo_client.py --verbose
 ```
 
 ### Command Line Options
@@ -69,22 +69,22 @@ The client operates in **key-value mode**, where every transmission consists of:
 
 1. **Stdin with null key** (no `-k` flag):
    ```bash
-   echo "data" | ./mumbojumbo-client.py  # key=None
+   echo "data" | ./mumbojumbo_client.py  # key=None
    ```
 
 2. **Stdin with custom key** (with `-k` flag):
    ```bash
-   echo "data" | ./mumbojumbo-client.py -k mykey  # key="mykey"
+   echo "data" | ./mumbojumbo_client.py -k mykey  # key="mykey"
    ```
 
 3. **Explicit key-value** (both `-k` and `-v`):
    ```bash
-   ./mumbojumbo-client.py -k mykey -v myvalue
+   ./mumbojumbo_client.py -k mykey -v myvalue
    ```
 
 4. **Files** (filename as key):
    ```bash
-   ./mumbojumbo-client.py file.txt  # key="file.txt", value=<file contents>
+   ./mumbojumbo_client.py file.txt  # key="file.txt", value=<file contents>
    # Note: -k flag is NOT allowed with files
    ```
 

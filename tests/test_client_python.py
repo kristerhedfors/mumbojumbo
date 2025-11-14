@@ -22,7 +22,7 @@ import pytest
 import nacl.public
 
 # Import client module
-client_path = os.path.join(os.path.dirname(__file__), '..', 'clients', 'python', 'mumbojumbo-client.py')
+client_path = os.path.join(os.path.dirname(__file__), '..', 'clients', 'python', 'mumbojumbo_client.py')
 import importlib.util
 spec = importlib.util.spec_from_file_location("mumbojumbo_client", client_path)
 client = importlib.util.module_from_spec(spec)
@@ -612,7 +612,7 @@ class TestCLIIntegration:
     def test_help(self):
         """Help command should work."""
         result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo-client.py', '--help'],
+            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py', '--help'],
             capture_output=True,
             text=True
         )
@@ -622,7 +622,7 @@ class TestCLIIntegration:
     def test_missing_required_args(self):
         """Missing required args should fail."""
         result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo-client.py'],
+            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py'],
             capture_output=True,
             text=True
         )
@@ -635,7 +635,7 @@ class TestCLIIntegration:
         key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
 
         result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
+            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
              '--client-key', key_str,
              '-d', '.test.com'],
             input=b'test',
@@ -658,7 +658,7 @@ class TestCLIIntegration:
 
         try:
             result = subprocess.run(
-                ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
+                ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
                  '--client-key', key_str,
                  '-d', '.test.com',
                  temp_path],  # File as positional argument
@@ -675,7 +675,7 @@ class TestCLIIntegration:
         key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
 
         result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
+            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
              '--client-key', key_str,
              '-d', '.test.com',
              '-k', 'mykey',
@@ -691,7 +691,7 @@ class TestCLIIntegration:
         key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
 
         result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
+            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
              '--client-key', key_str,
              '-d', 'test.com'],  # No leading dot
             input=b'test',
@@ -706,7 +706,7 @@ class TestCLIIntegration:
         key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
 
         result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
+            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
              '--client-key', key_str,
              '-d', '.test.com',
              '-k', 'my-custom-key'],
@@ -728,7 +728,7 @@ class TestCLIIntegration:
 
         try:
             result = subprocess.run(
-                ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
+                ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
                  '--client-key', key_str,
                  '-d', '.test.com',
                  '-k', 'should-be-rejected',  # This should cause error

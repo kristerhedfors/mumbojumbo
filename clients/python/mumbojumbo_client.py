@@ -2,8 +2,18 @@
 """
 Mumbojumbo DNS Client - Reference Implementation
 
-Sends data through DNS queries using the mumbojumbo protocol.
+Sends key-value pairs through DNS queries using the mumbojumbo protocol.
 Minimalist design: only requires pynacl for crypto.
+
+Usage as library:
+    from mumbojumbo_client import MumbojumboClient
+
+    client = MumbojumboClient('mj_cli_abc123...', '.example.com')
+    client.send(b'filename.txt', b'Hello, World!')
+
+Usage from CLI:
+    ./mumbojumbo_client.py --client-key mj_cli_abc123... -d .example.com -k mykey -v myvalue
+    echo "data" | ./mumbojumbo_client.py --client-key mj_cli_abc123... -d .example.com
 """
 
 import sys
@@ -139,14 +149,13 @@ def fragment_data(data, max_fragment_size):
 
 class MumbojumboClient:
     """
-    Modular Mumbojumbo DNS client for sending data via DNS queries.
+    User-friendly Mumbojumbo DNS client for sending key-value pairs via DNS.
 
-    This class provides a clean programmatic interface for:
-    - Sending single or multi-fragment messages
-    - Encrypting data with server's public key
-    - Generating DNS queries
-    - Optionally sending queries to DNS resolver
-    - Automatic packet ID management
+    Simple interface:
+    - send(key, value) - Send key-value pair immediately
+    - generate_queries(key, value) - Generate DNS queries without sending
+
+    All fragmentation, encryption, and protocol handling is internal.
     """
 
     def __init__(self, server_client_key, domain, max_fragment_size=None):
@@ -157,6 +166,10 @@ class MumbojumboClient:
             server_client_key: Server's public key (mj_cli_ hex string, bytes, or nacl.public.PublicKey)
             domain: DNS domain suffix (e.g., '.asd.qwe')
             max_fragment_size: Maximum bytes per fragment (default: auto-calculated from domain)
+
+        Example:
+            client = MumbojumboClient('mj_cli_abc123...', '.example.com')
+            client.send(b'filename.txt', b'file contents...')
         """
         # Auto-parse hex key format if string is provided
         if isinstance(server_client_key, str):
@@ -197,23 +210,49 @@ class MumbojumboClient:
         self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFFFFFFFFFF
         return packet_id
 
-    def _generate_dns_queries(self, data, key_len=0):
-        """
-        Internal method to generate DNS queries from data.
+    def _validate_key_value(self, key, value):
+        """Validate and normalize key-value pair."""
+        # Handle key: None is allowed and converts to empty bytes
+        if key is None:
+            key = b''
 
-        Args:
-            data: Bytes to send
-            key_len: Length of key in data (0 for data-only mode)
+        # Validate value: Must be non-empty bytes
+        if value is None:
+            raise ValueError('Value cannot be None - must be bytes with at least 1 byte')
+        if not isinstance(value, bytes):
+            raise TypeError('Value must be bytes (not None)')
+        if len(value) == 0:
+            raise ValueError('Value must be at least 1 byte')
 
-        Returns:
-            List of DNS query strings
+        # Validate key
+        if not isinstance(key, bytes):
+            raise TypeError('Key must be bytes or None')
+        if len(key) > 255:
+            raise ValueError('Key length cannot exceed 255 bytes')
+
+        return key, value
+
+    def _generate_dns_queries(self, key, value):
         """
+        Internal: Generate DNS queries from key-value pair.
+
+        Handles all protocol details: combines key+value, fragments, encrypts, encodes.
+        """
+        # Validate inputs
+        key, value = self._validate_key_value(key, value)
+
+        # Combine key and value into single data blob
+        data = key + value
+        key_len = len(key)
+
+        # Get packet ID
         packet_id = self._get_next_packet_id()
 
         # Fragment data
         fragments = fragment_data(data, self.max_fragment_size)
         frag_count = len(fragments)
 
+        # Generate DNS query for each fragment
         queries = []
         for frag_index, frag_data in enumerate(fragments):
             # Create fragment with header (key_len same for all fragments)
@@ -228,7 +267,7 @@ class MumbojumboClient:
 
         return queries
 
-    def send_key_val(self, key, value):
+    def send(self, key, value):
         """
         Send key-value pair via DNS queries.
 
@@ -238,40 +277,22 @@ class MumbojumboClient:
 
         Returns:
             List of (dns_query, success) tuples
+
+        Example:
+            results = client.send(b'filename.txt', b'Hello, World!')
+            for dns_query, success in results:
+                print(f"Query: {dns_query}, Success: {success}")
         """
-        # Handle key: None is allowed and converts to empty bytes
-        if key is None:
-            key = b''
+        queries = self._generate_dns_queries(key, value)
 
-        # Validate value: Must be non-empty bytes
-        if value is None:
-            raise ValueError('Value cannot be None - must be bytes with at least 1 byte')
-        if not isinstance(value, bytes):
-            raise TypeError('Value must be bytes (not None)')
-        if len(value) == 0:
-            raise ValueError('Value must be at least 1 byte')
-
-        # Validate key
-        if not isinstance(key, bytes):
-            raise TypeError('Key must be bytes or None')
-        if len(key) > 255:
-            raise ValueError('Key length cannot exceed 255 bytes')
-
-        # Combine key and value
-        data = key + value
-        key_len = len(key)
-
-        # Generate queries with key_len
-        queries = self._generate_dns_queries(data, key_len)
-
-        # Send queries
+        # Send each query
         results = []
         for dns_name in queries:
             success = send_dns_query(dns_name)
             results.append((dns_name, success))
         return results
 
-    def generate_queries_key_val(self, key, value):
+    def generate_queries(self, key, value):
         """
         Generate key-value DNS queries without sending them.
 
@@ -281,30 +302,22 @@ class MumbojumboClient:
 
         Returns:
             List of DNS query strings
+
+        Example:
+            queries = client.generate_queries(b'mykey', b'myvalue')
+            for query in queries:
+                print(query)
         """
-        # Handle key: None is allowed and converts to empty bytes
-        if key is None:
-            key = b''
+        return self._generate_dns_queries(key, value)
 
-        # Validate value: Must be non-empty bytes
-        if value is None:
-            raise ValueError('Value cannot be None - must be bytes with at least 1 byte')
-        if not isinstance(value, bytes):
-            raise TypeError('Value must be bytes (not None)')
-        if len(value) == 0:
-            raise ValueError('Value must be at least 1 byte')
+    # Legacy aliases for backwards compatibility with tests
+    def send_key_val(self, key, value):
+        """Legacy alias for send(). Use send() instead."""
+        return self.send(key, value)
 
-        # Validate key
-        if not isinstance(key, bytes):
-            raise TypeError('Key must be bytes or None')
-        if len(key) > 255:
-            raise ValueError('Key length cannot exceed 255 bytes')
-
-        # Combine key and value
-        data = key + value
-        key_len = len(key)
-
-        return self._generate_dns_queries(data, key_len)
+    def generate_queries_key_val(self, key, value):
+        """Legacy alias for generate_queries(). Use generate_queries() instead."""
+        return self.generate_queries(key, value)
 
 
 def main():
@@ -404,7 +417,7 @@ Configuration precedence: CLI args > Environment variables
             print(f"Sending pair 1/1: key='{args.key}', value={len(value)} bytes", file=sys.stderr)
 
         try:
-            results = client_obj.send_key_val(key, value)
+            results = client_obj.send(key, value)
         except Exception as e:
             print(f"Error sending key-value pair: {e}", file=sys.stderr)
             if args.verbose:
@@ -502,7 +515,7 @@ Configuration precedence: CLI args > Environment variables
             print(f"Sending pair 1/1: key={key_display}, value={len(value)} bytes", file=sys.stderr)
 
         try:
-            results = client_obj.send_key_val(key, value)
+            results = client_obj.send(key, value)
         except Exception as e:
             print(f"Error sending key-value pair: {e}", file=sys.stderr)
             if args.verbose:
