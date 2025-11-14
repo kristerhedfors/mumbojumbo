@@ -102,15 +102,15 @@ class TestFragmentCreation:
         assert fragment[17:18] == b'\x00'  # key_len = 0
 
     def test_max_size_fragment(self):
-        """Test maximum size fragment."""
-        frag_data = b'X' * client.MAX_FRAG_DATA_LEN
+        """Test maximum size fragment (u8 limit of 255 bytes)."""
+        frag_data = b'X' * 255
         fragment = client.create_fragment(0x0001, 0, 1, frag_data)
-        assert len(fragment) == 18 + client.MAX_FRAG_DATA_LEN  # 18-byte header
+        assert len(fragment) == 18 + 255  # 18-byte header + 255 bytes data
 
     def test_oversized_fragment_fails(self):
-        """Fragment data over max size should fail."""
-        frag_data = b'X' * (client.MAX_FRAG_DATA_LEN + 1)
-        with pytest.raises(ValueError, match='Fragment data too large'):
+        """Fragment data over u8 limit (255 bytes) should fail."""
+        frag_data = b'X' * 256
+        with pytest.raises(ValueError, match='exceeds u8 limit'):
             client.create_fragment(0x0001, 0, 1, frag_data)
 
     def test_invalid_packet_id(self):
@@ -149,7 +149,7 @@ class TestKeyValueFragments:
 
     def test_key_len_max_value(self):
         """Test key_len with maximum u8 value (255)."""
-        frag_data = b'X' * client.MAX_FRAG_DATA_LEN
+        frag_data = b'X' * 80  # Use reasonable fragment size
         fragment = client.create_fragment(0x0001, 0, 1, frag_data, key_len=255)
 
         # Verify key_len in header

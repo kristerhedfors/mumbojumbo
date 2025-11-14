@@ -16,7 +16,6 @@ import subprocess
 import nacl.public
 
 
-MAX_FRAG_DATA_LEN = 80
 DNS_LABEL_MAX_LEN = 63
 
 
@@ -72,8 +71,8 @@ def create_fragment(packet_id, frag_index, frag_count, frag_data, key_len=0):
         raise ValueError(f'Invalid frag_index {frag_index} for frag_count {frag_count}')
     if not (0 <= frag_count <= 0xFFFFFFFF):
         raise ValueError(f'frag_count out of u32 range: {frag_count}')
-    if len(frag_data) > MAX_FRAG_DATA_LEN:
-        raise ValueError(f'Fragment data too large: {len(frag_data)} > {MAX_FRAG_DATA_LEN}')
+    if not (0 <= len(frag_data) <= 255):
+        raise ValueError(f'Fragment data length {len(frag_data)} exceeds u8 limit (0-255)')
     if not (0 <= key_len <= 255):
         raise ValueError(f'key_len out of u8 range: {key_len}')
 
@@ -129,7 +128,7 @@ def send_dns_query(dns_name):
         return False
 
 
-def fragment_data(data, max_fragment_size=MAX_FRAG_DATA_LEN):
+def fragment_data(data, max_fragment_size):
     """Split data into fragments of max_fragment_size bytes."""
     if not data:
         # Send at least one empty fragment
