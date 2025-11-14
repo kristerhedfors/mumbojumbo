@@ -258,10 +258,19 @@ client.send_kv(b"report.pdf", pdf_contents)
 - Label + data transmissions
 - Any application requiring binary key-value pairs
 
-**Limitations:**
-- Key length cannot exceed 255 bytes (u8 constraint)
+**Validation Rules:**
+- **Key**: May be zero-length (`key_len=0`) or up to 255 bytes
+  - In client APIs: `key=None` converts to zero-length key (`b''`)
+  - Zero-length key = "null key" or "data-only mode"
+- **Value**: MUST be at least 1 byte (non-empty)
+  - In client APIs: `value=None` or `value=b''` raises `ValueError`
+  - Empty values are not permitted in key-value mode
 - Key + value combined size subject to normal fragmentation limits
 - Key length is the same across all fragments of a packet
+
+**Limitations:**
+- Key length cannot exceed 255 bytes (u8 constraint)
+- Value cannot be empty (minimum 1 byte required)
 
 ---
 

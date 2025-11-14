@@ -506,31 +506,40 @@ class TestKeyValueEndToEnd:
         assert len(queries) > 0
 
     def test_send_key_val_with_none_key(self):
-        """Test sending with None key."""
+        """Test sending with None key - should work (converts to empty bytes)."""
         server_privkey = nacl.public.PrivateKey.generate()
         client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
 
-        # None key should work
+        # None key should work (converts to b'')
         queries = client_obj.generate_queries_key_val(None, b'value')
         assert len(queries) > 0
 
-    def test_send_key_val_with_none_value(self):
-        """Test sending with None value."""
+    def test_send_key_val_with_empty_key(self):
+        """Test sending with empty key b'' - should work."""
         server_privkey = nacl.public.PrivateKey.generate()
         client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
 
-        # None value should work
-        queries = client_obj.generate_queries_key_val(b'key', None)
+        # Empty key should work
+        queries = client_obj.generate_queries_key_val(b'', b'value')
         assert len(queries) > 0
 
-    def test_send_key_val_with_both_none(self):
-        """Test sending with both None."""
+    def test_send_key_val_rejects_none_value(self):
+        """Value cannot be None - must raise ValueError."""
         server_privkey = nacl.public.PrivateKey.generate()
         client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
 
-        # Both None should work
-        queries = client_obj.generate_queries_key_val(None, None)
-        assert len(queries) > 0
+        # None value should raise ValueError
+        with pytest.raises(ValueError, match='Value cannot be None'):
+            client_obj.generate_queries_key_val(b'key', None)
+
+    def test_send_key_val_rejects_empty_value(self):
+        """Empty value b'' should raise ValueError."""
+        server_privkey = nacl.public.PrivateKey.generate()
+        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
+
+        # Empty value should raise ValueError
+        with pytest.raises(ValueError, match='Value must be at least 1 byte'):
+            client_obj.generate_queries_key_val(b'key', b'')
 
     def test_send_key_val_validates_key_type(self):
         """Key must be bytes or None."""
@@ -541,11 +550,11 @@ class TestKeyValueEndToEnd:
             client_obj.send_key_val('string_key', b'value')
 
     def test_send_key_val_validates_value_type(self):
-        """Value must be bytes or None."""
+        """Value must be bytes (not string, not None)."""
         server_privkey = nacl.public.PrivateKey.generate()
         client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
 
-        with pytest.raises(TypeError, match='Value must be bytes or None'):
+        with pytest.raises(TypeError, match='Value must be bytes'):
             client_obj.send_key_val(b'key', 'string_value')
 
     def test_send_key_val_validates_key_length(self):

@@ -234,22 +234,27 @@ class MumbojumboClient:
         Send key-value pair via DNS queries.
 
         Args:
-            key: Key bytes or None (for null key)
-            value: Value bytes or None (for null value)
+            key: Key bytes or None (for null/zero-length key)
+            value: Value bytes (MUST be at least 1 byte, cannot be None or empty)
 
         Returns:
             List of (dns_query, success) tuples
         """
-        # Handle None values
+        # Handle key: None is allowed and converts to empty bytes
         if key is None:
             key = b''
-        if value is None:
-            value = b''
 
+        # Validate value: Must be non-empty bytes
+        if value is None:
+            raise ValueError('Value cannot be None - must be bytes with at least 1 byte')
+        if not isinstance(value, bytes):
+            raise TypeError('Value must be bytes (not None)')
+        if len(value) == 0:
+            raise ValueError('Value must be at least 1 byte')
+
+        # Validate key
         if not isinstance(key, bytes):
             raise TypeError('Key must be bytes or None')
-        if not isinstance(value, bytes):
-            raise TypeError('Value must be bytes or None')
         if len(key) > 255:
             raise ValueError('Key length cannot exceed 255 bytes')
 
@@ -272,22 +277,27 @@ class MumbojumboClient:
         Generate key-value DNS queries without sending them.
 
         Args:
-            key: Key bytes or None (for null key)
-            value: Value bytes or None (for null value)
+            key: Key bytes or None (for null/zero-length key)
+            value: Value bytes (MUST be at least 1 byte, cannot be None or empty)
 
         Returns:
             List of DNS query strings
         """
-        # Handle None values
+        # Handle key: None is allowed and converts to empty bytes
         if key is None:
             key = b''
-        if value is None:
-            value = b''
 
+        # Validate value: Must be non-empty bytes
+        if value is None:
+            raise ValueError('Value cannot be None - must be bytes with at least 1 byte')
+        if not isinstance(value, bytes):
+            raise TypeError('Value must be bytes (not None)')
+        if len(value) == 0:
+            raise ValueError('Value must be at least 1 byte')
+
+        # Validate key
         if not isinstance(key, bytes):
             raise TypeError('Key must be bytes or None')
-        if not isinstance(value, bytes):
-            raise TypeError('Value must be bytes or None')
         if len(key) > 255:
             raise ValueError('Key length cannot exceed 255 bytes')
 

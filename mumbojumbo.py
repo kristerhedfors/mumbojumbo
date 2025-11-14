@@ -411,6 +411,14 @@ class PacketEngine(object):
         # Get key_len for this packet
         key_len = self._packet_key_len.get(packet_id, 0)
 
+        # Validate key_len doesn't exceed packet data length
+        if key_len > len(packet_data):
+            logger.error(f'Invalid key_len={key_len} exceeds packet data length={len(packet_data)} for packet_id={packet_id}')
+            # Don't process this packet - data corruption or malicious
+            if packet_id in self._packet_key_len:
+                del self._packet_key_len[packet_id]
+            return
+
         # Always output as key-value tuple
         if key_len > 0:
             key = packet_data[:key_len]
@@ -419,6 +427,14 @@ class PacketEngine(object):
             # Zero-length key (legacy or null key)
             key = b''
             value = packet_data
+
+        # Validate value is non-empty (protocol requirement)
+        if len(value) == 0:
+            logger.error(f'Invalid empty value for packet_id={packet_id}, key_len={key_len}')
+            # Don't process this packet - violates protocol
+            if packet_id in self._packet_key_len:
+                del self._packet_key_len[packet_id]
+            return
 
         self.packet_outqueue.put({'key': key, 'value': value, 'key_len': key_len})
 
