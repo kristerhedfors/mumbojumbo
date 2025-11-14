@@ -16,8 +16,8 @@ class TestHandlerPipeline:
 
     def test_multiple_handlers_in_sequence(self):
         """Test running multiple handlers in sequence."""
-        test_data = b'Pipeline test'
-        test_query = 'test.example.com'
+        test_key = b'test_key'
+        test_value = b'Pipeline test'
         test_timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         # Create temp file for FileHandler
@@ -41,7 +41,7 @@ class TestHandlerPipeline:
                 # Run all handlers
                 results = []
                 for handler in handlers:
-                    result = handler.handle(test_data, test_query, test_timestamp)
+                    result = handler.handle(test_key, test_value, test_timestamp)
                     results.append(result)
 
                 # All should succeed
@@ -55,7 +55,7 @@ class TestHandlerPipeline:
                 # Verify file handler wrote data
                 with open(tmp_path, 'r') as f:
                     file_content = f.read()
-                assert test_data.hex() in file_content
+                assert test_value.hex() in file_content
 
             finally:
                 sys.stdout = original_stdout
@@ -66,8 +66,8 @@ class TestHandlerPipeline:
 
     def test_handler_failure_does_not_stop_pipeline(self):
         """Test that one handler failure doesn't stop other handlers."""
-        test_data = b'Test data'
-        test_query = 'test.example.com'
+        test_key = b'test_key'
+        test_value = b'Test data'
         test_timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         # Create handler pipeline with a failing handler in the middle
@@ -84,7 +84,7 @@ class TestHandlerPipeline:
         try:
             results = []
             for handler in handlers:
-                result = handler.handle(test_data, test_query, test_timestamp)
+                result = handler.handle(test_key, test_value, test_timestamp)
                 results.append(result)
 
             # First should succeed, second should fail, third should succeed

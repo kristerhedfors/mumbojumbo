@@ -4,12 +4,15 @@ Reference implementation of the mumbojumbo DNS protocol client in Python.
 
 ## Features
 
-- **Minimalist design**: Only requires `pynacl` library
+- **Fire-and-forget DNS**: Sends queries at controlled rate without waiting for responses
+- **Native Python DNS**: No external `dig` dependency - uses built-in `socket.getaddrinfo()`
+- **Summary statistics**: Tracks success/error counts without storing individual results
+- **Rate limiting**: Precise queries-per-second control (default: 10 QPS)
+- **O(1) memory**: Streaming implementation, no result accumulation
 - **Key-value mode**: Send key-value pairs or files with filenames as keys
 - **Auto-calculated fragment sizing**: Dynamically calculates safe fragment size based on domain length
 - **Stdin/file input**: Read from stdin or multiple files
-- **Multi-fragment support**: Automatically splits large messages
-- **Verbose mode**: Debug output for troubleshooting
+- **Verbose mode**: Real-time progress with success/failure counts
 - **Environment variable support**: Configure via CLI args or env vars
 
 ## Installation
@@ -27,37 +30,54 @@ pip install pynacl
 export MUMBOJUMBO_CLIENT_KEY=mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e
 export MUMBOJUMBO_DOMAIN=.asd.qwe
 
-# Send from stdin with null key (key=None)
-echo "Hello World" | ./mumbojumbo_client.py
+# Send from stdin with null key (key=None) - POSIX-compliant
+echo "Hello World" | ./mumbojumbo_client.py -
 
 # Send from stdin with custom key
-echo "Hello World" | ./mumbojumbo_client.py -k mykey
+echo "Hello World" | ./mumbojumbo_client.py -k mykey -
 
 # Option 2: Use command-line arguments
 echo "Hello World" | ./mumbojumbo_client.py \
   --client-key mj_cli_f9ab4ab60d628f0a19e43592dfe078e16bbd37fa526ffef850411dad5e838c5e \
-  -d .asd.qwe
+  -d .asd.qwe -
 
 # Send files (filename as key, contents as value)
-./mumbojumbo_client.py file1.txt file2.txt
+./mumbojumbo_client.py -r file1.txt file2.txt
 
 # Send explicit key-value pair
 ./mumbojumbo_client.py -k mykey -v myvalue
 
-# Verbose mode for debugging
-echo "test" | ./mumbojumbo_client.py --verbose
+# Send value only (null key)
+./mumbojumbo_client.py -v myvalue
+
+# Verbose mode with progress and statistics
+echo "test" | ./mumbojumbo_client.py - --verbose
+
+# Control transmission rate (queries per second)
+./mumbojumbo_client.py -r file.bin --rate 20  # Send at 20 queries/second
 ```
 
 ### Command Line Options
 
 - `--client-key <public_key>` - Server public key in `mj_cli_<hex>` format (or use `MUMBOJUMBO_CLIENT_KEY` env var)
 - `-d, --domain <domain>` - DNS domain suffix, e.g., `.asd.qwe` (or use `MUMBOJUMBO_DOMAIN` env var)
-- `-k, --key <key>` - Transmission key (for stdin or with -v; NOT allowed with files where filename is key)
-- `-v, --value <value>` - Transmission value (if not provided, reads from stdin or files)
-- `--verbose` - Enable verbose output to stderr
-- `files` - Files to send (filename as key, contents as value)
+- `-k, --key <key>` - Transmission key (optional, for use with `-v` or `-`; NOT allowed with `-r` where filename is key)
+- `-v, --value <value>` - Transmission value (explicit value mode)
+- `-r, --read <file> [<file> ...]` - Files to send (filename as key, contents as value)
+- `-` - Read from stdin (POSIX-compliant, positional argument)
+- `--verbose` - Enable verbose output with real-time progress and statistics
+- `--rate <qps>` - Queries per second rate limit (default: 10)
 
 **Configuration Precedence:** CLI arguments > Environment variables
+
+### Verbose Output Example
+
+```bash
+$ ./mumbojumbo_client.py -r largefile.bin --verbose --rate 20
+Sending pair 1/1: key='largefile.bin', value=102400 bytes
+Progress: 1280/1280 sent (1250 succeeded, 30 failed)
+✓ Sent 1280 queries: 1250 succeeded, 30 failed
+```
 
 ### Key-Value Mode
 
@@ -67,25 +87,30 @@ The client operates in **key-value mode**, where every transmission consists of:
 
 **Usage Modes:**
 
-1. **Stdin with null key** (no `-k` flag):
+1. **Stdin with null key** (use `-` for POSIX compliance):
    ```bash
-   echo "data" | ./mumbojumbo_client.py  # key=None
+   echo "data" | ./mumbojumbo_client.py -  # key=None
    ```
 
-2. **Stdin with custom key** (with `-k` flag):
+2. **Stdin with custom key** (with `-k` flag and `-`):
    ```bash
-   echo "data" | ./mumbojumbo_client.py -k mykey  # key="mykey"
+   echo "data" | ./mumbojumbo_client.py -k mykey -  # key="mykey"
    ```
 
-3. **Explicit key-value** (both `-k` and `-v`):
+3. **Value only** (null key with `-v`):
+   ```bash
+   ./mumbojumbo_client.py -v myvalue  # key=None, value="myvalue"
+   ```
+
+4. **Explicit key-value** (both `-k` and `-v`):
    ```bash
    ./mumbojumbo_client.py -k mykey -v myvalue
    ```
 
-4. **Files** (filename as key):
+5. **Files** (filename as key, use `-r` flag):
    ```bash
-   ./mumbojumbo_client.py file.txt  # key="file.txt", value=<file contents>
-   # Note: -k flag is NOT allowed with files
+   ./mumbojumbo_client.py -r file.txt  # key="file.txt", value=<file contents>
+   # Note: -k flag is NOT allowed with -r (filename becomes key)
    ```
 
 ## Protocol Details

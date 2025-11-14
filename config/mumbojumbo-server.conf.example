@@ -30,11 +30,11 @@ handlers = stdout
 
 # Server private key (mj_srv_<64_hex_chars>)
 # REQUIRED: Generate with --gen-keys
-mumbojumbo-server-key = mj_srv_0000000000000000000000000000000000000000000000000000000000000000
+server-key = mj_srv_0000000000000000000000000000000000000000000000000000000000000000
 
 # Client public key (mj_cli_<64_hex_chars>)
 # Optional: Used for validation, clients encrypt with server's public key
-mumbojumbo-client-key = mj_cli_0000000000000000000000000000000000000000000000000000000000000000
+client-key = mj_cli_0000000000000000000000000000000000000000000000000000000000000000
 
 
 #
@@ -74,9 +74,10 @@ mumbojumbo-client-key = mj_cli_0000000000000000000000000000000000000000000000000
 # timeout = 30
 # #
 # # Environment variables passed to command:
-# #   MUMBOJUMBO_QUERY     - DNS query that completed the packet
-# #   MUMBOJUMBO_TIMESTAMP - ISO 8601 timestamp
-# #   MUMBOJUMBO_LENGTH    - Packet size in bytes
+# #   MUMBOJUMBO_TIMESTAMP   - ISO 8601 timestamp
+# #   MUMBOJUMBO_KEY         - Packet key (empty string for null key)
+# #   MUMBOJUMBO_KEY_LENGTH  - Key size in bytes
+# #   MUMBOJUMBO_VALUE_LENGTH - Value size in bytes
 
 
 #

@@ -306,8 +306,8 @@ Mumbojumbo uses NaCl (libsodium) public-key anonymous encryption via `nacl.publi
 │  │ domain = .asd.qwe                                       │ │
 │  │ network-interface = en0                                  │ │
 │  │ handlers = stdout                                        │ │
-│  │ mumbojumbo-server-key = mj_srv_3f55...cb72 (hex)       │ │
-│  │ mumbojumbo-client-key = mj_cli_0630...b679 (hex)       │ │
+│  │ server-key = mj_srv_3f55...cb72 (hex)                  │ │
+│  │ client-key = mj_cli_0630...b679 (hex)                  │ │
 │  └────────────────────────────────────────────────────────┘ │
 │                                                               │
 │  Out-of-Band Transfer:                                        │
@@ -739,9 +739,9 @@ domain = .asd.qwe
 # Linux: eth0, wlan0, ens33
 network-interface = en0
 
-# Base64-encoded NaCl keypair for server (mumbojumbo keys)
-mumbojumbo-server-key = xQ9sAa...0N5K=
-mumbojumbo-client-key = wP8rZX...Yz4M=
+# Hex-encoded NaCl keypair for server (mumbojumbo keys)
+server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
+client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
 
 [smtp]
 # Optional: forward received messages via email
@@ -1062,8 +1062,8 @@ network-interface = en0  # or eth0, wlan0, etc.
 
 **Problem:** Decryption fails
 - Verify client is using the correct mumbojumbo public key
-- Check that `mumbojumbo-client-key` in server config matches the key given to client
-- Ensure server has the correct `mumbojumbo-server-key` to decrypt
+- Check that `client-key` in server config matches the key given to client
+- Ensure server has the correct `server-key` to decrypt
 
 **Problem:** No queries captured
 - Ensure server is listening on correct network interface

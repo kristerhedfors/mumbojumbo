@@ -419,20 +419,23 @@ examples:
   # Send key-value pair explicitly
   %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey -v myvalue
 
+  # Send value only (null key)
+  %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -v myvalue
+
   # Send files (filename as key, contents as value)
   # Note: -k/--key is NOT allowed with files
-  %(prog)s --client-key mj_cli_abc123... -d .asd.qwe file1.txt file2.txt
+  %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -r file1.txt file2.txt
 
-  # Send from stdin with null key (key=None)
-  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe
+  # Send from stdin with null key (key=None) - POSIX-compliant
+  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -
 
   # Send from stdin with custom key
-  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey
+  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey -
 
-  # Use environment variables (no arguments needed)
+  # Use environment variables
   export MUMBOJUMBO_CLIENT_KEY=mj_cli_abc123...
   export MUMBOJUMBO_DOMAIN=.asd.qwe
-  %(prog)s file.txt
+  %(prog)s -r file.txt
 
 Configuration precedence: CLI args > Environment variables
         '''
@@ -465,12 +468,28 @@ Configuration precedence: CLI args > Environment variables
         help='Queries per second rate limit (default: 10)'
     )
     parser.add_argument(
-        'files',
-        nargs='*',
+        '-r', '--read',
+        nargs='+',
+        metavar='FILE',
         help='Files to send (filename as key, contents as value)'
+    )
+    parser.add_argument(
+        'stdin_marker',
+        nargs='?',
+        help='Use "-" to read from stdin (POSIX-compliant)'
     )
 
     args = parser.parse_args()
+
+    # Check if any input was provided (stdin marker, files, or value)
+    has_stdin = args.stdin_marker == '-'
+    has_files = args.read is not None
+    has_value = args.value is not None
+
+    if not (has_stdin or has_files or has_value):
+        # No input provided - show help
+        parser.print_help(sys.stderr)
+        return 1
 
     # Get client key from CLI arg or environment variable
     client_key_str = args.client_key or os.environ.get('MUMBOJUMBO_CLIENT_KEY')
@@ -509,13 +528,14 @@ Configuration precedence: CLI args > Environment variables
     def query_callback(dns_query):
         print(dns_query)
 
-    if args.key is not None and args.value is not None:
-        # Explicit key-value pair - process immediately
-        key = args.key.encode('utf-8')
+    if args.value is not None:
+        # Explicit value with optional key
+        key = args.key.encode('utf-8') if args.key is not None else None
         value = args.value.encode('utf-8')
 
         if args.verbose:
-            print(f"Sending pair 1/1: key='{args.key}', value={len(value)} bytes", file=sys.stderr)
+            key_display = f"'{args.key}'" if args.key is not None else "'None'"
+            print(f"Sending pair 1/1: key={key_display}, value={len(value)} bytes", file=sys.stderr)
 
         try:
             summary = await client_obj.send_async(
@@ -539,52 +559,8 @@ Configuration precedence: CLI args > Environment variables
         if args.verbose:
             print("", file=sys.stderr)
 
-    elif args.files:
-        # Reject -k/--key when sending files (filenames are keys)
-        if args.key is not None:
-            print("Error: Cannot use -k/--key with files (filenames are used as keys)", file=sys.stderr)
-            return 1
-
-        # Send files one at a time - load, send, release
-        for file_index, filepath in enumerate(args.files):
-            # Load current file only
-            try:
-                with open(filepath, 'rb') as f:
-                    file_contents = f.read()
-            except Exception as e:
-                print(f"Error reading file {filepath}: {e}", file=sys.stderr)
-                return 1
-
-            # Send it immediately
-            key = filepath.encode('utf-8')
-            value = file_contents
-
-            if args.verbose:
-                print(f"Sending pair {file_index + 1}/{len(args.files)}: key='{filepath}', value={len(value)} bytes", file=sys.stderr)
-
-            try:
-                summary = await client_obj.send_async(
-                    key, value,
-                    rate_qps=args.rate,
-                    progress_callback=progress_callback if args.verbose else None,
-                    query_callback=query_callback
-                )
-                if args.verbose:
-                    print("", file=sys.stderr)  # Newline after progress
-                    print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
-                    print("", file=sys.stderr)
-            except Exception as e:
-                if args.verbose:
-                    print("", file=sys.stderr)  # Newline after progress
-                print(f"Error sending file {filepath}: {e}", file=sys.stderr)
-                if args.verbose:
-                    import traceback
-                    traceback.print_exc(file=sys.stderr)
-                return 1
-
-            # file_contents goes out of scope here, can be garbage collected
-
-    else:
+    elif args.stdin_marker == '-':
+        # POSIX-compliant: "-" means read from stdin
         # Read from stdin with optional key from -k/--key argument
         try:
             stdin_data = sys.stdin.buffer.read()
@@ -624,6 +600,51 @@ Configuration precedence: CLI args > Environment variables
 
         if args.verbose:
             print("", file=sys.stderr)
+
+    elif args.read is not None:
+        # Reject -k/--key when sending files (filenames are keys)
+        if args.key is not None:
+            print("Error: Cannot use -k/--key with files (filenames are used as keys)", file=sys.stderr)
+            return 1
+
+        # Send files one at a time - load, send, release
+        for file_index, filepath in enumerate(args.read):
+            # Load current file only
+            try:
+                with open(filepath, 'rb') as f:
+                    file_contents = f.read()
+            except Exception as e:
+                print(f"Error reading file {filepath}: {e}", file=sys.stderr)
+                return 1
+
+            # Send it immediately
+            key = filepath.encode('utf-8')
+            value = file_contents
+
+            if args.verbose:
+                print(f"Sending pair {file_index + 1}/{len(args.read)}: key='{filepath}', value={len(value)} bytes", file=sys.stderr)
+
+            try:
+                summary = await client_obj.send_async(
+                    key, value,
+                    rate_qps=args.rate,
+                    progress_callback=progress_callback if args.verbose else None,
+                    query_callback=query_callback
+                )
+                if args.verbose:
+                    print("", file=sys.stderr)  # Newline after progress
+                    print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
+                    print("", file=sys.stderr)
+            except Exception as e:
+                if args.verbose:
+                    print("", file=sys.stderr)  # Newline after progress
+                print(f"Error sending file {filepath}: {e}", file=sys.stderr)
+                if args.verbose:
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+                return 1
+
+            # file_contents goes out of scope here, can be garbage collected
 
     return 0
 
