@@ -318,10 +318,14 @@ examples:
   %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey -v myvalue
 
   # Send files (filename as key, contents as value)
+  # Note: -k/--key is NOT allowed with files
   %(prog)s --client-key mj_cli_abc123... -d .asd.qwe file1.txt file2.txt
 
-  # Send from stdin with null key
+  # Send from stdin with null key (key=None)
   echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe
+
+  # Send from stdin with custom key
+  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey
 
   # Use environment variables (no arguments needed)
   export MUMBOJUMBO_CLIENT_KEY=mj_cli_abc123...
@@ -341,7 +345,7 @@ Configuration precedence: CLI args > Environment variables
     )
     parser.add_argument(
         '-k', '--key',
-        help='Transmission key (if not provided with files, defaults to None)'
+        help='Transmission key (for stdin or with -v; NOT allowed with files where filename is key)'
     )
     parser.add_argument(
         '-v', '--value',
@@ -388,40 +392,17 @@ Configuration precedence: CLI args > Environment variables
         print(f"Error initializing client: {e}", file=sys.stderr)
         return 1
 
-    # Determine what to send
-    key_value_pairs = []
-
-    if args.key is not None and args.value is not None:
-        # Explicit key-value pair
-        key_value_pairs.append((args.key.encode('utf-8'), args.value.encode('utf-8')))
-    elif args.files:
-        # Send files (filename as key, contents as value)
-        for filepath in args.files:
-            try:
-                with open(filepath, 'rb') as f:
-                    file_contents = f.read()
-                key_value_pairs.append((filepath.encode('utf-8'), file_contents))
-            except Exception as e:
-                print(f"Error reading file {filepath}: {e}", file=sys.stderr)
-                return 1
-    else:
-        # Read from stdin with null key
-        try:
-            stdin_data = sys.stdin.buffer.read()
-            key_value_pairs.append((None, stdin_data))
-        except Exception as e:
-            print(f"Error reading stdin: {e}", file=sys.stderr)
-            return 1
-
-    # Send all key-value pairs
+    # Send data without loading all files into memory at once
     total_success = 0
     total_queries = 0
 
-    for kv_index, (key, value) in enumerate(key_value_pairs):
+    if args.key is not None and args.value is not None:
+        # Explicit key-value pair - process immediately
+        key = args.key.encode('utf-8')
+        value = args.value.encode('utf-8')
+
         if args.verbose:
-            key_display = key.decode('utf-8') if key else 'None'
-            value_len = len(value) if value else 0
-            print(f"Sending pair {kv_index + 1}/{len(key_value_pairs)}: key='{key_display}', value={value_len} bytes", file=sys.stderr)
+            print(f"Sending pair 1/1: key='{args.key}', value={len(value)} bytes", file=sys.stderr)
 
         try:
             results = client_obj.send_key_val(key, value)
@@ -434,9 +415,7 @@ Configuration precedence: CLI args > Environment variables
 
         # Process results
         for frag_index, (dns_name, success) in enumerate(results):
-            # Output query for inspection
             print(dns_name)
-
             if success:
                 total_success += 1
             total_queries += 1
@@ -444,7 +423,104 @@ Configuration precedence: CLI args > Environment variables
             if args.verbose:
                 frag_count = len(results)
                 print(f"  Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
+                if success:
+                    print(f"    ✓ Sent successfully", file=sys.stderr)
+                else:
+                    print(f"    ✗ Send failed (DNS query timed out or failed)", file=sys.stderr)
 
+        if args.verbose:
+            print("", file=sys.stderr)
+
+    elif args.files:
+        # Reject -k/--key when sending files (filenames are keys)
+        if args.key is not None:
+            print("Error: Cannot use -k/--key with files (filenames are used as keys)", file=sys.stderr)
+            return 1
+
+        # Send files one at a time - load, send, release
+        for file_index, filepath in enumerate(args.files):
+            # Load current file only
+            try:
+                with open(filepath, 'rb') as f:
+                    file_contents = f.read()
+            except Exception as e:
+                print(f"Error reading file {filepath}: {e}", file=sys.stderr)
+                return 1
+
+            # Send it immediately
+            key = filepath.encode('utf-8')
+            value = file_contents
+
+            if args.verbose:
+                print(f"Sending pair {file_index + 1}/{len(args.files)}: key='{filepath}', value={len(value)} bytes", file=sys.stderr)
+
+            try:
+                results = client_obj.send_key_val(key, value)
+            except Exception as e:
+                print(f"Error sending key-value pair: {e}", file=sys.stderr)
+                if args.verbose:
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
+                return 1
+
+            # Process results
+            for frag_index, (dns_name, success) in enumerate(results):
+                print(dns_name)
+                if success:
+                    total_success += 1
+                total_queries += 1
+
+                if args.verbose:
+                    frag_count = len(results)
+                    print(f"  Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
+                    if success:
+                        print(f"    ✓ Sent successfully", file=sys.stderr)
+                    else:
+                        print(f"    ✗ Send failed (DNS query timed out or failed)", file=sys.stderr)
+
+            if args.verbose:
+                print("", file=sys.stderr)
+
+            # file_contents goes out of scope here, can be garbage collected
+
+    else:
+        # Read from stdin with optional key from -k/--key argument
+        try:
+            stdin_data = sys.stdin.buffer.read()
+        except Exception as e:
+            print(f"Error reading stdin: {e}", file=sys.stderr)
+            return 1
+
+        # Use key from -k/--key argument if provided, otherwise None (null key)
+        if args.key is not None:
+            key = args.key.encode('utf-8')
+        else:
+            key = None
+        value = stdin_data
+
+        if args.verbose:
+            key_display = f"'{args.key}'" if args.key is not None else "'None'"
+            print(f"Sending pair 1/1: key={key_display}, value={len(value)} bytes", file=sys.stderr)
+
+        try:
+            results = client_obj.send_key_val(key, value)
+        except Exception as e:
+            print(f"Error sending key-value pair: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+            return 1
+
+        # Process results
+        for frag_index, (dns_name, success) in enumerate(results):
+            print(dns_name)
+            if success:
+                total_success += 1
+            total_queries += 1
+
+            if args.verbose:
+                frag_count = len(results)
+                print(f"  Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
                 if success:
                     print(f"    ✓ Sent successfully", file=sys.stderr)
                 else:

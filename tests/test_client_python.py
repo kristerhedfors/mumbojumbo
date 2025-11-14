@@ -700,6 +700,47 @@ class TestCLIIntegration:
         # Should warn about adding dot
         assert b'Warning' in result.stderr or b'.test.com' in result.stdout
 
+    def test_stdin_with_custom_key(self):
+        """Should accept -k argument with stdin input."""
+        server_privkey = nacl.public.PrivateKey.generate()
+        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
+
+        result = subprocess.run(
+            ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
+             '--client-key', key_str,
+             '-d', '.test.com',
+             '-k', 'my-custom-key'],
+            input=b'test data from stdin',
+            capture_output=True
+        )
+        assert result.returncode == 0
+        assert b'.test.com' in result.stdout
+
+    def test_file_with_key_arg_rejected(self):
+        """Should reject -k argument when sending files (filename is key)."""
+        server_privkey = nacl.public.PrivateKey.generate()
+        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
+
+        # Create temp file
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False) as f:
+            f.write(b'file content')
+            temp_path = f.name
+
+        try:
+            result = subprocess.run(
+                ['./venv/bin/python3', './clients/python/mumbojumbo-client.py',
+                 '--client-key', key_str,
+                 '-d', '.test.com',
+                 '-k', 'should-be-rejected',  # This should cause error
+                 temp_path],
+                capture_output=True
+            )
+            # Should fail with error about -k not allowed with files
+            assert result.returncode != 0
+            assert b'Cannot use -k/--key with files' in result.stderr
+        finally:
+            os.unlink(temp_path)
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
