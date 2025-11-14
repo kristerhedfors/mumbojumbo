@@ -1,0 +1,70 @@
+# Mumbojumbo DNS Covert Channel Server - systemd service unit
+# Installation:
+#   sudo cp mumbojumbo.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable mumbojumbo
+#   sudo systemctl start mumbojumbo
+#
+# Management:
+#   sudo systemctl status mumbojumbo
+#   sudo systemctl stop mumbojumbo
+#   sudo systemctl restart mumbojumbo
+#   sudo journalctl -u mumbojumbo -f
+
+[Unit]
+Description=Mumbojumbo DNS Covert Channel Server
+Documentation=https://github.com/yourusername/mumbojumbo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Working directory
+WorkingDirectory=/opt/mumbojumbo
+
+# Main execution command - runs in daemon mode
+ExecStart=/opt/mumbojumbo/venv/bin/python3 /opt/mumbojumbo/mumbojumbo.py --daemon --verbose
+
+# Configuration via environment variables (recommended)
+# Alternative: use --config flag with config file
+EnvironmentFile=-/etc/mumbojumbo/mumbojumbo.env
+
+# Required capabilities for packet capture
+# Note: Requires systemd v229+ for AmbientCapabilities
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+
+# Security hardening (while keeping required capabilities)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/mumbojumbo /opt/mumbojumbo
+
+# Restart policy
+Restart=always
+RestartSec=10s
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mumbojumbo
+
+# Resource limits (adjust as needed)
+MemoryMax=512M
+TasksMax=50
+
+# Health check via ExecStartPre (validates environment before starting)
+ExecStartPre=/opt/mumbojumbo/venv/bin/python3 /opt/mumbojumbo/mumbojumbo.py --health-check
+
+# Graceful stop
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

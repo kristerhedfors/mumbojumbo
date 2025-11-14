@@ -19,6 +19,8 @@ import hmac
 import getpass
 import json
 import datetime
+import signal
+import time
 from email.mime.text import MIMEText
 
 import nacl.public
@@ -415,24 +417,17 @@ class DnsQueryReader(object):
 
         # Use the interface from config, or try to auto-detect
         interface = self._iff
-        if not interface or interface == 'eth0':
-            # Try to find a suitable interface on macOS/Linux
-            import platform
-            if platform.system() == 'Darwin':  # macOS
-                # Common macOS interfaces
-                for iface in ['en0', 'en1', 'en2', 'lo0']:
-                    try:
-                        # Check if interface exists
-                        result = subprocess.run(['ifconfig', iface],
-                                              capture_output=True,
-                                              timeout=1)
-                        if result.returncode == 0:
-                            interface = iface
-                            break
-                    except:
-                        continue
+        if not interface:
+            # Use cloud-aware auto-detection
+            interface = detect_cloud_network_interface()
+            if not interface:
+                # Final fallback
+                interface = 'eth0'
+                logger.warning(f'Could not detect interface, using fallback: {interface}')
             else:
-                interface = interface or 'eth0'
+                logger.info(f'Auto-detected interface: {interface}')
+        else:
+            logger.info(f'Using configured interface: {interface}')
 
         cmd = f'{tshark} -li {interface} -T fields -e dns.qry.name -- udp port 53'
         # Redirect stderr to /dev/null to prevent tshark banner from polluting JSON output
@@ -538,6 +533,10 @@ def option_parser():
                  help='generate config skeleton file (mumbojumbo.conf)')
     p.add_option('', '--test-handlers', action='store_true',
                  help='test all configured handlers in the pipeline')
+    p.add_option('', '--health-check', action='store_true',
+                 help='perform health check and exit (for K8s liveness probes)')
+    p.add_option('', '--daemon', action='store_true',
+                 help='run in daemon mode with signal handling (SIGTERM, SIGINT)')
     p.add_option('-v', '--verbose', action='store_true',
                  help='also print debug logs to stderr (default: logs only to mumbojumbo.log)')
     return p
@@ -953,11 +952,193 @@ def json_output(event_type, **kwargs):
     print(json.dumps(output), flush=True)
 
 
+# Global flag for graceful shutdown
+_shutdown_requested = False
+
+
+def signal_handler(signum, frame):
+    '''Handle SIGTERM and SIGINT for graceful shutdown.'''
+    global _shutdown_requested
+    signame = signal.Signals(signum).name
+    logger.info(f'Received {signame}, initiating graceful shutdown...')
+    _shutdown_requested = True
+
+
+def detect_cloud_network_interface():
+    '''
+    Detect network interface for cloud environments.
+    Returns best guess interface name or None.
+
+    Cloud VMs typically use: ens4 (GCP), eth0 (AWS/Azure), ens5 (AWS Nitro)
+    '''
+    import platform
+
+    # Try to use 'ip' command on Linux to find active interface
+    if platform.system() == 'Linux':
+        try:
+            result = subprocess.run(['ip', 'route', 'show', 'default'],
+                                    capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                # Parse: "default via X.X.X.X dev INTERFACE ..."
+                for line in result.stdout.split('\n'):
+                    if 'default' in line and 'dev' in line:
+                        parts = line.split()
+                        if 'dev' in parts:
+                            idx = parts.index('dev')
+                            if idx + 1 < len(parts):
+                                interface = parts[idx + 1]
+                                logger.info(f'Auto-detected network interface: {interface}')
+                                return interface
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    # Fallback: try common cloud interface names
+    common_interfaces = ['ens4', 'ens5', 'eth0', 'en0', 'wlan0']
+    for iface in common_interfaces:
+        try:
+            # Check if interface exists using ifconfig or ip
+            if platform.system() == 'Linux':
+                result = subprocess.run(['ip', 'link', 'show', iface],
+                                        capture_output=True, timeout=1)
+            else:  # macOS
+                result = subprocess.run(['ifconfig', iface],
+                                        capture_output=True, timeout=1)
+
+            if result.returncode == 0:
+                logger.info(f'Found network interface: {iface}')
+                return iface
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+
+    logger.warning('Could not auto-detect network interface')
+    return None
+
+
+def check_tshark():
+    '''
+    Verify tshark is available and accessible.
+    Returns (success: bool, tshark_path: str, error_msg: str)
+    '''
+    import shutil
+
+    tshark = shutil.which('tshark')
+    if not tshark:
+        return (False, None, 'tshark not found. Install wireshark/tshark package.')
+
+    # Check if we can execute it
+    try:
+        result = subprocess.run([tshark, '--version'],
+                                capture_output=True, timeout=2)
+        if result.returncode == 0:
+            version_info = result.stdout.decode('utf-8', errors='replace').split('\n')[0]
+            return (True, tshark, version_info)
+        else:
+            return (False, tshark, 'tshark execution failed')
+    except subprocess.TimeoutExpired:
+        return (False, tshark, 'tshark execution timed out')
+    except Exception as e:
+        return (False, tshark, f'tshark check failed: {e}')
+
+
+def check_root_permissions():
+    '''
+    Check if running with sufficient permissions for packet capture.
+    Returns (success: bool, error_msg: str)
+    '''
+    if os.geteuid() != 0:
+        return (False, 'Not running as root. Packet capture requires root privileges (use sudo).')
+    return (True, 'Running with root privileges')
+
+
+def health_check():
+    '''
+    Perform health check and output status.
+    Used for container/K8s liveness probes.
+    Returns exit code (0 = healthy, 1 = unhealthy)
+    '''
+    checks = []
+
+    # Check 1: tshark availability
+    tshark_ok, tshark_path, tshark_msg = check_tshark()
+    checks.append(('tshark', tshark_ok, tshark_msg))
+
+    # Check 2: root permissions
+    root_ok, root_msg = check_root_permissions()
+    checks.append(('permissions', root_ok, root_msg))
+
+    # Check 3: log file writable
+    try:
+        test_log = 'mumbojumbo.log'
+        with open(test_log, 'a') as f:
+            f.write('')
+        checks.append(('log_file', True, f'{test_log} is writable'))
+    except IOError as e:
+        checks.append(('log_file', False, f'Cannot write to log file: {e}'))
+
+    # Output results
+    all_ok = all(ok for _, ok, _ in checks)
+
+    print(json.dumps({
+        'status': 'healthy' if all_ok else 'unhealthy',
+        'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        'checks': [{'name': name, 'status': 'pass' if ok else 'fail', 'message': msg}
+                   for name, ok, msg in checks]
+    }, indent=2))
+
+    return 0 if all_ok else 1
+
+
+def startup_validation(network_interface=None, domain=None):
+    '''
+    Validate environment before starting server.
+    Logs warnings and errors but doesn't exit.
+    '''
+    logger.info('=== Startup Validation ===')
+
+    # Check tshark
+    tshark_ok, tshark_path, tshark_msg = check_tshark()
+    if tshark_ok:
+        logger.info(f'✓ tshark: {tshark_msg}')
+    else:
+        logger.error(f'✗ tshark: {tshark_msg}')
+        logger.error('Server will likely fail to capture packets')
+
+    # Check permissions
+    root_ok, root_msg = check_root_permissions()
+    if root_ok:
+        logger.info(f'✓ Permissions: {root_msg}')
+    else:
+        logger.warning(f'✗ Permissions: {root_msg}')
+        logger.warning('Packet capture may fail without root')
+
+    # Validate network interface
+    if network_interface:
+        logger.info(f'✓ Network interface configured: {network_interface}')
+    else:
+        auto_iface = detect_cloud_network_interface()
+        if auto_iface:
+            logger.info(f'✓ Auto-detected network interface: {auto_iface}')
+        else:
+            logger.warning('✗ Could not detect network interface, will use default')
+
+    # Validate domain
+    if domain:
+        logger.info(f'✓ Domain configured: {domain}')
+        if not domain.startswith('.'):
+            logger.warning(f'  WARNING: Domain should typically start with "." (got: {domain})')
+
+    logger.info('=== Startup Validation Complete ===')
+
+
 def main():
     (opt, args) = option_parser().parse_args()
 
     # Setup logging: file always, console only if --verbose
     setup_logging(verbose=opt.verbose)
+
+    # Health check mode - no logging needed
+    if opt.health_check:
+        sys.exit(health_check())
 
     if opt.gen_conf:
         (mumbojumbo_server_key, mumbojumbo_client_key) = get_nacl_keypair_hex()
@@ -1212,6 +1393,15 @@ def main():
     logger.info('domain={0}, network_interface={1}'.format(
         domain, network_interface))
 
+    # Daemon mode: setup signal handlers
+    if opt.daemon:
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+        logger.info('Daemon mode enabled: registered SIGTERM and SIGINT handlers')
+
+    # Perform startup validation
+    startup_validation(network_interface=network_interface, domain=domain)
+
     #
     # prepare packet fragment class - server uses server_key for decryption
     # Keys are passed as strings and parsed transparently inside PublicFragment
@@ -1229,12 +1419,20 @@ def main():
     #
     dns_query_reader = DnsQueryReader(iff=network_interface, domain=domain)
 
+    logger.info(f'Starting DNS query capture on interface={network_interface or "auto"}, domain={domain}')
+    logger.info('Server ready - waiting for DNS queries...')
+
     #
     # iterate sniffed DNS queries do domain;
     # start to decrypt, parse and reassemble fragments
     # into complete packets
     #
     for name in dns_query_reader:
+        # Check for shutdown signal in daemon mode
+        if opt.daemon and _shutdown_requested:
+            logger.info('Graceful shutdown initiated - stopping DNS capture')
+            break
+
         logger.debug('read DNS query for: ' + name)
         #
         # try-catch to prevent deserialization exceptions from causing
@@ -1279,6 +1477,11 @@ def main():
                     logger.debug(traceback.format_exc())
 
         sys.stdout.flush()
+
+    # Clean shutdown
+    logger.info('DNS query capture stopped')
+    if opt.daemon:
+        logger.info('Daemon shutdown complete')
 
 
 if __name__ == '__main__':

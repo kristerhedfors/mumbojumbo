@@ -1,0 +1,230 @@
+---
+# Mumbojumbo DNS Covert Channel Server - Kubernetes Deployment
+# Requires: NET_ADMIN + NET_RAW capabilities, hostNetwork mode
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mumbojumbo
+  labels:
+    name: mumbojumbo
+
+---
+# ConfigMap for mumbojumbo configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mumbojumbo-config
+  namespace: mumbojumbo
+data:
+  mumbojumbo.conf: |
+    [main]
+    domain = .asd.qwe
+    network-interface =
+    handlers = stdout
+    # Keys should be provided via Secret, not ConfigMap
+
+---
+# Secret for encryption keys
+# Create this secret before deployment:
+# kubectl create secret generic mumbojumbo-keys -n mumbojumbo \
+#   --from-literal=server-key='mj_srv_...' \
+#   --from-literal=client-key='mj_cli_...'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mumbojumbo-keys
+  namespace: mumbojumbo
+type: Opaque
+stringData:
+  # Generate keys with: ./mumbojumbo.py --gen-keys
+  server-key: "REPLACE_WITH_YOUR_SERVER_KEY"  # mj_srv_...
+  client-key: "REPLACE_WITH_YOUR_CLIENT_KEY"  # mj_cli_...
+  domain: ".asd.qwe"
+
+---
+# Deployment for mumbojumbo server
+# Note: Uses Deployment instead of DaemonSet for single-instance per cluster
+# Change to DaemonSet if you want one instance per node
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mumbojumbo
+  namespace: mumbojumbo
+  labels:
+    app: mumbojumbo
+spec:
+  replicas: 1  # Only run one instance (DNS capture is cluster-wide)
+  selector:
+    matchLabels:
+      app: mumbojumbo
+  template:
+    metadata:
+      labels:
+        app: mumbojumbo
+    spec:
+      # Use host network to capture DNS traffic on UDP 53
+      # This bypasses pod networking and gives direct access to node's network
+      hostNetwork: true
+
+      # DNS policy when using hostNetwork
+      dnsPolicy: ClusterFirstWithHostNet
+
+      # Security context for pod
+      securityContext:
+        runAsUser: 0  # Run as root (required for packet capture)
+        runAsGroup: 0
+        fsGroup: 0
+
+      containers:
+      - name: mumbojumbo
+        image: gcr.io/YOUR_PROJECT_ID/mumbojumbo:latest  # Replace with your image
+        imagePullPolicy: Always
+
+        # Run in daemon mode with verbose logging
+        command: ["/app/mumbojumbo.py"]
+        args: ["--daemon", "--verbose"]
+
+        # Environment variables from Secret
+        env:
+        - name: MUMBOJUMBO_SERVER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mumbojumbo-keys
+              key: server-key
+        - name: MUMBOJUMBO_CLIENT_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mumbojumbo-keys
+              key: client-key
+        - name: MUMBOJUMBO_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: mumbojumbo-keys
+              key: domain
+
+        # Security context for container
+        securityContext:
+          # Required capabilities for packet capture
+          capabilities:
+            add:
+            - NET_ADMIN  # Required for network interface manipulation
+            - NET_RAW    # Required for raw packet capture
+            drop:
+            - ALL        # Drop all other capabilities for security
+          privileged: false  # Not fully privileged, just specific capabilities
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # tshark needs write access
+
+        # Resource limits and requests
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        # Liveness probe - checks if container is healthy
+        livenessProbe:
+          exec:
+            command:
+            - /app/mumbojumbo.py
+            - --health-check
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Readiness probe - checks if container is ready to receive traffic
+        readinessProbe:
+          exec:
+            command:
+            - /app/mumbojumbo.py
+            - --health-check
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Volume mounts
+        volumeMounts:
+        - name: log-volume
+          mountPath: /var/log/mumbojumbo
+        - name: config-volume
+          mountPath: /etc/mumbojumbo
+          readOnly: true
+
+      # Volumes
+      volumes:
+      - name: log-volume
+        emptyDir: {}  # Ephemeral storage for logs
+      - name: config-volume
+        configMap:
+          name: mumbojumbo-config
+          optional: true
+
+      # Node selector - optional, uncomment to run on specific nodes
+      # nodeSelector:
+      #   mumbojumbo: "true"
+
+      # Tolerations - optional, uncomment to tolerate node taints
+      # tolerations:
+      # - key: "node-role.kubernetes.io/master"
+      #   operator: "Exists"
+      #   effect: "NoSchedule"
+
+---
+# Service for mumbojumbo (optional - mainly for metrics/monitoring)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mumbojumbo
+  namespace: mumbojumbo
+  labels:
+    app: mumbojumbo
+spec:
+  selector:
+    app: mumbojumbo
+  ports:
+  - name: dns
+    protocol: UDP
+    port: 53
+    targetPort: 53
+  type: ClusterIP
+
+---
+# Optional: ServiceAccount for mumbojumbo
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mumbojumbo
+  namespace: mumbojumbo
+
+---
+# Optional: NetworkPolicy to restrict traffic
+# Uncomment if you want to restrict network access
+# apiVersion: networking.k8s.io/v1
+# kind: NetworkPolicy
+# metadata:
+#   name: mumbojumbo-network-policy
+#   namespace: mumbojumbo
+# spec:
+#   podSelector:
+#     matchLabels:
+#       app: mumbojumbo
+#   policyTypes:
+#   - Ingress
+#   - Egress
+#   ingress:
+#   - from:
+#     - podSelector: {}
+#     ports:
+#     - protocol: UDP
+#       port: 53
+#   egress:
+#   - to:
+#     - podSelector: {}
+#     ports:
+#     - protocol: TCP
+#       port: 587  # SMTP
