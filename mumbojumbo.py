@@ -666,13 +666,13 @@ class PacketHandler:
         Base class for packet handlers. All handlers must implement handle() method.
         Handlers process reassembled packets and should never crash the main loop.
     '''
-    def handle(self, data: bytes, query: str, timestamp: datetime.datetime) -> bool:
+    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
         '''
             Process a reassembled packet.
 
             Args:
-                data: The reassembled packet data (bytes)
-                query: The DNS query name that completed the packet
+                key: The packet key (empty bytes for null key)
+                value: The packet value
                 timestamp: UTC timestamp when packet was reassembled
 
             Returns:
@@ -685,7 +685,7 @@ class StdoutHandler(PacketHandler):
     '''
         Output packet metadata as JSON to stdout.
     '''
-    def handle_kv(self, key: bytes, value: bytes, query: str, timestamp: datetime.datetime) -> bool:
+    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
         '''Handle key-value packets with separate fields.'''
         try:
             # Handle null/empty keys
@@ -714,7 +714,6 @@ class StdoutHandler(PacketHandler):
             output = {
                 'timestamp': timestamp.isoformat(),
                 'event': 'packet_reassembled',
-                'query': query,
                 'key': key_display,
                 'key_length': len(key) if len(key) > 0 else None,
                 'value_length': len(value),
@@ -742,7 +741,7 @@ class SMTPHandler(PacketHandler):
         self._username = username
         self._password = password
 
-    def handle_kv(self, key: bytes, value: bytes, query: str, timestamp: datetime.datetime) -> bool:
+    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
         '''Send key-value packet via email.'''
         # Convert key to string
         if len(key) == 0:
@@ -836,7 +835,7 @@ class FileHandler(PacketHandler):
             raise ValueError(f'Invalid format: {format}. Must be raw, hex, or base64')
         self._format = format
 
-    def handle_kv(self, key: bytes, value: bytes, query: str, timestamp: datetime.datetime) -> bool:
+    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
         try:
             # Convert key for display
             if len(key) == 0:
@@ -857,7 +856,7 @@ class FileHandler(PacketHandler):
 
             # Write to file with metadata header
             with open(self._path, 'ab') as f:
-                header = f'# {timestamp.isoformat()} - query: {query} - key: {key_str} - value_length: {len(value)} - format: {self._format}\n'
+                header = f'# {timestamp.isoformat()} - key: {key_str} - value_length: {len(value)} - format: {self._format}\n'
                 f.write(header.encode('utf-8'))
 
                 if isinstance(output_value, str):
@@ -887,7 +886,7 @@ class ExecuteHandler(PacketHandler):
         self._command = command
         self._timeout = timeout
 
-    def handle_kv(self, key: bytes, value: bytes, query: str, timestamp: datetime.datetime) -> bool:
+    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
         try:
             # Convert key for environment variable
             if len(key) == 0:
@@ -900,7 +899,6 @@ class ExecuteHandler(PacketHandler):
 
             # Prepare environment variables with metadata
             env = os.environ.copy()
-            env['MUMBOJUMBO_QUERY'] = query
             env['MUMBOJUMBO_TIMESTAMP'] = timestamp.isoformat()
             env['MUMBOJUMBO_KEY'] = key_str
             env['MUMBOJUMBO_KEY_LENGTH'] = str(len(key))
@@ -952,9 +950,10 @@ class SMTPForwarder(object):
 
     def sendmail(self, subject='', text='', charset='utf-8'):
         '''Send email via SMTP (legacy interface).'''
-        # Convert to handler format - use dummy query and timestamp
-        data = text.encode('utf-8') if isinstance(text, str) else text
-        return self._handler.handle(data, 'test', datetime.datetime.now(datetime.timezone.utc))
+        # Convert to handler format - use empty key, text as value
+        value = text.encode('utf-8') if isinstance(text, str) else text
+        key = subject.encode('utf-8') if isinstance(subject, str) else subject
+        return self._handler.handle(key, value, datetime.datetime.now(datetime.timezone.utc))
 
 
 class SecretBox(nacl.secret.SecretBox):
@@ -1562,10 +1561,10 @@ def main():
                 logger.info(f'Packet reassembled from query: {name}, key_len: {key_len}, value_length: {len(value)}, total: {total_length} bytes')
             logger.debug(f'Running handler pipeline with {len(handlers)} handler(s)')
 
-            # Run handler pipeline - all handlers now use handle_kv()
+            # Run handler pipeline
             for handler, handler_name in zip(handlers, handler_names):
                 try:
-                    success = handler.handle_kv(key, value, name, timestamp)
+                    success = handler.handle(key, value, timestamp)
                     if success:
                         logger.debug(f'{handler_name} handler completed successfully')
                     else:

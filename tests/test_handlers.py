@@ -139,15 +139,15 @@ class TestPacketHandlers:
     @pytest.fixture(autouse=True)
     def setup_method(self):
         """Set up test fixtures."""
-        self.test_data = b'Test packet data'
-        self.test_query = 'test.example.com'
+        self.test_key = b'test_key'
+        self.test_value = b'Test packet data'
         self.test_timestamp = datetime.datetime.now(datetime.timezone.utc)
 
     def test_handler_base_class_not_implemented(self):
         """Test that PacketHandler base class requires handle() implementation."""
         handler = PacketHandler()
         with pytest.raises(NotImplementedError):
-            handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
     def test_stdout_handler_success(self):
         """Test StdoutHandler outputs JSON successfully."""
@@ -162,7 +162,7 @@ class TestPacketHandlers:
 
         try:
             handler = StdoutHandler()
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             # Check result
             assert result is True
@@ -173,9 +173,9 @@ class TestPacketHandlers:
 
             # Verify JSON structure
             assert data['event'] == 'packet_reassembled'
-            assert data['query'] == self.test_query
-            assert data['data_length'] == len(self.test_data)
-            assert 'data_preview' in data
+            assert data['key'] == self.test_key.decode('utf-8')
+            assert data['value_length'] == len(self.test_value)
+            assert 'value_preview' in data
             assert 'timestamp' in data
 
         finally:
@@ -195,7 +195,7 @@ class TestPacketHandlers:
 
         try:
             handler = StdoutHandler()
-            result = handler.handle(binary_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, binary_data, self.test_timestamp)
 
             assert result is True
 
@@ -203,7 +203,7 @@ class TestPacketHandlers:
             data = json.loads(output)
 
             # Binary data should be hex-encoded in preview
-            assert data['data_preview'] == binary_data.hex()
+            assert data['value_preview'] == binary_data.hex()
 
         finally:
             sys.stdout = original_stdout
@@ -220,15 +220,15 @@ class TestPacketHandlers:
 
         try:
             handler = StdoutHandler()
-            result = handler.handle(b'', self.test_query, self.test_timestamp)
+            result = handler.handle(b'', b'', self.test_timestamp)
 
             assert result is True
 
             output = captured_output.getvalue().strip()
             data = json.loads(output)
 
-            assert data['data_length'] == 0
-            assert data['data_preview'] == ''
+            assert data['value_length'] == 0
+            assert data['value_preview'] == ''
 
         finally:
             sys.stdout = original_stdout
@@ -248,7 +248,7 @@ class TestPacketHandlers:
 
         try:
             handler = StdoutHandler()
-            result = handler.handle(large_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, large_data, self.test_timestamp)
 
             assert result is True
 
@@ -256,9 +256,9 @@ class TestPacketHandlers:
             data = json.loads(output)
 
             # Preview should be truncated to 100 chars + '...'
-            assert len(data['data_preview']) == 103
-            assert data['data_preview'].endswith('...')
-            assert data['data_length'] == 200
+            assert len(data['value_preview']) == 103
+            assert data['value_preview'].endswith('...')
+            assert data['value_length'] == 200
 
         finally:
             sys.stdout = original_stdout
@@ -270,7 +270,7 @@ class TestPacketHandlers:
 
         try:
             handler = FileHandler(path=tmp_path, format='hex')
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is True
 
@@ -279,12 +279,12 @@ class TestPacketHandlers:
                 content = f.read()
 
             # Check header is present
-            assert 'query: test.example.com' in content
+            assert 'key: test_key' in content
             assert 'length: 16' in content
             assert 'format: hex' in content
 
             # Check data is hex-encoded
-            assert self.test_data.hex() in content
+            assert self.test_value.hex() in content
 
         finally:
             if os.path.exists(tmp_path):
@@ -299,7 +299,7 @@ class TestPacketHandlers:
 
         try:
             handler = FileHandler(path=tmp_path, format='base64')
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is True
 
@@ -307,7 +307,7 @@ class TestPacketHandlers:
                 content = f.read()
 
             # Check data is base64-encoded
-            expected_b64 = base64.b64encode(self.test_data).decode('ascii')
+            expected_b64 = base64.b64encode(self.test_value).decode('ascii')
             assert expected_b64 in content
             assert 'format: base64' in content
 
@@ -322,7 +322,7 @@ class TestPacketHandlers:
 
         try:
             handler = FileHandler(path=tmp_path, format='raw')
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is True
 
@@ -330,9 +330,9 @@ class TestPacketHandlers:
                 content = f.read()
 
             # Check raw data is present
-            assert self.test_data in content
+            assert self.test_value in content
             # Header should also be present (as UTF-8)
-            assert b'query: test.example.com' in content
+            assert b'key: test_key' in content
 
         finally:
             if os.path.exists(tmp_path):
@@ -353,10 +353,10 @@ class TestPacketHandlers:
             handler = FileHandler(path=tmp_path, format='hex')
 
             # Write first packet
-            handler.handle(b'first', 'query1.com', self.test_timestamp)
+            handler.handle(b'key1', b'first', self.test_timestamp)
 
             # Write second packet
-            handler.handle(b'second', 'query2.com', self.test_timestamp)
+            handler.handle(b'key2', b'second', self.test_timestamp)
 
             # Verify both packets are in file
             with open(tmp_path, 'r') as f:
@@ -364,8 +364,8 @@ class TestPacketHandlers:
 
             assert 'first'.encode().hex() in content
             assert 'second'.encode().hex() in content
-            assert 'query1.com' in content
-            assert 'query2.com' in content
+            assert 'key1' in content
+            assert 'key2' in content
 
         finally:
             if os.path.exists(tmp_path):
@@ -378,7 +378,7 @@ class TestPacketHandlers:
 
         try:
             handler = FileHandler(path=tmp_path, format='hex')
-            result = handler.handle(b'', self.test_query, self.test_timestamp)
+            result = handler.handle(b'', b'', self.test_timestamp)
 
             assert result is True
 
@@ -395,7 +395,7 @@ class TestPacketHandlers:
         """Test FileHandler handles file permission errors."""
         # Try to write to a read-only directory (that doesn't exist)
         handler = FileHandler(path='/nonexistent/path/file.txt', format='hex')
-        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+        result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
         assert result is False
 
@@ -409,7 +409,7 @@ class TestPacketHandlers:
             large_data = b'X' * (10 * 1024 * 1024)
 
             handler = FileHandler(path=tmp_path, format='hex')
-            result = handler.handle(large_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, large_data, self.test_timestamp)
 
             assert result is True
 
@@ -426,7 +426,7 @@ class TestPacketHandlers:
         """Test ExecuteHandler runs command successfully."""
         # Use a simple echo command that should work on Unix/Mac
         handler = ExecuteHandler(command='cat', timeout=5)
-        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+        result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
         assert result is True
 
@@ -444,7 +444,7 @@ class TestPacketHandlers:
             os.chmod(tmp_path, 0o755)
 
             handler = ExecuteHandler(command=tmp_path, timeout=5)
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is True
 
@@ -456,7 +456,7 @@ class TestPacketHandlers:
         """Test ExecuteHandler handles command failure."""
         # Use a command that will fail
         handler = ExecuteHandler(command='false', timeout=5)
-        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+        result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
         assert result is False
 
@@ -464,7 +464,7 @@ class TestPacketHandlers:
         """Test ExecuteHandler handles timeout."""
         # Command that sleeps longer than timeout
         handler = ExecuteHandler(command='sleep 10', timeout=1)
-        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+        result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
         assert result is False
 
@@ -480,7 +480,7 @@ class TestPacketHandlers:
             os.chmod(tmp_path, 0o755)
 
             handler = ExecuteHandler(command=tmp_path, timeout=5)
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is True
 
@@ -491,14 +491,14 @@ class TestPacketHandlers:
     def test_execute_handler_empty_data(self):
         """Test ExecuteHandler handles empty data."""
         handler = ExecuteHandler(command='cat', timeout=5)
-        result = handler.handle(b'', self.test_query, self.test_timestamp)
+        result = handler.handle(b'', b'', self.test_timestamp)
 
         assert result is True
 
     def test_execute_handler_command_not_found(self):
         """Test ExecuteHandler handles command not found."""
         handler = ExecuteHandler(command='nonexistent_command_12345', timeout=5)
-        result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+        result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
         assert result is False
 
@@ -508,7 +508,7 @@ class TestPacketHandlers:
         large_data = b'Z' * (1024 * 1024)
 
         handler = ExecuteHandler(command='wc -c', timeout=10)
-        result = handler.handle(large_data, self.test_query, self.test_timestamp)
+        result = handler.handle(self.test_key, large_data, self.test_timestamp)
 
         assert result is True
 
@@ -517,7 +517,7 @@ class TestPacketHandlers:
         # Create script that echoes the data length from environment
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as tmp:
             tmp.write('#!/bin/bash\n')
-            tmp.write('test -n "$MUMBOJUMBO_LENGTH" && exit 0 || exit 1\n')
+            tmp.write('test -n "$MUMBOJUMBO_VALUE_LENGTH" && exit 0 || exit 1\n')
             tmp_path = tmp.name
 
         try:
@@ -527,7 +527,7 @@ class TestPacketHandlers:
             special_data = b'test; echo "injected"; #'
 
             handler = ExecuteHandler(command=tmp_path, timeout=5)
-            result = handler.handle(special_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, special_data, self.test_timestamp)
 
             assert result is True
 
@@ -551,7 +551,7 @@ class TestPacketHandlers:
             mock_smtp = Mock()
             mock_smtp_class.return_value = mock_smtp
 
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is True
             mock_smtp.sendmail.assert_called_once()
@@ -570,7 +570,7 @@ class TestPacketHandlers:
 
         with patch('smtplib.SMTP') as mock_smtp:
             mock_smtp.side_effect = ConnectionRefusedError('Connection refused')
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is False
 
@@ -589,7 +589,7 @@ class TestPacketHandlers:
             mock_smtp = Mock()
             mock_smtp_class.return_value = mock_smtp
             mock_smtp.sendmail.side_effect = smtplib.SMTPSenderRefused(550, 'Sender refused', 'invalid@example.com')
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is False
 
@@ -608,7 +608,7 @@ class TestPacketHandlers:
             mock_smtp = Mock()
             mock_smtp_class.return_value = mock_smtp
             mock_smtp.sendmail.side_effect = smtplib.SMTPDataError(550, 'Message too large')
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is False
 
@@ -627,7 +627,7 @@ class TestPacketHandlers:
             mock_smtp = Mock()
             mock_smtp_class.return_value = mock_smtp
             mock_smtp.sendmail.side_effect = smtplib.SMTPException('General SMTP error')
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is False
 
@@ -645,7 +645,7 @@ class TestPacketHandlers:
         with patch('smtplib.SMTP') as mock_smtp_class:
             mock_smtp = Mock()
             mock_smtp_class.return_value = mock_smtp
-            result = handler.handle(binary_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, binary_data, self.test_timestamp)
 
             assert result is True
             # Verify sendmail was called with hex-encoded data
@@ -665,7 +665,7 @@ class TestPacketHandlers:
         with patch('smtplib.SMTP') as mock_smtp_class:
             mock_smtp = Mock()
             mock_smtp_class.return_value = mock_smtp
-            result = handler.handle(b'', self.test_query, self.test_timestamp)
+            result = handler.handle(b'', b'', self.test_timestamp)
 
             assert result is True
             mock_smtp.sendmail.assert_called_once()
@@ -683,7 +683,7 @@ class TestPacketHandlers:
         with patch('smtplib.SMTP') as mock_smtp_class:
             mock_smtp = Mock()
             mock_smtp_class.return_value = mock_smtp
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is True
             # Verify starttls was not called
@@ -701,7 +701,7 @@ class TestPacketHandlers:
         with patch('smtplib.SMTP') as mock_smtp_class:
             mock_smtp = Mock()
             mock_smtp_class.return_value = mock_smtp
-            result = handler.handle(self.test_data, self.test_query, self.test_timestamp)
+            result = handler.handle(self.test_key, self.test_value, self.test_timestamp)
 
             assert result is True
             # Verify login was not called

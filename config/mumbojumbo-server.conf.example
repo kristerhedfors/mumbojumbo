@@ -74,9 +74,10 @@ client-key = mj_cli_000000000000000000000000000000000000000000000000000000000000
 # timeout = 30
 # #
 # # Environment variables passed to command:
-# #   MUMBOJUMBO_QUERY     - DNS query that completed the packet
-# #   MUMBOJUMBO_TIMESTAMP - ISO 8601 timestamp
-# #   MUMBOJUMBO_LENGTH    - Packet size in bytes
+# #   MUMBOJUMBO_TIMESTAMP   - ISO 8601 timestamp
+# #   MUMBOJUMBO_KEY         - Packet key (empty string for null key)
+# #   MUMBOJUMBO_KEY_LENGTH  - Key size in bytes
+# #   MUMBOJUMBO_VALUE_LENGTH - Value size in bytes
 
 
 #
