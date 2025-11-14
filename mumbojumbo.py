@@ -1523,8 +1523,7 @@ def main():
     # Keys are passed as strings and parsed transparently inside PublicFragment
     #
     pf_cls = DnsPublicFragment.bind(domain=domain,
-                                    server_key=server_key_str,
-                                    client_key=client_key_str)
+                                    server_key=server_key_str)
     #
     # build packet engine based on fragment class
     #
