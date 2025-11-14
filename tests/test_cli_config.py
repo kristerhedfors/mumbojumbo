@@ -43,14 +43,14 @@ class TestCLIArgumentParsing:
     """Test CLI argument parsing for key and domain."""
 
     def test_option_parser_has_key_argument(self):
-        """Test that option parser includes --key argument."""
+        """Test that option parser includes --server-key argument."""
         from mumbojumbo import option_parser
 
         parser = option_parser()
-        # Parse with --key argument
-        opt, args = parser.parse_args(['--key', 'mj_srv_test123'])
+        # Parse with --server-key argument
+        opt, args = parser.parse_args(['--server-key', 'mj_srv_test123'])
 
-        assert opt.key == 'mj_srv_test123'
+        assert opt.server_key == 'mj_srv_test123'
 
     def test_option_parser_has_domain_argument(self):
         """Test that option parser includes --domain argument."""
@@ -63,14 +63,13 @@ class TestCLIArgumentParsing:
         assert opt.domain == '.test.com'
 
     def test_option_parser_short_key_argument(self):
-        """Test that option parser includes -k short argument."""
+        """Test that option parser no longer has -k short argument (removed for clarity)."""
         from mumbojumbo import option_parser
 
         parser = option_parser()
-        # Parse with -k argument
-        opt, args = parser.parse_args(['-k', 'mj_srv_shortkey'])
-
-        assert opt.key == 'mj_srv_shortkey'
+        # Verify -k is not accepted (should raise error)
+        with pytest.raises(SystemExit):
+            opt, args = parser.parse_args(['-k', 'mj_srv_shortkey'])
 
     def test_option_parser_short_domain_argument(self):
         """Test that option parser includes -d short argument."""
@@ -90,11 +89,11 @@ class TestCLIArgumentParsing:
         srv_key, cli_key = get_nacl_keypair_hex()
 
         opt, args = parser.parse_args([
-            '-k', srv_key,
+            '--server-key', srv_key,
             '-d', '.combined.test'
         ])
 
-        assert opt.key == srv_key
+        assert opt.server_key == srv_key
         assert opt.domain == '.combined.test'
 
     def test_option_parser_defaults_none(self):
@@ -104,7 +103,7 @@ class TestCLIArgumentParsing:
         parser = option_parser()
         opt, args = parser.parse_args([])
 
-        assert opt.key is None
+        assert opt.server_key is None
         assert opt.domain is None
 
 

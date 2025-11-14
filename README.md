@@ -104,8 +104,8 @@ domain = .asd.qwe
 network-interface = en0
 # Handler pipeline: comma-separated list (stdout, smtp, file, execute)
 handlers = stdout
-mumbojumbo-server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
-mumbojumbo-client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
+server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
+client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
 
 [smtp]
 server = smtp.gmail.com

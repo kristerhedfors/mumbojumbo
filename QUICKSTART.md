@@ -246,8 +246,8 @@ timeout = 5
 domain = .asd.qwe
 network-interface = en0  # macOS: en0, en1; Linux: eth0, wlan0
 handlers = stdout  # Comma-separated: stdout, smtp, file, execute
-mumbojumbo-server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
-mumbojumbo-client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
+server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
+client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
 
 # Optional handler configurations
 [smtp]

@@ -539,8 +539,8 @@ network-interface = en0
 # Handler pipeline: comma-separated list of handlers (REQUIRED)
 # Available handlers: stdout, smtp, file, execute
 handlers = stdout
-mumbojumbo-server-key = {mumbojumbo_server_key}
-mumbojumbo-client-key = {mumbojumbo_client_key}
+server-key = {mumbojumbo_server_key}
+client-key = {mumbojumbo_client_key}
 
 [smtp]
 server = 127.0.0.1
@@ -567,8 +567,8 @@ def option_parser():
     p = optparse.OptionParser(usage=__usage__)
     p.add_option('-c', '--config', metavar='path',
                  help='use this config file')
-    p.add_option('-k', '--key', metavar='server_key',
-                 help='override mumbojumbo-server-key from config (format: mj_srv_<64_hex_chars>)')
+    p.add_option('', '--server-key', metavar='server_key',
+                 help='override server-key from config (format: mj_srv_<64_hex_chars>)')
     p.add_option('-d', '--domain', metavar='domain',
                  help='override domain from config (e.g., .example.com)')
     p.add_option('', '--gen-keys', action='store_true',
@@ -1267,7 +1267,7 @@ def main():
         sys.exit()
 
     # Check if we have minimum required values from env vars or CLI
-    has_server_key = opt.key or os.environ.get('MUMBOJUMBO_SERVER_KEY')
+    has_server_key = opt.server_key or os.environ.get('MUMBOJUMBO_SERVER_KEY')
     has_domain = opt.domain or os.environ.get('MUMBOJUMBO_DOMAIN')
 
     # Determine if we need a config file
@@ -1420,17 +1420,17 @@ def main():
 
     # Get server key with precedence chain
     server_key_str = None
-    if opt.key:
-        server_key_str = opt.key
+    if opt.server_key:
+        server_key_str = opt.server_key
         logger.warning('Server key provided via CLI argument - this is visible in process list. Consider using MUMBOJUMBO_SERVER_KEY environment variable instead.')
     elif os.environ.get('MUMBOJUMBO_SERVER_KEY'):
         server_key_str = os.environ.get('MUMBOJUMBO_SERVER_KEY')
         logger.info('Using server key from MUMBOJUMBO_SERVER_KEY environment variable')
-    elif use_config_file and config.has_option('main', 'mumbojumbo-server-key'):
-        server_key_str = config.get('main', 'mumbojumbo-server-key')
+    elif use_config_file and config.has_option('main', 'server-key'):
+        server_key_str = config.get('main', 'server-key')
     else:
-        logger.error('Missing mumbojumbo-server-key: must be provided via --key, MUMBOJUMBO_SERVER_KEY, or config file')
-        print('ERROR: Server key required (use --key, MUMBOJUMBO_SERVER_KEY env var, or config file)')
+        logger.error('Missing server-key: must be provided via --server-key, MUMBOJUMBO_SERVER_KEY, or config file')
+        print('ERROR: Server key required (use --server-key, MUMBOJUMBO_SERVER_KEY env var, or config file)')
         sys.exit(1)
 
     # Get domain with precedence chain
@@ -1461,8 +1461,8 @@ def main():
     if os.environ.get('MUMBOJUMBO_CLIENT_KEY'):
         client_key_str = os.environ.get('MUMBOJUMBO_CLIENT_KEY')
         logger.info('Using client key from MUMBOJUMBO_CLIENT_KEY environment variable')
-    elif use_config_file and config.has_option('main', 'mumbojumbo-client-key'):
-        client_key_str = config.get('main', 'mumbojumbo-client-key')
+    elif use_config_file and config.has_option('main', 'client-key'):
+        client_key_str = config.get('main', 'client-key')
 
     # Validate key format before passing to bind()
     # bind() will parse them transparently

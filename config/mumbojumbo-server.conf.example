@@ -30,11 +30,11 @@ handlers = stdout
 
 # Server private key (mj_srv_<64_hex_chars>)
 # REQUIRED: Generate with --gen-keys
-mumbojumbo-server-key = mj_srv_0000000000000000000000000000000000000000000000000000000000000000
+server-key = mj_srv_0000000000000000000000000000000000000000000000000000000000000000
 
 # Client public key (mj_cli_<64_hex_chars>)
 # Optional: Used for validation, clients encrypt with server's public key
-mumbojumbo-client-key = mj_cli_0000000000000000000000000000000000000000000000000000000000000000
+client-key = mj_cli_0000000000000000000000000000000000000000000000000000000000000000
 
 
 #
