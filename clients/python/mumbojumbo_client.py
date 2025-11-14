@@ -22,7 +22,8 @@ import argparse
 import base64
 import struct
 import secrets
-import subprocess
+import asyncio
+import socket
 import nacl.public
 
 
@@ -110,32 +111,28 @@ def create_dns_query(encrypted, domain):
     return '.'.join(labels) + domain
 
 
-def send_dns_query(dns_name):
-    """Send DNS query using dig command."""
-    try:
-        result = subprocess.run(
-            ['dig', '+short', dns_name],
-            capture_output=True,
-            timeout=5,
-            text=True
-        )
-        return result.returncode == 0
-    except subprocess.TimeoutExpired:
-        return False
-    except FileNotFoundError:
-        # dig not found, try with host command
+async def send_dns_query_async(dns_name, success_callback=None, error_callback=None):
+    """
+    Send DNS query using native Python socket resolution (fire-and-forget).
+
+    Does not wait for or check responses - just initiates the query.
+    Optionally calls callbacks to track success/error counts.
+    """
+    async def _query_task():
+        """Inner task that tracks success/error."""
         try:
-            result = subprocess.run(
-                ['host', dns_name],
-                capture_output=True,
-                timeout=5,
-                text=True
-            )
-            return result.returncode == 0
-        except:
-            return False
-    except Exception:
-        return False
+            loop = asyncio.get_event_loop()
+            await loop.getaddrinfo(dns_name, None)
+            if success_callback:
+                success_callback()
+        except Exception:
+            if error_callback:
+                error_callback()
+
+    # Create task and suppress exception warnings
+    task = asyncio.create_task(_query_task())
+    # Suppress "Task exception was never retrieved" warnings
+    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
 
 def fragment_data(data, max_fragment_size):
@@ -267,30 +264,38 @@ class MumbojumboClient:
 
         return queries
 
-    def send(self, key, value):
+    async def _generate_queries_streaming(self, key, value):
         """
-        Send key-value pair via DNS queries.
+        Generate DNS queries as async generator (streaming, no pre-allocation).
 
-        Args:
-            key: Key bytes or None (for null/zero-length key)
-            value: Value bytes (MUST be at least 1 byte, cannot be None or empty)
-
-        Returns:
-            List of (dns_query, success) tuples
-
-        Example:
-            results = client.send(b'filename.txt', b'Hello, World!')
-            for dns_query, success in results:
-                print(f"Query: {dns_query}, Success: {success}")
+        Yields DNS query strings one at a time without storing all in memory.
         """
-        queries = self._generate_dns_queries(key, value)
+        # Validate inputs
+        key, value = self._validate_key_value(key, value)
 
-        # Send each query
-        results = []
-        for dns_name in queries:
-            success = send_dns_query(dns_name)
-            results.append((dns_name, success))
-        return results
+        # Combine key and value into single data blob
+        data = key + value
+        key_len = len(key)
+
+        # Get packet ID
+        packet_id = self._get_next_packet_id()
+
+        # Fragment data
+        fragments = fragment_data(data, self.max_fragment_size)
+        frag_count = len(fragments)
+
+        # Generate and yield DNS queries one at a time
+        for frag_index, frag_data in enumerate(fragments):
+            # Create fragment with header (key_len same for all fragments)
+            plaintext = create_fragment(packet_id, frag_index, frag_count, frag_data, key_len)
+
+            # Encrypt with SealedBox
+            encrypted = encrypt_fragment(plaintext, self.server_client_key)
+
+            # Create DNS query name
+            dns_name = create_dns_query(encrypted, self.domain)
+
+            yield dns_name
 
     def generate_queries(self, key, value):
         """
@@ -310,17 +315,102 @@ class MumbojumboClient:
         """
         return self._generate_dns_queries(key, value)
 
+    async def send_async(self, key, value, rate_qps=10, progress_callback=None,
+                         query_callback=None):
+        """
+        Send key-value pair via DNS queries with rate limiting (fire-and-forget).
+
+        Simple approach:
+        - Fires off DNS queries at controlled rate (no waiting for responses)
+        - Tracks success/error counts in background
+        - O(1) memory usage (streaming)
+
+        Args:
+            key: Key bytes or None (for null/zero-length key)
+            value: Value bytes (MUST be at least 1 byte, cannot be None or empty)
+            rate_qps: Queries per second (default 10)
+            progress_callback: Optional callback(sent, total, succeeded, failed) called periodically
+            query_callback: Optional callback(dns_query) called when query is generated
+
+        Returns:
+            Dictionary with summary: {'total': N, 'succeeded': N, 'failed': N}
+
+        Example:
+            client = MumbojumboClient('mj_cli_abc123...', '.example.com')
+            summary = await client.send_async(b'mykey', b'myvalue', rate_qps=20)
+            print(f"Sent {summary['total']} queries, {summary['succeeded']} succeeded")
+        """
+        total = 0
+        succeeded = 0
+        failed = 0
+        delay_between_queries = 1.0 / rate_qps
+
+        def on_success():
+            nonlocal succeeded
+            succeeded += 1
+
+        def on_error():
+            nonlocal failed
+            failed += 1
+
+        # Generate and send queries with rate limiting
+        async for dns_query in self._generate_queries_streaming(key, value):
+            total += 1
+
+            # Call query callback if provided (for outputting DNS queries)
+            if query_callback:
+                query_callback(dns_query)
+
+            # Fire off DNS query (don't wait) with callbacks
+            await send_dns_query_async(dns_query, on_success, on_error)
+
+            # Call progress callback if provided
+            if progress_callback:
+                progress_callback(total, total, succeeded, failed)
+
+            # Rate limiting: sleep between queries
+            await asyncio.sleep(delay_between_queries)
+
+        # Return summary
+        return {'total': total, 'succeeded': succeeded, 'failed': failed}
+
+    def send_sync(self, key, value, rate_qps=10, progress_callback=None,
+                  query_callback=None):
+        """
+        Synchronous wrapper for send_async() - blocks until all queries sent.
+
+        Args:
+            key: Key bytes or None (for null/zero-length key)
+            value: Value bytes (MUST be at least 1 byte, cannot be None or empty)
+            rate_qps: Queries per second (default 10)
+            progress_callback: Optional callback(sent, total) called after each query sent
+            query_callback: Optional callback(dns_query) called when query is generated
+
+        Example:
+            client = MumbojumboClient('mj_cli_abc123...', '.example.com')
+            client.send_sync(b'mykey', b'myvalue', rate_qps=20)
+        """
+        return asyncio.run(
+            self.send_async(key, value, rate_qps, progress_callback, query_callback)
+        )
+
     # Legacy aliases for backwards compatibility with tests
     def send_key_val(self, key, value):
-        """Legacy alias for send(). Use send() instead."""
-        return self.send(key, value)
+        """
+        Legacy alias for send_sync(). Use send_async() or send_sync() instead.
+
+        This method exists for backwards compatibility with existing tests.
+        Internally calls send_sync() with default parameters.
+        """
+        return self.send_sync(key, value)
 
     def generate_queries_key_val(self, key, value):
         """Legacy alias for generate_queries(). Use generate_queries() instead."""
         return self.generate_queries(key, value)
 
 
-def main():
+async def async_main():
+    """Async version of main function."""
     parser = argparse.ArgumentParser(
         description='Mumbojumbo DNS Client - Send key-value pairs via DNS queries',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -369,6 +459,12 @@ Configuration precedence: CLI args > Environment variables
         help='Verbose output'
     )
     parser.add_argument(
+        '--rate',
+        type=float,
+        default=10,
+        help='Queries per second rate limit (default: 10)'
+    )
+    parser.add_argument(
         'files',
         nargs='*',
         help='Files to send (filename as key, contents as value)'
@@ -404,9 +500,14 @@ Configuration precedence: CLI args > Environment variables
         print(f"Error initializing client: {e}", file=sys.stderr)
         return 1
 
-    # Send data without loading all files into memory at once
-    total_success = 0
-    total_queries = 0
+    # Progress callback for verbose mode
+    def progress_callback(sent, total, succeeded, failed):
+        if args.verbose:
+            print(f"\rProgress: {sent}/{total} sent ({succeeded} succeeded, {failed} failed)", end='', file=sys.stderr)
+
+    # Query callback to print DNS queries to stdout (for compatibility with tests)
+    def query_callback(dns_query):
+        print(dns_query)
 
     if args.key is not None and args.value is not None:
         # Explicit key-value pair - process immediately
@@ -417,28 +518,23 @@ Configuration precedence: CLI args > Environment variables
             print(f"Sending pair 1/1: key='{args.key}', value={len(value)} bytes", file=sys.stderr)
 
         try:
-            results = client_obj.send(key, value)
+            summary = await client_obj.send_async(
+                key, value,
+                rate_qps=args.rate,
+                progress_callback=progress_callback if args.verbose else None,
+                query_callback=query_callback
+            )
+            if args.verbose:
+                print("", file=sys.stderr)  # Newline after progress
+                print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
         except Exception as e:
+            if args.verbose:
+                print("", file=sys.stderr)  # Newline after progress
             print(f"Error sending key-value pair: {e}", file=sys.stderr)
             if args.verbose:
                 import traceback
                 traceback.print_exc(file=sys.stderr)
             return 1
-
-        # Process results
-        for frag_index, (dns_name, success) in enumerate(results):
-            print(dns_name)
-            if success:
-                total_success += 1
-            total_queries += 1
-
-            if args.verbose:
-                frag_count = len(results)
-                print(f"  Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
-                if success:
-                    print(f"    ✓ Sent successfully", file=sys.stderr)
-                else:
-                    print(f"    ✗ Send failed (DNS query timed out or failed)", file=sys.stderr)
 
         if args.verbose:
             print("", file=sys.stderr)
@@ -467,31 +563,24 @@ Configuration precedence: CLI args > Environment variables
                 print(f"Sending pair {file_index + 1}/{len(args.files)}: key='{filepath}', value={len(value)} bytes", file=sys.stderr)
 
             try:
-                results = client_obj.send_key_val(key, value)
+                summary = await client_obj.send_async(
+                    key, value,
+                    rate_qps=args.rate,
+                    progress_callback=progress_callback if args.verbose else None,
+                    query_callback=query_callback
+                )
+                if args.verbose:
+                    print("", file=sys.stderr)  # Newline after progress
+                    print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
+                    print("", file=sys.stderr)
             except Exception as e:
-                print(f"Error sending key-value pair: {e}", file=sys.stderr)
+                if args.verbose:
+                    print("", file=sys.stderr)  # Newline after progress
+                print(f"Error sending file {filepath}: {e}", file=sys.stderr)
                 if args.verbose:
                     import traceback
                     traceback.print_exc(file=sys.stderr)
                 return 1
-
-            # Process results
-            for frag_index, (dns_name, success) in enumerate(results):
-                print(dns_name)
-                if success:
-                    total_success += 1
-                total_queries += 1
-
-                if args.verbose:
-                    frag_count = len(results)
-                    print(f"  Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
-                    if success:
-                        print(f"    ✓ Sent successfully", file=sys.stderr)
-                    else:
-                        print(f"    ✗ Send failed (DNS query timed out or failed)", file=sys.stderr)
-
-            if args.verbose:
-                print("", file=sys.stderr)
 
             # file_contents goes out of scope here, can be garbage collected
 
@@ -515,36 +604,33 @@ Configuration precedence: CLI args > Environment variables
             print(f"Sending pair 1/1: key={key_display}, value={len(value)} bytes", file=sys.stderr)
 
         try:
-            results = client_obj.send(key, value)
+            summary = await client_obj.send_async(
+                key, value,
+                rate_qps=args.rate,
+                progress_callback=progress_callback if args.verbose else None,
+                query_callback=query_callback
+            )
+            if args.verbose:
+                print("", file=sys.stderr)  # Newline after progress
+                print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
         except Exception as e:
-            print(f"Error sending key-value pair: {e}", file=sys.stderr)
+            if args.verbose:
+                print("", file=sys.stderr)  # Newline after progress
+            print(f"Error sending data: {e}", file=sys.stderr)
             if args.verbose:
                 import traceback
                 traceback.print_exc(file=sys.stderr)
             return 1
 
-        # Process results
-        for frag_index, (dns_name, success) in enumerate(results):
-            print(dns_name)
-            if success:
-                total_success += 1
-            total_queries += 1
-
-            if args.verbose:
-                frag_count = len(results)
-                print(f"  Fragment {frag_index + 1}/{frag_count}:", file=sys.stderr)
-                if success:
-                    print(f"    ✓ Sent successfully", file=sys.stderr)
-                else:
-                    print(f"    ✗ Send failed (DNS query timed out or failed)", file=sys.stderr)
-
         if args.verbose:
             print("", file=sys.stderr)
 
-    if args.verbose:
-        print(f"Sent {total_success}/{total_queries} fragment(s) successfully", file=sys.stderr)
+    return 0
 
-    return 0 if total_success == total_queries else 1
+
+def main():
+    """Synchronous wrapper for async_main()."""
+    return asyncio.run(async_main())
 
 
 if __name__ == '__main__':
