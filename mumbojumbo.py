@@ -190,12 +190,18 @@ class PublicFragment(Fragment):
         return ciphertext
 
     def deserialize(self, ciphertext):
+        # Validate ciphertext length before attempting decryption
+        # SealedBox requires at least 48 bytes (32 for ephemeral pubkey + 16 for MAC)
+        if len(ciphertext) < 48:
+            logger.debug(f'Ciphertext too short: {len(ciphertext)} bytes (minimum 48)')
+            return None
+
         plaintext = b''
         try:
             plaintext = self._sealedbox_decrypt.decrypt(ciphertext)
-        except:
-            logger.debug('decrypt exception:' + traceback.format_exc())
-            raise
+        except Exception as e:
+            logger.debug(f'Decrypt failed: {type(e).__name__}: {e}')
+            return None
         logger.debug('decrypted {0} bytes of data'.format(len(plaintext)))
         logger.debug('{0}'.format(repr(plaintext)))
         return super(PublicFragment, self).deserialize(plaintext)
@@ -238,7 +244,13 @@ class DnsPublicFragment(PublicFragment):
         logger.debug('DnsPublicFragment: deserialize() enter')
         if dnsname.endswith(self._domain):
             serb32 = dnsname[:-len(self._domain)].replace('.', '')
-            ser = self._b32dec(serb32)
+            try:
+                ser = self._b32dec(serb32)
+            except Exception as e:
+                # Invalid base32 encoding - likely not a mumbojumbo fragment
+                logger.debug(f'Base32 decode failed for {dnsname[:30]}: {type(e).__name__}')
+                return None
+
             val = super(DnsPublicFragment, self).deserialize(ser)
             if val is None:
                 logger.debug('DnsPublicFragment: deserialize() error')
@@ -249,6 +261,7 @@ class DnsPublicFragment(PublicFragment):
             msg = 'DnsPublicFragment: deserialize() invalid domain: '
             msg += dnsname[:10]
             logger.debug(msg)
+            return None
 
     def _b32enc(self, s):
         return base64.b32encode(s).replace(b'=', b'').lower().decode('ascii')
@@ -1539,14 +1552,14 @@ def main():
         logger.debug('read DNS query for: ' + name)
         #
         # try-catch to prevent deserialization exceptions from causing
-        # a DOS attack.
+        # a DOS attack. Most errors are now handled gracefully in deserialize()
+        # methods, so this is a safety net for unexpected errors only.
         #
         try:
             packet_engine.from_wire(name)
-        except:
-            msg = 'exception in from_wire(): '
-            msg += traceback.format_exc()
-            logger.info(msg)
+        except Exception as e:
+            # Log at debug level - most "errors" are just invalid DNS queries
+            logger.debug(f'from_wire() error for {name[:30]}: {type(e).__name__}: {e}')
             continue
         #
         # did a packet complete after reading the last fragment?
