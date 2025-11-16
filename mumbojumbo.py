@@ -795,7 +795,6 @@ class DnsQueryReader(object):
             self._tshark_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            bufsize=1
         )
 
         for line in iter(proc.stdout.readline, b''):
