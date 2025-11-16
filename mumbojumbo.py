@@ -1028,8 +1028,8 @@ def option_parser():
     # Network
     parser.add_option('-i', '--interface', dest='interface', default='en0',
                       help='Network interface (default: en0)')
-    parser.add_option('-d', '--domain', dest='domain', default='.example.com',
-                      help='DNS domain suffix (default: .example.com)')
+    parser.add_option('-d', '--domain', dest='domain',
+                      help='DNS domain suffix (e.g., .example.com) or set MUMBOJUMBO_DOMAIN env var')
 
     # Actions
     parser.add_option('--gen-keys', dest='gen_keys', action='store_true',
@@ -1053,7 +1053,7 @@ def main():
     # Generate keys
     if opts.gen_keys:
         client_key = get_client_key_hex()
-        domain = opts.domain if opts.domain != '.example.com' else f'.{secrets.token_hex(3)}.{secrets.token_hex(3)}'
+        domain = opts.domain or os.getenv('MUMBOJUMBO_DOMAIN') or f'.{secrets.token_hex(3)}.{secrets.token_hex(3)}'
 
         print('# Mumbojumbo Configuration')
         print(f'export MUMBOJUMBO_CLIENT_KEY={client_key}')
@@ -1062,10 +1062,14 @@ def main():
 
     # Get client key from opts or environment
     client_key_str = opts.client_key or os.getenv('MUMBOJUMBO_CLIENT_KEY')
-    domain = opts.domain or os.getenv('MUMBOJUMBO_DOMAIN', '.example.com')
+    domain = opts.domain or os.getenv('MUMBOJUMBO_DOMAIN')
 
     if not client_key_str:
         logger.error('Client key not provided. Use --gen-keys or set MUMBOJUMBO_CLIENT_KEY.')
+        return 1
+
+    if not domain:
+        logger.error('Domain not provided. Use -d/--domain or set MUMBOJUMBO_DOMAIN env var.')
         return 1
 
     # Decode and derive keys
