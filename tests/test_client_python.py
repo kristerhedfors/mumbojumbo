@@ -1,749 +1,501 @@
 #!/usr/bin/env python3
-"""
-Comprehensive tests for Python mumbojumbo client.
+"""Tests for Python mumbojumbo client v2.0.
 
-Tests cover:
-- Fragment creation and serialization
-- Encryption/decryption round-trips
-- Base32 encoding
-- DNS query generation
-- Single and multi-fragment messages
-- Edge cases and error handling
-- End-to-end integration with server
+Tests the MumbojumboClient class and its integration with the server.
 """
 
-import sys
 import os
-import struct
-import base64
-import subprocess
-import tempfile
-import pytest
-import nacl.public
+import sys
+import secrets
 
-# Import client module
+import pytest
+
+# Import client module dynamically
 client_path = os.path.join(os.path.dirname(__file__), '..', 'clients', 'python', 'mumbojumbo_client.py')
 import importlib.util
 spec = importlib.util.spec_from_file_location("mumbojumbo_client", client_path)
 client = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(client)
 
+# Import server components for integration tests
+from mumbojumbo import (
+    PacketEngine,
+    DnsFragment,
+    derive_keys,
+    encode_key_hex,
+    decode_key_hex,
+)
 
-class TestKeyParsing:
-    """Test public key parsing through MumbojumboClient constructor."""
-
-    def test_parse_valid_key(self):
-        """Valid key should parse correctly through constructor."""
-        key_str = 'mj_cli_' + 'a' * 64
-        # Test that client can be created with hex key string
-        client_obj = client.MumbojumboClient(key_str, '.test')
-        assert client_obj.server_client_key is not None
-        assert len(bytes(client_obj.server_client_key)) == 32
-
-    def test_parse_key_wrong_prefix(self):
-        """Key without mj_cli_ prefix should fail."""
-        with pytest.raises(ValueError, match='must start with'):
-            client.MumbojumboClient('wrong_prefix_' + 'a' * 64, '.test')
-
-    def test_parse_key_wrong_length(self):
-        """Key with wrong hex length should fail."""
-        with pytest.raises(ValueError, match='Invalid hex key length'):
-            client.MumbojumboClient('mj_cli_' + 'a' * 60, '.test')
-
-    def test_parse_key_invalid_hex(self):
-        """Key with invalid hex characters should fail."""
-        with pytest.raises(ValueError, match='Invalid hex'):
-            client.MumbojumboClient('mj_cli_' + 'z' * 64, '.test')
-
-
-class TestFragmentCreation:
-    """Test fragment header creation."""
-
-    def test_basic_fragment(self):
-        """Test basic fragment creation."""
-        packet_id = 0x1234
-        frag_index = 0
-        frag_count = 1
-        frag_data = b"HI"
-
-        fragment = client.create_fragment(packet_id, frag_index, frag_count, frag_data)
-
-        # Verify header (18 bytes: u64 + u32 + u32 + u8 + u8)
-        assert len(fragment) == 20  # 18 byte header + 2 byte data
-        assert fragment[:8] == b'\x00\x00\x00\x00\x00\x00\x12\x34'  # packet_id big-endian u64
-        assert fragment[8:12] == b'\x00\x00\x00\x00'  # frag_index u32
-        assert fragment[12:16] == b'\x00\x00\x00\x01'  # frag_count u32
-        assert fragment[16:17] == b'\x02'  # data_len u8
-        assert fragment[17:18] == b'\x00'  # key_len u8 (default 0)
-        assert fragment[18:] == b"HI"
-
-    def test_multi_fragment(self):
-        """Test multi-fragment packet header."""
-        packet_id = 0xDEAD
-        frag_index = 1
-        frag_count = 3
-        frag_data = b"test"
-
-        fragment = client.create_fragment(packet_id, frag_index, frag_count, frag_data)
-
-        # Verify header fields (18 bytes: u64 + u32 + u32 + u8 + u8)
-        pid, fidx, fcnt, flen, klen = struct.unpack('!QIIBB', fragment[:18])
-        assert pid == 0xDEAD
-        assert fidx == 1
-        assert fcnt == 3
-        assert flen == 4
-        assert klen == 0
-
-    def test_empty_fragment(self):
-        """Test empty fragment data."""
-        fragment = client.create_fragment(0x0001, 0, 1, b'')
-        assert len(fragment) == 18  # Just header (18 bytes)
-        assert fragment[16:17] == b'\x00'  # data_len = 0
-        assert fragment[17:18] == b'\x00'  # key_len = 0
-
-    def test_max_size_fragment(self):
-        """Test maximum size fragment (u8 limit of 255 bytes)."""
-        frag_data = b'X' * 255
-        fragment = client.create_fragment(0x0001, 0, 1, frag_data)
-        assert len(fragment) == 18 + 255  # 18-byte header + 255 bytes data
-
-    def test_oversized_fragment_fails(self):
-        """Fragment data over u8 limit (255 bytes) should fail."""
-        frag_data = b'X' * 256
-        with pytest.raises(ValueError, match='exceeds u8 limit'):
-            client.create_fragment(0x0001, 0, 1, frag_data)
-
-    def test_invalid_packet_id(self):
-        """Invalid packet ID should fail."""
-        with pytest.raises(ValueError, match='packet_id out of range'):
-            client.create_fragment(0x10000000000000000, 0, 1, b'test')  # Beyond u64 max
-
-    def test_invalid_frag_index(self):
-        """Fragment index >= frag_count should fail."""
-        with pytest.raises(ValueError, match='Invalid frag_index'):
-            client.create_fragment(0x0001, 3, 3, b'test')
-
-
-class TestKeyValueFragments:
-    """Test key-value fragment creation and handling."""
-
-    def test_fragment_with_key_len(self):
-        """Test fragment creation with key_len parameter."""
-        packet_id = 0x5678
-        frag_index = 0
-        frag_count = 1
-        frag_data = b"key=value"
-        key_len = 3  # First 3 bytes are the key
-
-        fragment = client.create_fragment(packet_id, frag_index, frag_count, frag_data, key_len)
-
-        # Verify header (18 bytes: u64 + u32 + u32 + u8 + u8)
-        assert len(fragment) == 27  # 18 byte header + 9 byte data
-        pid, fidx, fcnt, flen, klen = struct.unpack('!QIIBB', fragment[:18])
-        assert pid == 0x5678
-        assert fidx == 0
-        assert fcnt == 1
-        assert flen == 9
-        assert klen == 3
-        assert fragment[18:] == b"key=value"
-
-    def test_key_len_max_value(self):
-        """Test key_len with maximum u8 value (255)."""
-        frag_data = b'X' * 80  # Use reasonable fragment size
-        fragment = client.create_fragment(0x0001, 0, 1, frag_data, key_len=255)
-
-        # Verify key_len in header
-        klen = struct.unpack('B', fragment[17:18])[0]
-        assert klen == 255
-
-    def test_key_len_out_of_range(self):
-        """Test that key_len > 255 fails."""
-        with pytest.raises(ValueError, match='key_len out of u8 range'):
-            client.create_fragment(0x0001, 0, 1, b'test', key_len=256)
-
-
-class TestEncryption:
-    """Test SealedBox encryption/decryption."""
-
-    def test_encrypt_decrypt_round_trip(self):
-        """Encryption and decryption should be inverses."""
-        # Generate keypair
-        server_privkey = nacl.public.PrivateKey.generate()
-        server_pubkey = server_privkey.public_key
-
-        plaintext = b"test data"
-
-        # Encrypt (client-side)
-        ciphertext = client.encrypt_fragment(plaintext, server_pubkey)
-
-        # Decrypt (server-side)
-        sealedbox = nacl.public.SealedBox(server_privkey)
-        decrypted = sealedbox.decrypt(ciphertext)
-
-        assert plaintext == decrypted
-
-    def test_encryption_overhead(self):
-        """SealedBox should add 48 bytes overhead."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        server_pubkey = server_privkey.public_key
-
-        plaintext = b"test"
-        ciphertext = client.encrypt_fragment(plaintext, server_pubkey)
-
-        assert len(ciphertext) == len(plaintext) + 48
-
-    def test_encryption_is_nondeterministic(self):
-        """SealedBox encryption should be nondeterministic."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        server_pubkey = server_privkey.public_key
-
-        plaintext = b"test"
-        ciphertext1 = client.encrypt_fragment(plaintext, server_pubkey)
-        ciphertext2 = client.encrypt_fragment(plaintext, server_pubkey)
-
-        # Different ciphertexts for same plaintext
-        assert ciphertext1 != ciphertext2
-
-        # But both decrypt to same plaintext
-        sealedbox = nacl.public.SealedBox(server_privkey)
-        assert sealedbox.decrypt(ciphertext1) == plaintext
-        assert sealedbox.decrypt(ciphertext2) == plaintext
-
-
-class TestBase32Encoding:
-    """Test base32 encoding."""
-
-    def test_basic_encoding(self):
-        """Test basic base32 encoding."""
-        data = b"test"
-        encoded = client.base32_encode(data)
-        assert encoded == "orsxg5a"  # Lowercase, no padding
-
-    def test_encoding_no_padding(self):
-        """Base32 should not include padding."""
-        data = b"hello"
-        encoded = client.base32_encode(data)
-        assert '=' not in encoded
-
-    def test_encoding_is_lowercase(self):
-        """Base32 should be lowercase."""
-        data = b"HELLO WORLD"
-        encoded = client.base32_encode(data)
-        assert encoded == encoded.lower()
-        assert encoded.isupper() is False
-
-    def test_empty_data(self):
-        """Empty data should encode to empty string."""
-        encoded = client.base32_encode(b'')
-        assert encoded == ''
-
-
-class TestDNSLabelSplitting:
-    """Test DNS label splitting."""
-
-    def test_short_string(self):
-        """Short string should be single label."""
-        data = "a" * 50
-        labels = client.split_to_labels(data, 63)
-        assert len(labels) == 1
-        assert labels[0] == data
-
-    def test_exactly_63_chars(self):
-        """Exactly 63 chars should be single label."""
-        data = "a" * 63
-        labels = client.split_to_labels(data, 63)
-        assert len(labels) == 1
-        assert len(labels[0]) == 63
-
-    def test_64_chars(self):
-        """64 chars should split into two labels."""
-        data = "a" * 64
-        labels = client.split_to_labels(data, 63)
-        assert len(labels) == 2
-        assert len(labels[0]) == 63
-        assert len(labels[1]) == 1
-
-    def test_long_string(self):
-        """Long string should split correctly."""
-        data = "a" * 200
-        labels = client.split_to_labels(data, 63)
-        assert len(labels) == 4  # 63 + 63 + 63 + 11
-        assert len(labels[0]) == 63
-        assert len(labels[1]) == 63
-        assert len(labels[2]) == 63
-        assert len(labels[3]) == 11
-
-    def test_empty_string(self):
-        """Empty string should return empty list or list with empty string."""
-        labels = client.split_to_labels('', 63)
-        # Empty string splits into empty list
-        assert labels == []
-
-
-class TestDNSQueryGeneration:
-    """Test DNS query name generation."""
-
-    def test_basic_query(self):
-        """Test basic DNS query generation."""
-        encrypted = b"test"
-        domain = ".asd.qwe"
-
-        dns_name = client.create_dns_query(encrypted, domain)
-
-        # Should be base32(encrypted) + domain
-        expected_b32 = client.base32_encode(encrypted)
-        assert dns_name == expected_b32 + domain
-
-    def test_long_encrypted_data(self):
-        """Long encrypted data should split into labels."""
-        # Create long data that will need multiple labels
-        encrypted = b"X" * 100  # ~160 chars base32
-        domain = ".test.com"
-
-        dns_name = client.create_dns_query(encrypted, domain)
-
-        # Should contain dots for label splitting
-        assert dns_name.endswith(domain)
-        assert '.' in dns_name[:-len(domain)]  # Has label separators
-
-    def test_query_format(self):
-        """DNS query should have proper format."""
-        encrypted = b"abc"
-        domain = ".example.org"
-
-        dns_name = client.create_dns_query(encrypted, domain)
-
-        # Should be lowercase (base32)
-        assert dns_name[:-len(domain)].islower()
-        # Should end with domain
-        assert dns_name.endswith(domain)
-        # Should be valid DNS name characters
-        assert all(c.isalnum() or c == '.' for c in dns_name)
-
-
-class TestDataFragmentation:
-    """Test data fragmentation."""
-
-    def test_small_data(self):
-        """Small data should be single fragment."""
-        data = b"Hello"
-        fragments = client.fragment_data(data, 80)
-        assert len(fragments) == 1
-        assert fragments[0] == data
-
-    def test_exactly_max_size(self):
-        """Data exactly max size should be single fragment."""
-        data = b"X" * 80
-        fragments = client.fragment_data(data, 80)
-        assert len(fragments) == 1
-        assert fragments[0] == data
-
-    def test_one_byte_over(self):
-        """One byte over max should be two fragments."""
-        data = b"X" * 81
-        fragments = client.fragment_data(data, 80)
-        assert len(fragments) == 2
-        assert len(fragments[0]) == 80
-        assert len(fragments[1]) == 1
-
-    def test_multi_fragment(self):
-        """Large data should split correctly."""
-        data = b"X" * 250
-        fragments = client.fragment_data(data, 80)
-        assert len(fragments) == 4  # 80 + 80 + 80 + 10
-        assert len(fragments[0]) == 80
-        assert len(fragments[1]) == 80
-        assert len(fragments[2]) == 80
-        assert len(fragments[3]) == 10
-
-    def test_empty_data(self):
-        """Empty data should return one empty fragment."""
-        fragments = client.fragment_data(b'', 80)
-        assert len(fragments) == 1
-        assert fragments[0] == b''
-
-
-class TestMumbojumboClient:
-    """Test the MumbojumboClient class interface."""
-
-    def test_client_initialization(self):
-        """Test client initialization."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        server_pubkey = server_privkey.public_key
-
-        # Initialize with bytes
-        client1 = client.MumbojumboClient(server_pubkey.encode(), '.test.com')
-        assert client1.domain == '.test.com'
-
-        # Initialize with PublicKey object
-        client2 = client.MumbojumboClient(server_pubkey, '.test.com')
-        assert client2.domain == '.test.com'
-
-        # Domain without dot should be auto-fixed
-        client3 = client.MumbojumboClient(server_pubkey, 'test.com')
-        assert client3.domain == '.test.com'
-
-    def test_packet_id_managed_internally(self):
-        """Test that packet IDs are managed internally and not exposed."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test.com')
-
-        key = b"testkey"
-        value = b"testvalue"
-
-        # generate_queries_key_val should return list of strings
-        queries1 = client_obj.generate_queries_key_val(key, value)
-        queries2 = client_obj.generate_queries_key_val(key, value)
-
-        # Should return list of strings
-        assert isinstance(queries1, list)
-        assert isinstance(queries2, list)
-        assert all(isinstance(q, str) for q in queries1)
-        assert all(isinstance(q, str) for q in queries2)
-
-        # Queries should be different (different packet IDs)
-        assert queries1[0] != queries2[0]
-
-
-class TestEndToEndFlow:
-    """Test complete end-to-end flow."""
-
-    def test_single_fragment_message(self):
-        """Test complete flow for single-fragment message."""
-        # Setup
-        server_privkey = nacl.public.PrivateKey.generate()
-        server_pubkey = server_privkey.public_key
-        message = b"Hello World"
-        packet_id = 0x1234
-        domain = ".test.com"
-
-        # Fragment
-        fragments = client.fragment_data(message, 80)
-        assert len(fragments) == 1
-
-        # Process fragment
-        plaintext_frag = client.create_fragment(packet_id, 0, 1, fragments[0])
-        encrypted = client.encrypt_fragment(plaintext_frag, server_pubkey)
-        dns_name = client.create_dns_query(encrypted, domain)
-
-        # Verify we can reconstruct
-        # 1. Extract base32 part (remove domain and any label dots)
-        b32_part = dns_name[:-len(domain)].replace('.', '')
-        # 2. Decode base32
-        # (Need to add padding back for standard decoder)
-        padding_needed = (8 - len(b32_part) % 8) % 8
-        b32_padded = b32_part.upper() + '=' * padding_needed
-        encrypted_recovered = base64.b32decode(b32_padded)
-        # 3. Decrypt
-        sealedbox = nacl.public.SealedBox(server_privkey)
-        plaintext_recovered = sealedbox.decrypt(encrypted_recovered)
-        # 4. Parse fragment header (18 bytes: u64 + u32 + u32 + u16)
-        pid, fidx, fcnt, flen = struct.unpack('!QIIH', plaintext_recovered[:18])
-        data = plaintext_recovered[18:18+flen]
-
-        # Verify
-        assert pid == packet_id
-        assert fidx == 0
-        assert fcnt == 1
-        assert data == message
-
-    def test_multi_fragment_message(self):
-        """Test complete flow for multi-fragment message."""
-        # Setup
-        server_privkey = nacl.public.PrivateKey.generate()
-        server_pubkey = server_privkey.public_key
-        message = b"A" * 200  # Will be 3 fragments at 80 bytes each
-        packet_id = 0xBEEF
-        domain = ".test.org"
-
-        # Fragment
-        fragments = client.fragment_data(message, 80)
-        assert len(fragments) == 3
-
-        # Process all fragments
-        recovered_fragments = {}
-        for frag_index, frag_data in enumerate(fragments):
-            plaintext_frag = client.create_fragment(packet_id, frag_index, len(fragments), frag_data)
-            encrypted = client.encrypt_fragment(plaintext_frag, server_pubkey)
-            dns_name = client.create_dns_query(encrypted, domain)
-
-            # Simulate server receiving and decrypting
-            b32_part = dns_name[:-len(domain)].replace('.', '')  # Remove label separators
-            padding_needed = (8 - len(b32_part) % 8) % 8
-            b32_padded = b32_part.upper() + '=' * padding_needed
-            encrypted_recovered = base64.b32decode(b32_padded)
-
-            sealedbox = nacl.public.SealedBox(server_privkey)
-            plaintext_recovered = sealedbox.decrypt(encrypted_recovered)
-
-            # Parse header (18 bytes: u64 + u32 + u32 + u8 + u8)
-            pid, fidx, fcnt, flen, klen = struct.unpack('!QIIBB', plaintext_recovered[:18])
-            data = plaintext_recovered[18:18+flen]
-
-            # Verify header
-            assert pid == packet_id
-            assert fcnt == 3
-            recovered_fragments[fidx] = data
-
-        # Reassemble
-        reassembled = b''.join(recovered_fragments[i] for i in range(len(fragments)))
-        assert reassembled == message
-
-
-class TestKeyValueEndToEnd:
-    """Test end-to-end key-value functionality."""
-
-    def test_send_key_val_basic(self):
-        """Test basic key-value sending."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
-
-        key = b'filename.txt'
-        value = b'Hello, World!'
-
-        # Generate queries (don't actually send)
-        queries = client_obj.generate_queries_key_val(key, value)
+
+class TestKeyDecoding:
+    """Test client key decoding."""
+
+    def test_decode_valid_hex_key(self):
+        """Valid mj_cli_ hex key should decode correctly."""
+        key_bytes = secrets.token_bytes(32)
+        key_str = 'mj_cli_' + key_bytes.hex()
+
+        decoded = client.decode_mumbojumbo_key(key_str)
+        assert decoded == key_bytes
+
+    def test_decode_raw_hex(self):
+        """Raw hex without prefix should decode."""
+        key_bytes = secrets.token_bytes(32)
+        decoded = client.decode_mumbojumbo_key(key_bytes.hex())
+        assert decoded == key_bytes
+
+    def test_decode_invalid_hex_raises(self):
+        """Invalid hex characters should raise ValueError."""
+        with pytest.raises(ValueError, match='Invalid mumbojumbo key'):
+            client.decode_mumbojumbo_key('mj_cli_' + 'ZZZZ' * 16)
+
+    def test_decode_wrong_length_raises(self):
+        """Wrong key length should raise ValueError."""
+        with pytest.raises(ValueError, match='Key must be 32 bytes'):
+            client.decode_mumbojumbo_key('mj_cli_' + 'aa' * 10)
+
+
+class TestClientKeyDerivation:
+    """Test that client derives same keys as server."""
+
+    def test_derive_keys_matches_server(self):
+        """Client key derivation should match server implementation."""
+        client_key = secrets.token_bytes(32)
+
+        # Server derivation
+        server_enc, server_auth, server_frag = derive_keys(client_key)
+
+        # Client derivation
+        client_enc, client_auth, client_frag = client.derive_keys(client_key)
+
+        assert client_enc == server_enc
+        assert client_auth == server_auth
+        assert client_frag == server_frag
+
+    def test_derivation_is_deterministic(self):
+        """Same client key should always derive same keys."""
+        key = secrets.token_bytes(32)
+
+        enc1, auth1, frag1 = client.derive_keys(key)
+        enc2, auth2, frag2 = client.derive_keys(key)
+
+        assert enc1 == enc2
+        assert auth1 == auth2
+        assert frag1 == frag2
+
+
+class TestMumbojumboClientInit:
+    """Test MumbojumboClient initialization."""
+
+    def test_init_with_hex_string(self, client_key_hex):
+        """Client should accept hex string key."""
+        mc = client.MumbojumboClient(client_key_hex, '.test.com')
+        assert mc.domain == '.test.com'
+        assert mc.enc_key is not None
+        assert mc.auth_key is not None
+        assert mc.frag_key is not None
+
+    def test_init_with_bytes(self, client_key_bytes):
+        """Client should accept raw bytes key."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        assert mc.domain == '.test.com'
+
+    def test_init_derives_keys(self, client_key_bytes):
+        """Client should derive enc/auth/frag keys on init."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+
+        expected_enc, expected_auth, expected_frag = derive_keys(client_key_bytes)
+
+        assert mc.enc_key == expected_enc
+        assert mc.auth_key == expected_auth
+        assert mc.frag_key == expected_frag
+
+    def test_packet_id_initialized_randomly(self):
+        """Packet ID should be randomly initialized."""
+        key = secrets.token_bytes(32)
+        clients = [client.MumbojumboClient(key, '.test.com') for _ in range(10)]
+        ids = [c._next_packet_id for c in clients]
+
+        # Should have some diversity
+        assert len(set(ids)) > 5
+
+    def test_default_resolver(self, client_key_bytes):
+        """Default resolver should be 8.8.8.8."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        assert mc.resolver == '8.8.8.8'
+
+    def test_custom_resolver(self, client_key_bytes):
+        """Custom resolver should be accepted."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com', resolver='1.1.1.1')
+        assert mc.resolver == '1.1.1.1'
+
+
+class TestClientGenerateQueries:
+    """Test MumbojumboClient.generate_queries()."""
+
+    def test_returns_list_of_strings(self, client_key_bytes):
+        """generate_queries should return list of DNS query strings."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        queries = mc.generate_queries(key=b'mykey', value=b'myvalue')
+
+        assert isinstance(queries, list)
+        assert len(queries) > 0
+        for q in queries:
+            assert isinstance(q, str)
+            assert q.endswith('.test.com')
+
+    def test_query_format_63_char_label(self, client_key_bytes):
+        """Query should have 63-character base36 label."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        queries = mc.generate_queries(key=b'k', value=b'v')
+
+        for query in queries:
+            label = query[:-len('.test.com')]
+            assert len(label) == 63  # Padded base36
+
+    def test_small_message_single_query(self, client_key_bytes):
+        """Small message should produce single query."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        queries = mc.generate_queries(key=b'', value=b'tiny')
+
+        # Small message fits in one fragment
+        assert len(queries) == 1
+
+    def test_large_message_multiple_queries(self, client_key_bytes):
+        """Large message should produce multiple queries."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        queries = mc.generate_queries(key=b'big', value=b'X' * 200)
+
+        # Should need multiple fragments
+        assert len(queries) > 1
+
+    def test_none_key_allowed(self, client_key_bytes):
+        """None key should be treated as empty."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        queries = mc.generate_queries(key=None, value=b'data')
         assert len(queries) > 0
 
-    def test_send_key_val_with_none_key(self):
-        """Test sending with None key - should work (converts to empty bytes)."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
-
-        # None key should work (converts to b'')
-        queries = client_obj.generate_queries_key_val(None, b'value')
-        assert len(queries) > 0
-
-    def test_send_key_val_with_empty_key(self):
-        """Test sending with empty key b'' - should work."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
-
-        # Empty key should work
-        queries = client_obj.generate_queries_key_val(b'', b'value')
-        assert len(queries) > 0
-
-    def test_send_key_val_rejects_none_value(self):
-        """Value cannot be None - must raise ValueError."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
-
-        # None value should raise ValueError
+    def test_none_value_raises(self, client_key_bytes):
+        """None value should raise ValueError."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
         with pytest.raises(ValueError, match='Value cannot be None'):
-            client_obj.generate_queries_key_val(b'key', None)
+            mc.generate_queries(key=b'k', value=None)
 
-    def test_send_key_val_rejects_empty_value(self):
-        """Empty value b'' should raise ValueError."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
+    def test_key_too_long_raises(self, client_key_bytes):
+        """Key > 255 bytes should raise ValueError."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        with pytest.raises(ValueError, match='Key too long'):
+            mc.generate_queries(key=b'X' * 256, value=b'v')
 
-        # Empty value should raise ValueError
-        with pytest.raises(ValueError, match='Value must be at least 1 byte'):
-            client_obj.generate_queries_key_val(b'key', b'')
+    def test_increments_packet_id(self, client_key_bytes):
+        """Each call should increment packet ID."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        initial_id = mc._next_packet_id
 
-    def test_send_key_val_validates_key_type(self):
-        """Key must be bytes or None."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
+        mc.generate_queries(key=b'', value=b'first')
+        assert mc._next_packet_id == (initial_id + 1) & 0xFFFFFFFF
 
-        with pytest.raises(TypeError, match='Key must be bytes or None'):
-            client_obj.send_key_val('string_key', b'value')
+        mc.generate_queries(key=b'', value=b'second')
+        assert mc._next_packet_id == (initial_id + 2) & 0xFFFFFFFF
 
-    def test_send_key_val_validates_value_type(self):
-        """Value must be bytes (not string, not None)."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
 
-        with pytest.raises(TypeError, match='Value must be bytes'):
-            client_obj.send_key_val(b'key', 'string_value')
+class TestClientServerIntegration:
+    """Test that client-generated queries can be decoded by server."""
 
-    def test_send_key_val_validates_key_length(self):
-        """Key length cannot exceed 255 bytes."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
+    def test_single_fragment_round_trip(self, client_key_bytes):
+        """Single fragment from client should be decoded by server."""
+        # Client
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        queries = mc.generate_queries(key=b'mykey', value=b'myvalue')
 
-        key_too_long = b'X' * 256
-        with pytest.raises(ValueError, match='Key length cannot exceed 255'):
-            client_obj.send_key_val(key_too_long, b'value')
+        # Server
+        enc_key, auth_key, frag_key = derive_keys(client_key_bytes)
+        frag_cls = DnsFragment.bind(
+            domain='.test.com',
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
+        )
+        engine = PacketEngine(
+            frag_cls=frag_cls,
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
+        )
 
-    @pytest.mark.skip(reason="Timing out - needs investigation")
-    def test_kv_round_trip_with_packet_engine(self):
-        """Test key-value round trip through PacketEngine."""
-        # Import mumbojumbo server components
-        from mumbojumbo import PacketEngine, DnsPublicFragment
+        # Feed client queries to server
+        for query in queries:
+            engine.from_wire(query)
 
-        # Set up keys
-        server_privkey = nacl.public.PrivateKey.generate()
+        # Verify server decoded correctly
+        packet = engine.packet_outqueue.get()
+        assert packet['key'] == b'mykey'
+        assert packet['value'] == b'myvalue'
 
-        # Client setup
-        client_obj = client.MumbojumboClient(server_privkey.public_key, '.test')
-
-        # Server setup
-        pfcls_decrypt = DnsPublicFragment.bind(server_key=server_privkey)
-        pe_decrypt = PacketEngine(frag_cls=pfcls_decrypt, max_frag_data_len=100)
-
-        # Send key-value
+    def test_multi_fragment_round_trip(self, client_key_bytes):
+        """Multi-fragment message should be decoded by server."""
+        # Client
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
         key = b'document.pdf'
-        value = b'PDF content goes here...'
-        data = key + value
-        key_len = len(key)
+        value = secrets.token_bytes(200)
+        queries = mc.generate_queries(key=key, value=value)
+        assert len(queries) > 1
 
-        # Generate queries
-        queries = client_obj._generate_dns_queries(data, key_len)
+        # Server
+        enc_key, auth_key, frag_key = derive_keys(client_key_bytes)
+        frag_cls = DnsFragment.bind(
+            domain='.test.com',
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
+        )
+        engine = PacketEngine(
+            frag_cls=frag_cls,
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
+        )
 
-        # Simulate server receiving fragments
-        for dns_name in queries:
-            # Feed DNS name to PacketEngine (DnsPublicFragment will handle decoding)
-            pe_decrypt.from_wire(dns_name)
+        for query in queries:
+            engine.from_wire(query)
 
-        # Get reassembled packet
-        packet = pe_decrypt.packet_outqueue.get()
-
-        # Should be a dict with key and value
-        assert isinstance(packet, dict)
+        packet = engine.packet_outqueue.get()
         assert packet['key'] == key
         assert packet['value'] == value
-        assert packet['key_len'] == key_len
 
+    def test_empty_key_round_trip(self, client_key_bytes):
+        """Empty key should work end-to-end."""
+        # Client
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        queries = mc.generate_queries(key=b'', value=b'data without key')
 
-class TestCLIIntegration:
-    """Test CLI interface."""
-
-    def test_help(self):
-        """Help command should work."""
-        result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py', '--help'],
-            capture_output=True,
-            text=True
+        # Server
+        enc_key, auth_key, frag_key = derive_keys(client_key_bytes)
+        frag_cls = DnsFragment.bind(
+            domain='.test.com',
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
         )
-        assert result.returncode == 0
-        assert 'mumbojumbo' in result.stdout.lower()
-
-    def test_missing_required_args(self):
-        """Missing required args should fail."""
-        result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py'],
-            capture_output=True,
-            text=True
+        engine = PacketEngine(
+            frag_cls=frag_cls,
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
         )
-        assert result.returncode != 0
 
-    def test_stdin_input(self):
-        """Should accept input from stdin with null key (POSIX-compliant -)."""
-        # Generate test key
-        server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
+        for query in queries:
+            engine.from_wire(query)
 
-        result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
-             '--client-key', key_str,
-             '-d', '.test.com',
-             '-'],  # POSIX-compliant stdin marker
-            input=b'test',
-            capture_output=True
+        packet = engine.packet_outqueue.get()
+        assert packet['key'] == b''
+        assert packet['value'] == b'data without key'
+        assert packet['key_length'] == 0
+
+    def test_max_key_length_round_trip(self, client_key_bytes):
+        """Max key length (255 bytes) should work end-to-end."""
+        # Client
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        key = b'K' * 255
+        value = b'value'
+        queries = mc.generate_queries(key=key, value=value)
+
+        # Server
+        enc_key, auth_key, frag_key = derive_keys(client_key_bytes)
+        frag_cls = DnsFragment.bind(
+            domain='.test.com',
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
         )
-        assert result.returncode == 0
-        # Should output DNS query
-        assert b'.test.com' in result.stdout
-
-    def test_file_input(self):
-        """Should accept input from file (filename as key) with -r flag."""
-        # Generate test key
-        server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
-
-        # Create temp file
-        with tempfile.NamedTemporaryFile(mode='wb', delete=False) as f:
-            f.write(b'file content')
-            temp_path = f.name
-
-        try:
-            result = subprocess.run(
-                ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
-                 '--client-key', key_str,
-                 '-d', '.test.com',
-                 '-r', temp_path],  # File with -r flag
-                capture_output=True
-            )
-            assert result.returncode == 0
-            assert b'.test.com' in result.stdout
-        finally:
-            os.unlink(temp_path)
-
-    def test_explicit_key_value(self):
-        """Should accept explicit -k and -v arguments."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
-
-        result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
-             '--client-key', key_str,
-             '-d', '.test.com',
-             '-k', 'mykey',
-             '-v', 'myvalue'],
-            capture_output=True
+        engine = PacketEngine(
+            frag_cls=frag_cls,
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
         )
-        assert result.returncode == 0
-        assert b'.test.com' in result.stdout
 
-    def test_domain_auto_dot(self):
-        """Should auto-add leading dot to domain."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
+        for query in queries:
+            engine.from_wire(query)
 
-        result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
-             '--client-key', key_str,
-             '-d', 'test.com',  # No leading dot
-             '-'],  # POSIX-compliant stdin marker
-            input=b'test',
-            capture_output=True
+        packet = engine.packet_outqueue.get()
+        assert packet['key'] == key
+        assert packet['value'] == value
+        assert packet['key_length'] == 255
+
+    def test_binary_data_round_trip(self, client_key_bytes):
+        """Binary data with null bytes should work."""
+        # Client
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        key = b'\x00\x01\x02'
+        value = b'\xff\xfe\xfd\x00\x00\x01'
+        queries = mc.generate_queries(key=key, value=value)
+
+        # Server
+        enc_key, auth_key, frag_key = derive_keys(client_key_bytes)
+        frag_cls = DnsFragment.bind(
+            domain='.test.com',
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
         )
-        # Should warn about adding dot
-        assert b'Warning' in result.stderr or b'.test.com' in result.stdout
-
-    def test_stdin_with_custom_key(self):
-        """Should accept -k argument with stdin input (POSIX-compliant -)."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
-
-        result = subprocess.run(
-            ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
-             '--client-key', key_str,
-             '-d', '.test.com',
-             '-k', 'my-custom-key',
-             '-'],  # POSIX-compliant stdin marker
-            input=b'test data from stdin',
-            capture_output=True
+        engine = PacketEngine(
+            frag_cls=frag_cls,
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
         )
-        assert result.returncode == 0
-        assert b'.test.com' in result.stdout
 
-    def test_file_with_key_arg_rejected(self):
-        """Should reject -k argument when sending files (filename is key)."""
-        server_privkey = nacl.public.PrivateKey.generate()
-        key_str = 'mj_cli_' + server_privkey.public_key.encode().hex()
+        for query in queries:
+            engine.from_wire(query)
 
-        # Create temp file
-        with tempfile.NamedTemporaryFile(mode='wb', delete=False) as f:
-            f.write(b'file content')
-            temp_path = f.name
+        packet = engine.packet_outqueue.get()
+        assert packet['key'] == key
+        assert packet['value'] == value
 
-        try:
-            result = subprocess.run(
-                ['./venv/bin/python3', './clients/python/mumbojumbo_client.py',
-                 '--client-key', key_str,
-                 '-d', '.test.com',
-                 '-k', 'should-be-rejected',  # This should cause error
-                 '-r', temp_path],  # File with -r flag
-                capture_output=True
-            )
-            # Should fail with error about -k not allowed with files
-            assert result.returncode != 0
-            assert b'Cannot use -k/--key with files' in result.stderr
-        finally:
-            os.unlink(temp_path)
+    def test_multiple_messages_from_same_client(self, client_key_bytes):
+        """Multiple messages from same client should work."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+
+        # Server
+        enc_key, auth_key, frag_key = derive_keys(client_key_bytes)
+        frag_cls = DnsFragment.bind(
+            domain='.test.com',
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
+        )
+        engine = PacketEngine(
+            frag_cls=frag_cls,
+            enc_key=enc_key,
+            auth_key=auth_key,
+            frag_key=frag_key
+        )
+
+        # Send multiple messages
+        messages = [
+            (b'key1', b'value1'),
+            (b'key2', b'value2' * 50),  # Larger value
+            (b'', b'no key message'),
+        ]
+
+        for key, value in messages:
+            queries = mc.generate_queries(key=key, value=value)
+            for query in queries:
+                engine.from_wire(query)
+
+        # Verify all received
+        for key, value in messages:
+            packet = engine.packet_outqueue.get()
+            assert packet['key'] == key
+            assert packet['value'] == value
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+class TestClientFragmentCreation:
+    """Test internal fragment creation methods."""
+
+    def test_create_fragment_40_bytes(self, client_key_bytes):
+        """_create_fragment should produce 40-byte packet."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        packet = mc._create_fragment(
+            packet_id=0x12345678,
+            frag_index=0,
+            is_first=True,
+            has_more=False,
+            frag_data=b'test'
+        )
+        assert len(packet) == 40
+
+    def test_create_dns_query_format(self, client_key_bytes):
+        """_create_dns_query should produce proper DNS query."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        packet = mc._create_fragment(1, 0, True, False, b'x')
+        dns_query = mc._create_dns_query(packet)
+
+        assert dns_query.endswith('.test.com')
+        label = dns_query[:-len('.test.com')]
+        assert len(label) == 63
+
+    def test_encrypt_message_structure(self, client_key_bytes):
+        """_encrypt_message should produce nonce + integrity + ciphertext."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        plaintext = b'test message'
+        encrypted = mc._encrypt_message(plaintext)
+
+        # 8 nonce + 8 integrity + len(plaintext)
+        assert len(encrypted) == 8 + 8 + len(plaintext)
+
+
+class TestClientCryptoCompatibility:
+    """Test that client crypto matches server crypto."""
+
+    def test_chacha20_compatibility(self):
+        """Client and server ChaCha20 should be identical."""
+        from mumbojumbo import chacha20_encrypt as server_chacha
+
+        key = secrets.token_bytes(32)
+        nonce = secrets.token_bytes(8)
+        plaintext = b'test data'
+
+        client_cipher = client.chacha20_encrypt(key, nonce, plaintext)
+        server_cipher = server_chacha(key, nonce, plaintext)
+
+        assert client_cipher == server_cipher
+
+    def test_poly1305_compatibility(self):
+        """Client and server Poly1305 should be identical."""
+        from mumbojumbo import poly1305_mac as server_poly
+
+        key = secrets.token_bytes(32)
+        msg = b'test message'
+
+        client_mac = client.poly1305_mac(key, msg)
+        server_mac = server_poly(key, msg)
+
+        assert client_mac == server_mac
+
+    def test_base36_encode_compatibility(self):
+        """Client and server base36 encoding should be identical."""
+        from mumbojumbo import base36_encode as server_b36
+
+        data = secrets.token_bytes(40)
+
+        client_encoded = client.base36_encode(data)
+        server_encoded = server_b36(data)
+
+        assert client_encoded == server_encoded
+
+
+class TestClientEdgeCases:
+    """Test edge cases and boundary conditions for client."""
+
+    def test_very_long_domain(self, client_key_bytes):
+        """Very long domain should work."""
+        domain = '.very.long.subdomain.example.com'
+        mc = client.MumbojumboClient(client_key_bytes, domain)
+        queries = mc.generate_queries(key=b'k', value=b'v')
+
+        for q in queries:
+            assert q.endswith(domain)
+
+    def test_single_byte_value(self, client_key_bytes):
+        """Single byte value should work."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        queries = mc.generate_queries(key=b'', value=b'X')
+        assert len(queries) > 0
+
+    def test_large_value(self, client_key_bytes):
+        """Large value (1KB) should work."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        value = secrets.token_bytes(1024)
+        queries = mc.generate_queries(key=b'big', value=value)
+        assert len(queries) > 10  # Should need many fragments
+
+    def test_packet_id_wraparound(self, client_key_bytes):
+        """Packet ID should wrap at u32 max."""
+        mc = client.MumbojumboClient(client_key_bytes, '.test.com')
+        mc._next_packet_id = 0xFFFFFFFF
+
+        mc.generate_queries(key=b'', value=b'wrap')
+
+        assert mc._next_packet_id == 0

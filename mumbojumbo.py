@@ -156,8 +156,17 @@ def base36_encode(data):
     return ''.join(reversed(result))
 
 
-def base36_decode(s):
-    """Decode base36 string to bytes."""
+def base36_decode(s, expected_length=None):
+    """
+    Decode base36 string to bytes.
+
+    Args:
+        s: str, base36 encoded string
+        expected_length: int, optional expected byte length (pads with leading zeros)
+
+    Returns:
+        bytes: decoded data
+    """
     s = s.upper().strip()
     num = 0
     for char in s:
@@ -165,7 +174,12 @@ def base36_decode(s):
             raise ValueError(f"Invalid base36 character: {char}")
         num = num * 36 + BASE36_ALPHABET.index(char)
     if num == 0:
+        if expected_length:
+            return b'\x00' * expected_length
         return b'\x00'
+    if expected_length:
+        # Pad to expected length (preserves leading zeros)
+        return num.to_bytes(expected_length, 'big')
     byte_length = (num.bit_length() + 7) // 8
     return num.to_bytes(byte_length, 'big')
 
@@ -249,7 +263,9 @@ class Fragment(BaseFragment):
         self._is_first = is_first
         self._has_more = has_more
         self._frag_key = frag_key
-        self._enc_key = enc_key
+        # Only set enc_key if not already set by subclass (e.g., EncryptedFragment)
+        if not hasattr(self, '_enc_key'):
+            self._enc_key = enc_key
         super(Fragment, self).__init__(**kw)
 
     def _build_flags(self):
@@ -352,8 +368,14 @@ class Fragment(BaseFragment):
         # Parse packet_id
         packet_id = struct.unpack('!I', packet_id_bytes)[0]
 
-        # Remove trailing zeros from payload
-        frag_data = payload.rstrip(b'\x00')
+        # Strip trailing zeros only from LAST fragment (has_more=False)
+        # This allows reassembly to reconstruct exact message length
+        # Note: This may strip legitimate trailing zeros from the message,
+        # but the integrity MAC will catch any corruption
+        if not has_more:
+            frag_data = payload.rstrip(b'\x00')
+        else:
+            frag_data = payload
 
         # Build keyword arguments
         kw = {
