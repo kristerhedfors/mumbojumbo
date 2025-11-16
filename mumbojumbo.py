@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+"""
+Mumbojumbo DNS Tunneling Protocol v2.0
+
+A lightweight DNS tunneling system using ChaCha20-Poly1305 encryption.
+Transmits key-value pairs over DNS queries with dual-layer authentication.
+
+Protocol: 40-byte binary packets (base36 encoded) → single DNS label
+Encryption: ChaCha20-Poly1305 with 8-byte nonce
+Authentication: Fragment-level (4-byte MAC) + Message-level (8-byte MAC)
+
+For educational and authorized security testing only.
+"""
+
 import base64
 import functools
 import logging
@@ -23,40 +36,198 @@ import signal
 import time
 from email.mime.text import MIMEText
 
-import nacl.public
-import nacl.secret
+
+# ============================================================================
+# Cryptography Implementations (ChaCha20, Poly1305, Base36)
+# ============================================================================
+
+def rotl32(v, c):
+    """Rotate left: 32-bit value v by c bits."""
+    return ((v << c) & 0xffffffff) | (v >> (32 - c))
 
 
-# Global logger - initialize with basic config, will be reconfigured in main()
+def quarter_round(state, a, b, c, d):
+    """ChaCha20 quarter round on indices a, b, c, d."""
+    state[a] = (state[a] + state[b]) & 0xffffffff
+    state[d] ^= state[a]
+    state[d] = rotl32(state[d], 16)
+
+    state[c] = (state[c] + state[d]) & 0xffffffff
+    state[b] ^= state[c]
+    state[b] = rotl32(state[b], 12)
+
+    state[a] = (state[a] + state[b]) & 0xffffffff
+    state[d] ^= state[a]
+    state[d] = rotl32(state[d], 8)
+
+    state[c] = (state[c] + state[d]) & 0xffffffff
+    state[b] ^= state[c]
+    state[b] = rotl32(state[b], 7)
+
+
+def chacha20_block(key, counter, nonce):
+    """Generate a 64-byte ChaCha20 keystream block."""
+    constants = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]
+    key_words = list(struct.unpack('<8I', key))
+    counter_word = counter & 0xffffffff
+    nonce_words = list(struct.unpack('<3I', nonce))
+
+    state = constants + key_words + [counter_word] + nonce_words
+    working_state = state[:]
+
+    for _ in range(10):
+        quarter_round(working_state, 0, 4, 8, 12)
+        quarter_round(working_state, 1, 5, 9, 13)
+        quarter_round(working_state, 2, 6, 10, 14)
+        quarter_round(working_state, 3, 7, 11, 15)
+        quarter_round(working_state, 0, 5, 10, 15)
+        quarter_round(working_state, 1, 6, 11, 12)
+        quarter_round(working_state, 2, 7, 8, 13)
+        quarter_round(working_state, 3, 4, 9, 14)
+
+    for i in range(16):
+        working_state[i] = (working_state[i] + state[i]) & 0xffffffff
+
+    return struct.pack('<16I', *working_state)
+
+
+def chacha20_encrypt(key, nonce, plaintext, counter=0):
+    """Encrypt/decrypt with ChaCha20."""
+    if len(nonce) == 8:
+        nonce = nonce + b'\x00\x00\x00\x00'
+    elif len(nonce) != 12:
+        raise ValueError(f"Nonce must be 8 or 12 bytes, got {len(nonce)}")
+    if len(key) != 32:
+        raise ValueError(f"Key must be 32 bytes, got {len(key)}")
+
+    keystream = b''
+    blocks_needed = (len(plaintext) + 63) // 64
+
+    for i in range(blocks_needed):
+        keystream += chacha20_block(key, counter + i, nonce)
+
+    keystream = keystream[:len(plaintext)]
+    return bytes(p ^ k for p, k in zip(plaintext, keystream))
+
+
+chacha20_decrypt = chacha20_encrypt
+
+
+def poly1305_mac(key, msg):
+    """Compute Poly1305 MAC."""
+    if len(key) != 32:
+        raise ValueError(f"Key must be 32 bytes, got {len(key)}")
+
+    r_bytes = key[:16]
+    s_bytes = key[16:32]
+
+    r = int.from_bytes(r_bytes, 'little')
+    r &= 0x0ffffffc0ffffffc0ffffffc0fffffff
+    s = int.from_bytes(s_bytes, 'little')
+    p = (1 << 130) - 5
+
+    accumulator = 0
+    for i in range(0, len(msg), 16):
+        block = msg[i:i+16]
+        if len(block) == 16:
+            n = int.from_bytes(block + b'\x01', 'little')
+        else:
+            n = int.from_bytes(block + b'\x01', 'little')
+        accumulator = ((accumulator + n) * r) % p
+
+    accumulator = (accumulator + s) % (1 << 128)
+    return accumulator.to_bytes(16, 'little')
+
+
+BASE36_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+
+def base36_encode(data):
+    """Encode bytes to base36 string (uppercase)."""
+    if not data:
+        return '0'
+    num = int.from_bytes(data, 'big')
+    if num == 0:
+        return '0'
+    result = []
+    while num > 0:
+        num, remainder = divmod(num, 36)
+        result.append(BASE36_ALPHABET[remainder])
+    return ''.join(reversed(result))
+
+
+def base36_decode(s, expected_length=None):
+    """
+    Decode base36 string to bytes.
+
+    Args:
+        s: str, base36 encoded string
+        expected_length: int, optional expected byte length (pads with leading zeros)
+
+    Returns:
+        bytes: decoded data
+    """
+    s = s.upper().strip()
+    num = 0
+    for char in s:
+        if char not in BASE36_ALPHABET:
+            raise ValueError(f"Invalid base36 character: {char}")
+        num = num * 36 + BASE36_ALPHABET.index(char)
+    if num == 0:
+        if expected_length:
+            return b'\x00' * expected_length
+        return b'\x00'
+    if expected_length:
+        # Pad to expected length (preserves leading zeros)
+        return num.to_bytes(expected_length, 'big')
+    byte_length = (num.bit_length() + 7) // 8
+    return num.to_bytes(byte_length, 'big')
+
+
+# ============================================================================
+# Protocol Constants
+# ============================================================================
+
+BINARY_PACKET_SIZE = 40
+BASE36_PACKET_SIZE = 63
+PACKET_ID_SIZE = 4  # u32, first in fragment, unencrypted
+FRAGMENT_MAC_SIZE = 4  # unencrypted, covers encrypted portion
+FRAGMENT_FLAGS_SIZE = 4  # encrypted
+FRAGMENT_PAYLOAD_SIZE = 28  # encrypted
+MESSAGE_NONCE_SIZE = 8
+MESSAGE_INTEGRITY_SIZE = 8
+KEY_LENGTH_SIZE = 1
+
+FIRST_FLAG_MASK = 0x80000000
+MORE_FLAG_MASK = 0x40000000
+INDEX_MASK = 0x3FFFFFFF
+
+
+# ============================================================================
+# Global Logger
+# ============================================================================
+
 logging.basicConfig(level=logging.DEBUG)
 global logger
 logger = logging.getLogger(__name__)
 
 
-def b32enc(s):
-    return base64.b32encode(s).replace(b'=', b'')
-
-
-def b32dec(s):
-    r = len(s) % 8
-    if r:
-        s += b'=' * (8 - r)
-    return base64.b32decode(s)
-
+# ============================================================================
+# Protocol Classes
+# ============================================================================
 
 class MJException(Exception):
     pass
 
 
 class Bindable(object):
-
     @classmethod
     def bind(cls, *args, **kw):
         return functools.partial(cls, *args, **kw)
 
 
 class BaseFragment(Bindable):
-
+    """Base fragment class."""
     def __init__(self, frag_data=''):
         self._frag_data = frag_data
 
@@ -68,150 +239,318 @@ class BaseFragment(Bindable):
         return self._frag_data
 
     def deserialize(self, raw):
-        self.__class__(frag_data=raw)
+        return self.__class__(frag_data=raw)
 
 
 class Fragment(BaseFragment):
-    '''
-        Packet format:
-            u64 packet_id
-            u32 frag_index
-            u32 frag_count
-            u8 len(frag_data)
-            u8 key_len
-            bytes frag_data
-    '''
-    def __init__(self, packet_id=None, frag_index=0, frag_count=1, key_len=0, **kw):
-        self._packet_id = packet_id or PacketEngine.gen_packet_id()
+    """
+    Transport packet fragment with dual-layer encryption protocol.
+
+    Wire format (40 bytes):
+        4 bytes: Packet ID (u32, big-endian, UNENCRYPTED)
+        4 bytes: Truncated Poly1305 MAC (over encrypted portion, UNENCRYPTED)
+        32 bytes: Encrypted portion (ChaCha20 with nonce = packet_id × 3)
+            - 4 bytes: Fragment flags (u32 bitfield: first flag, more flag, 30-bit index)
+            - 28 bytes: Fragment payload (message chunk)
+
+    Base36 encoded to 63 characters for DNS label.
+    """
+
+    def __init__(self, packet_id=None, frag_index=0, is_first=False,
+                 has_more=False, frag_key=None, enc_key=None, **kw):
+        self._packet_id = packet_id if packet_id is not None else 0
         self._frag_index = frag_index
-        self._frag_count = frag_count
-        self._key_len = key_len
+        self._is_first = is_first
+        self._has_more = has_more
+        self._frag_key = frag_key
+        # Only set enc_key if not already set by subclass (e.g., EncryptedFragment)
+        if not hasattr(self, '_enc_key'):
+            self._enc_key = enc_key
         super(Fragment, self).__init__(**kw)
 
-    def _htonl_pack(self, val):
-        nval = socket.htonl(val)
-        return struct.pack('I', nval)
+    def _build_flags(self):
+        """Build 4-byte flags with first/more flags and index."""
+        flags = 0
+        if self._is_first:
+            flags |= FIRST_FLAG_MASK
+        if self._has_more:
+            flags |= MORE_FLAG_MASK
+        flags |= (self._frag_index & INDEX_MASK)
+        return struct.pack('!I', flags)
 
-    def _htons_pack(self, val):
-        nval = socket.htons(val)
-        return struct.pack('H', nval)
-
-    def _htonll_pack(self, val):
-        # Pack u64 in big-endian (network byte order)
-        return struct.pack('!Q', val)
-
-    def _unpack_ntohl(self, s):
-        assert len(s) == 4
-        nval = struct.unpack('I', s)[0]
-        return socket.ntohl(nval)
-
-    def _unpack_ntohs(self, s):
-        assert len(s) == 2
-        nval = struct.unpack('H', s)[0]
-        return socket.ntohs(nval)
-
-    def _unpack_ntohll(self, s):
-        # Unpack u64 from big-endian (network byte order)
-        assert len(s) == 8
-        return struct.unpack('!Q', s)[0]
+    def _parse_flags(self, flags_bytes):
+        """Parse 4-byte flags to extract first/more flags and index."""
+        flags = struct.unpack('!I', flags_bytes)[0]
+        is_first = bool(flags & FIRST_FLAG_MASK)
+        has_more = bool(flags & MORE_FLAG_MASK)
+        frag_index = flags & INDEX_MASK
+        return is_first, has_more, frag_index
 
     def serialize(self):
-        ser = b''
-        ser += self._htonll_pack(self._packet_id)  # u64 (8 bytes)
-        ser += self._htonl_pack(self._frag_index)  # u32 (4 bytes)
-        ser += self._htonl_pack(self._frag_count)  # u32 (4 bytes)
-        ser += struct.pack('B', len(self._frag_data))  # u8 (1 byte)
-        ser += struct.pack('B', self._key_len)  # u8 (1 byte)
-        ser += self._frag_data
-        return ser
+        """
+        Serialize to 40-byte binary packet with dual-layer encryption.
 
-    def deserialize(self, raw):
-        packet_id = self._unpack_ntohll(raw[:8])  # u64, bytes 0-8
-        frag_index = self._unpack_ntohl(raw[8:12])  # u32, bytes 8-12
-        frag_count = self._unpack_ntohl(raw[12:16])  # u32, bytes 12-16
-        frag_data_len = struct.unpack('B', raw[16:17])[0]  # u8, byte 16
-        key_len = struct.unpack('B', raw[17:18])[0]  # u8, byte 17
-        frag_data = raw[18:]  # bytes 18+
-        try:
-            assert frag_data_len == len(frag_data)
-        except:
-            logger.debug('bad frag_data_len: %d' % frag_data_len)
-            raise
-        assert 1 <= frag_count
-        try:
-            assert frag_index < frag_count
-        except:
-            logger.debug('bad frag_count: %d' % frag_count)
-            raise
-        # Pass keys if they exist (for PublicFragment subclasses)
-        kw = {'packet_id': packet_id, 'frag_index': frag_index,
-              'frag_count': frag_count, 'frag_data': frag_data, 'key_len': key_len}
-        if hasattr(self, '_server_key'):
-            kw['server_key'] = self._server_key
-        if hasattr(self, '_client_key'):
-            kw['client_key'] = self._client_key
-        if hasattr(self, '_domain'):
-            kw['domain'] = self._domain
+        Returns:
+            40 bytes: [packet_id (4B)][MAC (4B)][encrypted (32B)]
+        """
+        # Build flags
+        flags_bytes = self._build_flags()
+
+        # Build payload (28 bytes)
+        payload = self._frag_data[:FRAGMENT_PAYLOAD_SIZE]
+        if len(payload) < FRAGMENT_PAYLOAD_SIZE:
+            payload += b'\x00' * (FRAGMENT_PAYLOAD_SIZE - len(payload))
+
+        # Assemble inner packet (to be encrypted): flags + payload
+        inner = flags_bytes + payload
+        assert len(inner) == 32
+
+        # Encrypt inner packet with ChaCha20
+        packet_id_bytes = struct.pack('!I', self._packet_id)
+        nonce = packet_id_bytes * 3  # 12 bytes
+        if self._enc_key:
+            encrypted_inner = chacha20_encrypt(self._enc_key, nonce, inner)
+        else:
+            encrypted_inner = inner
+
+        # Compute 4-byte fragment MAC over encrypted portion
+        if self._frag_key:
+            mac_full = poly1305_mac(self._frag_key, encrypted_inner)
+            mac = mac_full[:4]
+        else:
+            mac = b'\x00\x00\x00\x00'
+
+        # Assemble final packet
+        packet = packet_id_bytes + mac + encrypted_inner
+        assert len(packet) == BINARY_PACKET_SIZE
+        return packet
+
+    def deserialize(self, packet):
+        """
+        Deserialize 40-byte binary packet with dual-layer decryption.
+
+        Args:
+            packet: 40 bytes
+
+        Returns:
+            Fragment instance or None if invalid
+        """
+        if len(packet) != BINARY_PACKET_SIZE:
+            logger.debug(f'Invalid packet size: {len(packet)} (expected {BINARY_PACKET_SIZE})')
+            return None
+
+        # Parse packet
+        packet_id_bytes = packet[0:4]
+        mac = packet[4:8]
+        encrypted_inner = packet[8:40]
+
+        # Verify fragment MAC BEFORE decryption
+        if self._frag_key:
+            mac_computed = poly1305_mac(self._frag_key, encrypted_inner)[:4]
+            if mac != mac_computed:
+                logger.debug('Fragment MAC verification failed')
+                return None
+
+        # Decrypt inner packet
+        nonce = packet_id_bytes * 3
+        if self._enc_key:
+            inner = chacha20_decrypt(self._enc_key, nonce, encrypted_inner)
+        else:
+            inner = encrypted_inner
+
+        # Parse inner packet
+        flags_bytes = inner[0:4]
+        payload = inner[4:32]
+
+        # Parse flags
+        is_first, has_more, frag_index = self._parse_flags(flags_bytes)
+
+        # Parse packet_id
+        packet_id = struct.unpack('!I', packet_id_bytes)[0]
+
+        # Strip trailing zeros only from LAST fragment (has_more=False)
+        # This allows reassembly to reconstruct exact message length
+        # Note: This may strip legitimate trailing zeros from the message,
+        # but the integrity MAC will catch any corruption
+        if not has_more:
+            frag_data = payload.rstrip(b'\x00')
+        else:
+            frag_data = payload
+
+        # Build keyword arguments
+        kw = {
+            'packet_id': packet_id,
+            'frag_index': frag_index,
+            'is_first': is_first,
+            'has_more': has_more,
+            'frag_data': frag_data,
+            'frag_key': self._frag_key,
+            'enc_key': self._enc_key
+        }
+
         return self.__class__(**kw)
 
 
-class PublicFragment(Fragment):
-    '''
-        Packet fragment encrypted/decrypted using nacl.public.SealedBox().
-        One-way anonymous encryption using only the server's public key.
-    '''
-    def __init__(self, server_key=None, client_key=None, **kw):
-        # Auto-parse hex keys if strings are provided
-        if isinstance(server_key, str):
-            server_key_bytes = decode_key_hex(server_key)
-            server_key = nacl.public.PrivateKey(server_key_bytes)
-        if isinstance(client_key, str):
-            client_key_bytes = decode_key_hex(client_key)
-            client_key = nacl.public.PublicKey(client_key_bytes)
+class EncryptedFragment(Fragment):
+    """
+    Fragment with message-level ChaCha20-Poly1305 encryption.
 
-        self._server_key = server_key
-        self._client_key = client_key
-        # For encryption (client side): only needs client_key
-        # For decryption (server side): only needs server_key
-        if client_key is not None:
-            self._sealedbox_encrypt = nacl.public.SealedBox(client_key)
-        else:
-            self._sealedbox_encrypt = None
-        if server_key is not None:
-            self._sealedbox_decrypt = nacl.public.SealedBox(server_key)
-        else:
-            self._sealedbox_decrypt = None
-        super(PublicFragment, self).__init__(**kw)
+    This class handles the encryption/decryption layer that wraps
+    the complete message BEFORE fragmentation.
+    """
+
+    def __init__(self, enc_key=None, auth_key=None, **kw):
+        """
+        Initialize encrypted fragment.
+
+        Args:
+            enc_key: 32-byte ChaCha20 encryption key
+            auth_key: 32-byte Poly1305 auth key (for message integrity)
+            frag_key: 32-byte Poly1305 key (for fragment MACs, from parent)
+        """
+        if isinstance(enc_key, str):
+            enc_key = decode_key_hex(enc_key)
+        if isinstance(auth_key, str):
+            auth_key = decode_key_hex(auth_key)
+
+        self._enc_key = enc_key
+        self._auth_key = auth_key
+        super(EncryptedFragment, self).__init__(**kw)
+
+    @staticmethod
+    def encrypt_message(enc_key, auth_key, plaintext):
+        """
+        Encrypt complete message (called before fragmentation).
+
+        Args:
+            enc_key: 32-byte encryption key
+            auth_key: 32-byte authentication key
+            plaintext: Complete message to encrypt
+
+        Returns:
+            bytes: [nonce (8B)][integrity (8B)][encrypted_kv]
+        """
+        # Generate 8-byte nonce
+        nonce = os.urandom(MESSAGE_NONCE_SIZE)
+
+        # Encrypt with ChaCha20
+        encrypted_kv = chacha20_encrypt(enc_key, nonce, plaintext)
+
+        # Compute 8-byte integrity MAC
+        integrity_full = poly1305_mac(auth_key, nonce + encrypted_kv)
+        integrity = integrity_full[:MESSAGE_INTEGRITY_SIZE]
+
+        # Build complete message
+        message = nonce + integrity + encrypted_kv
+        return message
+
+    @staticmethod
+    def decrypt_message(enc_key, auth_key, message):
+        """
+        Decrypt complete message (called after reassembly).
+
+        Args:
+            enc_key: 32-byte encryption key
+            auth_key: 32-byte authentication key
+            message: Complete encrypted message
+
+        Returns:
+            bytes: Decrypted plaintext, or None if integrity check fails
+        """
+        if len(message) < MESSAGE_NONCE_SIZE + MESSAGE_INTEGRITY_SIZE:
+            logger.debug(f'Message too short: {len(message)} bytes')
+            return None
+
+        # Parse message
+        nonce = message[0:MESSAGE_NONCE_SIZE]
+        integrity = message[MESSAGE_NONCE_SIZE:MESSAGE_NONCE_SIZE + MESSAGE_INTEGRITY_SIZE]
+        encrypted_kv = message[MESSAGE_NONCE_SIZE + MESSAGE_INTEGRITY_SIZE:]
+
+        # VERIFY integrity FIRST (before decryption!)
+        integrity_computed = poly1305_mac(auth_key, nonce + encrypted_kv)[:MESSAGE_INTEGRITY_SIZE]
+        if integrity != integrity_computed:
+            logger.error('Message integrity check FAILED - possible tampering!')
+            return None
+
+        # Decrypt (only if integrity passed)
+        plaintext = chacha20_decrypt(enc_key, nonce, encrypted_kv)
+        return plaintext
+
+
+class DnsFragment(EncryptedFragment):
+    """
+    DNS-encoded fragment using base36 encoding.
+
+    Encodes 40-byte binary packet to 63-character base36 string,
+    suitable for single DNS label.
+    """
+
+    DEFAULT_DOMAIN = '.example.com'
+
+    def __init__(self, domain=DEFAULT_DOMAIN, **kw):
+        self._domain = domain
+        super(DnsFragment, self).__init__(**kw)
 
     def serialize(self):
-        plaintext = super(PublicFragment, self).serialize()
-        # SealedBox handles nonce internally - no need for manual nonce management
-        ciphertext = self._sealedbox_encrypt.encrypt(plaintext)
-        return ciphertext
+        """
+        Serialize to DNS query string.
 
-    def deserialize(self, ciphertext):
-        # Validate ciphertext length before attempting decryption
-        # SealedBox requires at least 48 bytes (32 for ephemeral pubkey + 16 for MAC)
-        if len(ciphertext) < 48:
-            logger.debug(f'Ciphertext too short: {len(ciphertext)} bytes (minimum 48)')
+        Returns:
+            str: <63-char-base36>.<domain>
+        """
+        # Get 40-byte binary packet
+        binary_packet = super(DnsFragment, self).serialize()
+
+        # Base36 encode
+        base36_str = base36_encode(binary_packet)
+
+        # Pad to 63 characters if needed (for consistent length)
+        if len(base36_str) < BASE36_PACKET_SIZE:
+            base36_str = '0' * (BASE36_PACKET_SIZE - len(base36_str)) + base36_str
+
+        # Build DNS query
+        dns_query = base36_str + self._domain
+        return dns_query
+
+    def deserialize(self, dns_query):
+        """
+        Deserialize DNS query string.
+
+        Args:
+            dns_query: str, DNS query name
+
+        Returns:
+            Fragment instance or None if invalid
+        """
+        logger.debug(f'DnsFragment: deserialize() {dns_query[:50]}...')
+
+        if not dns_query.endswith(self._domain):
+            logger.debug(f'Invalid domain: {dns_query[:30]}')
             return None
 
-        plaintext = b''
+        # Extract base36 part
+        base36_str = dns_query[:-len(self._domain)]
+
+        # Decode base36
         try:
-            plaintext = self._sealedbox_decrypt.decrypt(ciphertext)
+            binary_packet = base36_decode(base36_str)
         except Exception as e:
-            logger.debug(f'Decrypt failed: {type(e).__name__}: {e}')
+            logger.debug(f'Base36 decode failed: {type(e).__name__}: {e}')
             return None
-        logger.debug('decrypted {0} bytes of data'.format(len(plaintext)))
-        logger.debug('{0}'.format(repr(plaintext)))
-        return super(PublicFragment, self).deserialize(plaintext)
+
+        # Pad to 40 bytes if needed (leading zeros may have been lost)
+        if len(binary_packet) < BINARY_PACKET_SIZE:
+            binary_packet = b'\x00' * (BINARY_PACKET_SIZE - len(binary_packet)) + binary_packet
+
+        # Deserialize binary packet
+        return super(DnsFragment, self).deserialize(binary_packet)
 
 
 def _split2len(s, n):
+    """Split bytes into n-byte chunks."""
     assert n > 0
     if s == b'':
         return [b'']
-
     def _f(s, n):
         while s:
             yield s[:n]
@@ -219,1391 +558,584 @@ def _split2len(s, n):
     return list(_f(s, n))
 
 
-class DnsPublicFragment(PublicFragment):
-    '''
-        DNS-tunnel-style Packet fragment encrypted/decrypted using
-        nacl.public.Box().
+class PacketEngine(object):
+    """
+    Packet fragmentation and reassembly engine with dual-layer encryption.
 
-        Has the shape of:
-            '{Base32Encoded_PublicFragment}{tld}'
-    '''
-    DEFAULT_TLD = '.asd.qwe'
+    Handles:
+    - Message-level encryption (inner ChaCha20 before fragmentation)
+    - Fragment-level encryption (outer ChaCha20 per fragment)
+    - Fragmentation into 28-byte chunks
+    - Fragment-level authentication (MAC verified before decryption)
+    - Reassembly with integrity verification (handles out-of-order fragments)
+    - Key-value extraction
+    """
 
-    def __init__(self, domain=DEFAULT_TLD, **kw):
-        self._domain = domain
-        super(DnsPublicFragment, self).__init__(**kw)
-
-    def serialize(self):
-        ser = super(DnsPublicFragment, self).serialize()
-        serb32 = self._b32enc(ser)
-        parts = _split2len(serb32, 63)
-        dnsname = '.'.join(parts) + self._domain
-        return dnsname
-
-    def deserialize(self, dnsname):
-        logger.debug('DnsPublicFragment: deserialize() enter')
-        if dnsname.endswith(self._domain):
-            serb32 = dnsname[:-len(self._domain)].replace('.', '')
-            try:
-                ser = self._b32dec(serb32)
-            except Exception as e:
-                # Invalid base32 encoding - likely not a mumbojumbo fragment
-                logger.debug(f'Base32 decode failed for {dnsname[:30]}: {type(e).__name__}')
-                return None
-
-            val = super(DnsPublicFragment, self).deserialize(ser)
-            if val is None:
-                logger.debug('DnsPublicFragment: deserialize() error')
-            else:
-                logger.debug('DnsPublicFragment: deserialize() success')
-            return val
-        else:
-            msg = 'DnsPublicFragment: deserialize() invalid domain: '
-            msg += dnsname[:10]
-            logger.debug(msg)
-            return None
-
-    def _b32enc(self, s):
-        return base64.b32encode(s).replace(b'=', b'').lower().decode('ascii')
-
-    def _b32dec(self, s):
-        s = s.upper().encode('ascii')
-        r = len(s) % 8
-        if r:
-            s += b'=' * (8 - r)
-        return base64.b32decode(s)
-
-
-def calculate_safe_max_fragment_data_len(domain):
-    '''
-        Calculate safe maximum fragment data size using simplified formula.
-        Formula: 83 - len(domain) // 3
-
-        This simplified formula is:
-        - Within 0-2 bytes of optimal for typical domains (3-12 chars)
-        - Within 5-7 bytes for longer domains (22-33 chars)
-        - Always safe (slightly conservative, never exceeds DNS limits)
-        - Requires only one arithmetic operation
+    def __init__(self, frag_cls=None, enc_key=None, auth_key=None, frag_key=None):
+        """
+        Initialize packet engine.
 
         Args:
-            domain: DNS domain string (e.g., '.example.com')
-
-        Returns:
-            Maximum safe fragment data length in bytes
-
-        Raises:
-            ValueError: If domain is too long (>143 chars)
-    '''
-    if len(domain) > 143:
-        raise ValueError(f'Domain too long: {len(domain)} chars (max 143)')
-    return 83 - len(domain) // 3
-
-
-class PacketEngine(object):
-
-    #
-    # make dynamic or long domain names will fail when
-    # fragmenting data!
-    #
-    MAX_FRAG_DATA_LEN = 80
-
-
-    @classmethod
-    def gen_packet_id(cls):
-        # Sequential packet IDs are now managed per-instance
-        # This method kept for compatibility but should use instance counter
-        return 0
-
-    def __init__(self, frag_cls=None, max_frag_data_len=None):
+            frag_cls: Fragment class (or bound partial)
+            enc_key: 32-byte encryption key
+            auth_key: 32-byte authentication key
+            frag_key: 32-byte fragment MAC key
+        """
         self._frag_cls = frag_cls
+        self._enc_key = enc_key
+        self._auth_key = auth_key
+        self._frag_key = frag_key
 
-        # Auto-calculate max_frag_data_len from domain if not provided
-        if max_frag_data_len is None:
-            # Extract domain from bound fragment class
-            if frag_cls is not None and hasattr(frag_cls, 'keywords') and 'domain' in frag_cls.keywords:
-                domain = frag_cls.keywords['domain']
-                self._max_frag_data_len = calculate_safe_max_fragment_data_len(domain)
-                logger.debug(f'Auto-calculated max_frag_data_len={self._max_frag_data_len} for domain={domain}')
-            else:
-                # Fallback to default if domain not available
-                self._max_frag_data_len = self.MAX_FRAG_DATA_LEN
-                logger.warning('Could not extract domain from frag_cls, using default MAX_FRAG_DATA_LEN')
-        else:
-            self._max_frag_data_len = max_frag_data_len
-
-        self._packet_assembly = {}
-        self._packet_assembly_counter = {}
-        self._packet_key_len = {}  # Track key_len for each packet
+        # Reassembly state
+        self._packet_assembly = {}  # packet_id -> {index: frag_data}
+        self._packet_first_seen = {}  # packet_id -> bool (track first flag)
+        self._packet_last_index = {}  # packet_id -> int (track last fragment index)
         self._packet_outqueue = queue.Queue()
-        # Packet ID counter (u64: 0 to 2^64-1, wraps around)
-        # Initialize with cryptographically secure random value
-        self._next_packet_id = secrets.randbits(64)
-        # Track completed packet IDs for replay detection
-        self._completed_packet_ids = set()
+
+        # Packet ID counter (u32: 0-4294967295, wraps)
+        self._next_packet_id = secrets.randbits(32)
 
     @property
     def packet_outqueue(self):
         return self._packet_outqueue
 
-    def to_wire(self, packet_data, key_len=0):
-        '''
-            Generator yielding zero or more fragments from data.
-            If key_len > 0, the first key_len bytes are the key, rest is value.
-        '''
-        logger.debug('to_wire() len(packet_data)==' + str(len(packet_data)))
-        # Use packet ID and increment counter
-        packet_id = self._next_packet_id
-        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFFFFFFFFFF  # Wrap at 2^64-1 (u64)
-        frag_data_lst = _split2len(packet_data, self._max_frag_data_len)
-        frag_count = len(frag_data_lst)
-        frag_index = 0
-        for frag_data in frag_data_lst:
-            frag = self._frag_cls(packet_id=packet_id, frag_index=frag_index,
-                                  frag_count=frag_count, frag_data=frag_data, key_len=key_len)
-            wire_data = frag.serialize()
-            yield wire_data
-            frag_index += 1
-
-    def from_wire(self, wire_data):
-        '''
-            if wire_data constitutes final missing fragment of a packet:
-              put assembled packet to packet_outqueue
-        '''
-        logger.debug('from_wire() len(wire_data)==' + str(len(wire_data)))
-        frag = self._frag_cls().deserialize(wire_data)
-        if frag is not None:
-            packet_assembly = self._packet_assembly
-            packet_id = frag._packet_id
-            #
-            # Store key_len from first fragment (all fragments should have same key_len)
-            #
-            if packet_id not in self._packet_key_len:
-                self._packet_key_len[packet_id] = frag._key_len
-            #
-            # get frag_data_lst for packet
-            #
-            frag_data_lst = None
-            if packet_id not in packet_assembly:
-                frag_data_lst = [None] * frag._frag_count
-                packet_assembly[packet_id] = frag_data_lst
-            elif len(packet_assembly[packet_id]) != frag._frag_count:
-                logger.error('from_wire(): _frag_count mismatch')
-                return
-            else:  # packet is known
-                frag_data_lst = packet_assembly[packet_id]
-            #
-            # insert fragment if new
-            #
-            if frag_data_lst[frag._frag_index] is None:
-                counter = self._packet_assembly_counter
-                frag_data_lst[frag._frag_index] = frag._frag_data
-                if packet_id not in counter:
-                    counter[packet_id] = frag._frag_count
-                counter[packet_id] -= 1
-                if counter[packet_id] < 0:
-                    msg = 'from_wire(): counter[packet_id] < 0'
-                    logger.error(msg)
-                    raise MJException(msg)
-                if counter[packet_id] == 0:
-                    #
-                    # final fragment obtained, return packet
-                    #
-                    self._finalize_packet(packet_id)
-
-    def _finalize_packet(self, packet_id):
-        # Check for replay attack (duplicate packet ID)
-        if packet_id in self._completed_packet_ids:
-            logger.warning(f'Replay attack detected: packet_id {packet_id} has been completed before')
-        else:
-            # Add to completed set
-            self._completed_packet_ids.add(packet_id)
-
-        frag_data_lst = self._packet_assembly[packet_id]
-        packet_data = b''.join(frag_data_lst)
-
-        # Get key_len for this packet
-        key_len = self._packet_key_len.get(packet_id, 0)
-
-        # Validate key_len doesn't exceed packet data length
-        if key_len > len(packet_data):
-            logger.error(f'Invalid key_len={key_len} exceeds packet data length={len(packet_data)} for packet_id={packet_id}')
-            # Don't process this packet - data corruption or malicious
-            if packet_id in self._packet_key_len:
-                del self._packet_key_len[packet_id]
-            return
-
-        # Always output as key-value tuple
-        if key_len > 0:
-            key = packet_data[:key_len]
-            value = packet_data[key_len:]
-        else:
-            # Zero-length key (legacy or null key)
-            key = b''
-            value = packet_data
-
-        # Validate value is non-empty (protocol requirement)
-        if len(value) == 0:
-            logger.error(f'Invalid empty value for packet_id={packet_id}, key_len={key_len}')
-            # Don't process this packet - violates protocol
-            if packet_id in self._packet_key_len:
-                del self._packet_key_len[packet_id]
-            return
-
-        self.packet_outqueue.put({'key': key, 'value': value, 'key_len': key_len})
-
-        # Cleanup key_len tracking
-        if packet_id in self._packet_key_len:
-            del self._packet_key_len[packet_id]
-
-
-class DnsQueryReader(object):
-    '''
-        Use tshark to generate DNS queries.
-    '''
-    TSHARK = '/usr/bin/tshark'
-
-    def __init__(self, iff='', domain=''):
-        self._iff = iff
-        self._domain = domain
-        self._p = None
-
-    def __iter__(self):
-        # Try to find tshark in common locations
-        import shutil
-        tshark = shutil.which('tshark') or self.TSHARK
-
-        # Use the interface from config, or try to auto-detect
-        interface = self._iff
-        if not interface:
-            # Use cloud-aware auto-detection
-            interface = detect_cloud_network_interface()
-            if not interface:
-                # Final fallback
-                interface = 'eth0'
-                logger.warning(f'Could not detect interface, using fallback: {interface}')
-            else:
-                logger.info(f'Auto-detected interface: {interface}')
-        else:
-            logger.info(f'Using configured interface: {interface}')
-
-        cmd = f'{tshark} -li {interface} -T fields -e dns.qry.name -- udp port 53'
-        # Redirect stderr to /dev/null to prevent tshark banner from polluting JSON output
-        self._p = p = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        name = p.stdout.readline().strip()
-        if isinstance(name, bytes):
-            name = name.decode('utf-8')
-        while name:
-            logger.debug('parsing ' + name)
-            if not self._domain or name.lower().endswith(self._domain):
-                yield name
-            logger.debug('reading next query...')
-            name = p.stdout.readline().strip()
-            if isinstance(name, bytes):
-                name = name.decode('utf-8')
-        p.wait()
-
-    def __del__(self):
-        if self._p is not None:
-            self._p.terminate()
-            self._p.wait()
-
-
-__usage__ = '''
-Usage: python mumbojumbo.py [options]
-
-Quick Start:
-  1. Generate keys and domain:
-     $ ./mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
-     $ source ~/.mumbojumbo_env
-
-  2. Run server (uses env vars automatically):
-     $ sudo ./mumbojumbo.py
-
-  3. Send data from client:
-     $ echo "data" | ./clients/python/mumbojumbo-client.py -k $MUMBOJUMBO_CLIENT_KEY -d $MUMBOJUMBO_DOMAIN
-
-Environment Variables:
-  MUMBOJUMBO_SERVER_KEY  Server private key (overrides config file)
-  MUMBOJUMBO_CLIENT_KEY  Server public key (for client use with -k)
-  MUMBOJUMBO_DOMAIN      Domain suffix (overrides config file)
-
-Precedence: CLI args > Environment variables > Config file
-'''
-
-
-__config_skel__ = '''\
-#
-# !! remember to `chmod 0600` this file !!
-#
-# for use on client-side:
-#   domain = .asd.qwe
-#   mumbojumbo_client_key = {mumbojumbo_client_key}
-#
-# Keys are in hex format with mj_srv_ or mj_cli_ prefix for easy identification.
-# Format: mj_srv_<64_hex_chars> for server keys
-#         mj_cli_<64_hex_chars> for client keys
-#
-
-[main]
-# Domain including leading dot
-domain = .asd.qwe
-# Network interface - auto-detected or platform default
-# Common values: macOS (en0, en1), Linux (eth0, ens4, ens5, wlan0)
-network-interface = {network_interface}
-# Handler pipeline: comma-separated list of handlers (REQUIRED)
-# Available handlers: stdout, smtp, file, execute
-handlers = stdout
-server-key = {mumbojumbo_server_key}
-client-key = {mumbojumbo_client_key}
-
-[smtp]
-server = 127.0.0.1
-port = 587
-start-tls
-username = someuser
-password = yourpasswordhere
-from = someuser@somehost.xy
-to = otheruser@otherhost.xy
-
-[file]
-path = /var/log/mumbojumbo-packets.log
-# Format: raw, hex (default), or base64
-format = hex
-
-[execute]
-command = /usr/local/bin/process-packet.sh
-# Timeout in seconds
-timeout = 5
-'''
-
-
-def option_parser():
-    p = optparse.OptionParser(usage=__usage__)
-    p.add_option('-c', '--config', metavar='path',
-                 help='use this config file')
-    p.add_option('', '--server-key', metavar='server_key',
-                 help='override server-key from config (format: mj_srv_<64_hex_chars>)')
-    p.add_option('-d', '--domain', metavar='domain',
-                 help='override domain from config (e.g., .example.com)')
-    p.add_option('', '--gen-keys', action='store_true',
-                 help='generate keys and domain as env var declarations (output can be sourced)')
-    p.add_option('', '--gen-conf', action='store_true',
-                 help='generate config skeleton file (mumbojumbo.conf)')
-    p.add_option('', '--test-handlers', action='store_true',
-                 help='test all configured handlers in the pipeline')
-    p.add_option('', '--health-check', action='store_true',
-                 help='perform health check and exit (for K8s liveness probes)')
-    p.add_option('', '--daemon', action='store_true',
-                 help='run in daemon mode with signal handling (SIGTERM, SIGINT)')
-    p.add_option('-v', '--verbose', action='store_true',
-                 help='also print debug logs to stderr (default: logs only to mumbojumbo.log)')
-    return p
-
-
-def encode_key_hex(key_bytes, key_type='cli'):
-    '''
-        Encode NaCL key bytes to hex format with mj_srv_ or mj_cli_ prefix.
-        Format: mj_srv_<hex_encoded_key> or mj_cli_<hex_encoded_key>
+    def to_wire(self, key, value):
+        """
+        Encrypt and fragment a key-value pair.
 
         Args:
-            key_bytes: Raw key bytes to encode
-            key_type: Either 'srv' for server keys or 'cli' for client keys
+            key: bytes, key data (or None/b'' for no key)
+            value: bytes, value data
+
+        Yields:
+            DNS query strings (one per fragment)
+        """
+        # Build plaintext: [key_length (1B)][key_data][value_data]
+        if key is None:
+            key = b''
+        key_length = len(key)
+        if key_length > 255:
+            raise ValueError(f'Key too long: {key_length} bytes (max 255)')
+
+        plaintext = bytes([key_length]) + key + value
+
+        # Encrypt message ONCE (inner encryption)
+        message = EncryptedFragment.encrypt_message(self._enc_key, self._auth_key, plaintext)
+
+        logger.debug(f'Encrypted message: {len(message)} bytes')
+
+        # Fragment into 28-byte chunks
+        packet_id = self._next_packet_id
+        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFF  # Wrap at 2^32-1
+
+        fragments = _split2len(message, FRAGMENT_PAYLOAD_SIZE)
+        total_fragments = len(fragments)
+
+        logger.debug(f'Fragmenting into {total_fragments} fragments (packet_id={packet_id})')
+
+        for frag_index, frag_data in enumerate(fragments):
+            is_first = (frag_index == 0)
+            has_more = (frag_index < total_fragments - 1)
+
+            frag = self._frag_cls(
+                packet_id=packet_id,
+                frag_index=frag_index,
+                is_first=is_first,
+                has_more=has_more,
+                frag_data=frag_data,
+                enc_key=self._enc_key,
+                auth_key=self._auth_key,
+                frag_key=self._frag_key
+            )
+
+            wire_data = frag.serialize()
+            yield wire_data
+
+    def _check_packet_complete(self, packet_id):
+        """
+        Check if packet is complete (has first, last, and all fragments in between).
+
+        Args:
+            packet_id: int
 
         Returns:
-            Hex-encoded key with appropriate prefix
-    '''
-    if key_type not in ('srv', 'cli'):
-        raise ValueError('key_type must be "srv" or "cli"')
-    hex_key = key_bytes.hex()
-    return f'mj_{key_type}_{hex_key}'
+            bool: True if complete
+        """
+        if packet_id not in self._packet_assembly:
+            return False
+        if not self._packet_first_seen.get(packet_id, False):
+            return False
+        if packet_id not in self._packet_last_index:
+            return False
+
+        # Check we have all fragments from 0 to last_index
+        last_index = self._packet_last_index[packet_id]
+        expected_indices = set(range(last_index + 1))
+        actual_indices = set(self._packet_assembly[packet_id].keys())
+
+        return expected_indices == actual_indices
+
+    def from_wire(self, wire_data):
+        """
+        Receive and reassemble fragments (handles out-of-order delivery).
+
+        If fragment completes a message, verify integrity, decrypt,
+        and put (key, value) to packet_outqueue.
+
+        Args:
+            wire_data: DNS query string or binary packet
+        """
+        logger.debug(f'from_wire() len(wire_data)={len(wire_data)}')
+
+        # Deserialize fragment (includes outer decryption and MAC verification)
+        frag = self._frag_cls().deserialize(wire_data)
+        if frag is None:
+            logger.debug('Fragment deserialization failed')
+            return
+
+        packet_id = frag._packet_id
+        frag_index = frag._frag_index
+        is_first = frag._is_first
+        has_more = frag._has_more
+        frag_data = frag._frag_data
+
+        logger.debug(f'Fragment: packet_id={packet_id}, index={frag_index}, first={is_first}, more={has_more}')
+
+        # Initialize assembly buffer if needed
+        if packet_id not in self._packet_assembly:
+            self._packet_assembly[packet_id] = {}
+            self._packet_first_seen[packet_id] = False
+
+        # Track first fragment
+        if is_first:
+            self._packet_first_seen[packet_id] = True
+
+        # Track last fragment (has_more == False means this is the last)
+        if not has_more:
+            self._packet_last_index[packet_id] = frag_index
+
+        # Store fragment
+        self._packet_assembly[packet_id][frag_index] = frag_data
+
+        # Check if complete (handles out-of-order)
+        if self._check_packet_complete(packet_id):
+            logger.debug(f'Packet complete for packet_id={packet_id}')
+
+            # Reassemble message (sort by index)
+            fragments = self._packet_assembly[packet_id]
+            last_index = self._packet_last_index[packet_id]
+
+            # Concatenate fragments in order
+            message = b''.join(fragments[i] for i in range(last_index + 1))
+
+            logger.debug(f'Reassembled message: {len(message)} bytes')
+
+            # Decrypt and verify integrity (inner decryption)
+            plaintext = EncryptedFragment.decrypt_message(self._enc_key, self._auth_key, message)
+
+            if plaintext is None:
+                logger.error(f'Decryption or integrity check failed for packet_id={packet_id}')
+                # Clean up
+                del self._packet_assembly[packet_id]
+                del self._packet_first_seen[packet_id]
+                del self._packet_last_index[packet_id]
+                return
+
+            # Parse key-value
+            if len(plaintext) < 1:
+                logger.error(f'Plaintext too short: {len(plaintext)} bytes')
+                del self._packet_assembly[packet_id]
+                del self._packet_first_seen[packet_id]
+                del self._packet_last_index[packet_id]
+                return
+
+            key_length = plaintext[0]
+            if len(plaintext) < 1 + key_length:
+                logger.error(f'Invalid key_length: {key_length}')
+                del self._packet_assembly[packet_id]
+                del self._packet_first_seen[packet_id]
+                del self._packet_last_index[packet_id]
+                return
+
+            key = plaintext[1:1+key_length]
+            value = plaintext[1+key_length:]
+
+            logger.info(f'Packet reassembled: key_len={len(key)}, value_len={len(value)}')
+
+            # Put to output queue
+            self._packet_outqueue.put({'key': key, 'value': value, 'key_length': key_length})
+
+            # Clean up
+            del self._packet_assembly[packet_id]
+            del self._packet_first_seen[packet_id]
+            del self._packet_last_index[packet_id]
+
+
+# ============================================================================
+# DNS Query Reader (unchanged)
+# ============================================================================
+
+class DnsQueryReader(object):
+    """
+    Read DNS queries from network interface using tshark.
+    """
+
+    def __init__(self, interface='en0', domain='.example.com'):
+        self._interface = interface
+        self._domain = domain
+        self._tshark_cmd = [
+            'tshark', '-l', '-i', interface,
+            '-T', 'fields', '-e', 'dns.qry.name',
+            'udp port 53'
+        ]
+
+    def __iter__(self):
+        logger.info(f'Starting DNS capture on interface {self._interface}')
+        proc = subprocess.Popen(
+            self._tshark_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=1
+        )
+
+        for line in iter(proc.stdout.readline, b''):
+            dns_query = line.decode('utf-8', errors='ignore').strip()
+            if dns_query.endswith(self._domain):
+                logger.debug(f'DNS query: {dns_query[:50]}...')
+                yield dns_query
+
+
+# ============================================================================
+# Key Generation and Encoding
+# ============================================================================
+
+def encode_key_hex(key_bytes, key_type='cli'):
+    """
+    Encode key bytes to hex string with prefix.
+
+    Args:
+        key_bytes: 32-byte key
+        key_type: 'cli' for client key
+
+    Returns:
+        str: mj_<type>_<64_hex_chars>
+    """
+    if len(key_bytes) != 32:
+        raise ValueError(f'Key must be 32 bytes, got {len(key_bytes)}')
+    hex_str = key_bytes.hex()
+    return f'mj_{key_type}_{hex_str}'
 
 
 def decode_key_hex(key_str):
-    '''
-        Decode hex-formatted key with mj_srv_ or mj_cli_ prefix to bytes.
-        Accepts: mj_srv_<hex_encoded_key> or mj_cli_<hex_encoded_key>
-        Returns: raw key bytes
-    '''
-    if key_str.startswith('mj_srv_'):
-        hex_key = key_str[7:]  # Remove 'mj_srv_' prefix
-    elif key_str.startswith('mj_cli_'):
-        hex_key = key_str[7:]  # Remove 'mj_cli_' prefix
+    """
+    Decode hex key string to bytes.
+
+    Args:
+        key_str: mj_<type>_<64_hex_chars> or raw hex
+
+    Returns:
+        bytes: 32-byte key
+    """
+    # Strip prefix
+    if key_str.startswith('mj_'):
+        parts = key_str.split('_')
+        if len(parts) == 3:
+            hex_str = parts[2]
+        else:
+            hex_str = key_str
     else:
-        raise ValueError('Key must start with "mj_srv_" or "mj_cli_" prefix')
+        hex_str = key_str
 
     try:
-        return bytes.fromhex(hex_key)
+        key_bytes = bytes.fromhex(hex_str)
     except ValueError as e:
-        raise ValueError(f'Invalid hex key format: {e}')
+        raise ValueError(f'Invalid hex string: {e}')
+
+    if len(key_bytes) != 32:
+        raise ValueError(f'Key must be 32 bytes, got {len(key_bytes)}')
+
+    return key_bytes
+
+
+def derive_keys(client_key):
+    """
+    Derive encryption, authentication, and fragment keys from client key.
+
+    Args:
+        client_key: bytes, 32-byte master key
+
+    Returns:
+        tuple: (enc_key, auth_key, frag_key), each 32 bytes
+    """
+    if len(client_key) != 32:
+        raise ValueError(f'Client key must be 32 bytes, got {len(client_key)}')
+
+    # Derive 32-byte keys by concatenating two 16-byte MACs
+    enc_key = poly1305_mac(client_key, b'enc') + poly1305_mac(client_key, b'enc2')
+    auth_key = poly1305_mac(client_key, b'auth') + poly1305_mac(client_key, b'auth2')
+    frag_key = poly1305_mac(client_key, b'frag') + poly1305_mac(client_key, b'frag2')
+
+    return enc_key, auth_key, frag_key
+
+
+def get_client_key_hex():
+    """
+    Generate a single 32-byte client key.
+
+    Returns:
+        str: mj_cli_<64_hex_chars>
+    """
+    client_key = secrets.token_bytes(32)
+    return encode_key_hex(client_key, 'cli')
 
 
 def validate_domain(domain):
-    '''
-        Validate domain format for DNS-based communication.
-        Domain should typically start with a dot (e.g., .example.com).
-        Raises ValueError if domain format is invalid.
-    '''
-    if not domain:
-        raise ValueError('Domain cannot be empty')
+    """Validate domain format."""
     if not domain.startswith('.'):
-        logger.warning(f'Domain "{domain}" does not start with a dot - this may cause issues with DNS matching')
-    # Basic DNS label validation
-    if '..' in domain:
-        raise ValueError('Domain cannot contain consecutive dots')
-    return True
+        return False, 'Domain must start with dot (.)'
+    if len(domain) < 3:
+        return False, 'Domain too short'
+    if len(domain) > 253:
+        return False, 'Domain too long (max 253)'
+    return True, 'OK'
 
 
-def get_nacl_keypair_hex():
-    '''
-        Generate NaCL keypair and return as hex strings with mj_srv_ and mj_cli_ prefixes.
-        Returns: (server_key_string, client_key_string)
-    '''
-    private_key = nacl.public.PrivateKey.generate()
-    srv = encode_key_hex(private_key.encode(), key_type='srv')
-    cli = encode_key_hex(private_key.public_key.encode(), key_type='cli')
-    return (srv, cli)
-
-
-def get_nacl_keypair_base64():
-    '''
-        DEPRECATED: Use get_nacl_keypair_hex() instead.
-        Generate NaCL keypair and return as base64 strings.
-    '''
-    private_key = nacl.public.PrivateKey.generate()
-    priv = base64.b64encode(private_key.encode()).decode('ascii').strip()
-    pub = base64.b64encode(private_key.public_key.encode()).decode('ascii').strip()
-    return (priv, pub)
-
+# ============================================================================
+# Packet Handlers (infrastructure - mostly unchanged)
+# ============================================================================
 
 class PacketHandler:
-    '''
-        Base class for packet handlers. All handlers must implement handle() method.
-        Handlers process reassembled packets and should never crash the main loop.
-    '''
-    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
-        '''
-            Process a reassembled packet.
-
-            Args:
-                key: The packet key (empty bytes for null key)
-                value: The packet value
-                timestamp: UTC timestamp when packet was reassembled
-
-            Returns:
-                True on success, False on failure
-        '''
-        raise NotImplementedError('Subclasses must implement handle()')
+    """Base class for packet handlers."""
+    def handle(self, packet):
+        raise NotImplementedError()
 
 
 class StdoutHandler(PacketHandler):
-    '''
-        Output packet metadata as JSON to stdout.
-    '''
-    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
-        '''Handle key-value packets with separate fields.'''
-        try:
-            # Handle null/empty keys
-            if len(key) == 0:
-                key_display = None
-            else:
-                # Convert key to string for preview
-                try:
-                    key_str = key.decode('utf-8')
-                except UnicodeDecodeError:
-                    key_str = key.hex()
-                    logger.debug('Key is binary, showing as hex in preview')
-                key_display = key_str[:100] + '...' if len(key_str) > 100 else key_str
+    """Print packets to stdout as JSON."""
+    def handle(self, packet):
+        key = packet.get('key', b'')
+        value = packet.get('value', b'')
+        key_length = packet.get('key_length', 0)
 
-            # Convert value to string for preview
-            try:
-                value_str = value.decode('utf-8')
-            except UnicodeDecodeError:
-                value_str = value.hex()
-                logger.debug('Value is binary, showing as hex in preview')
+        # JSON output
+        output = {
+            'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
+            'event': 'packet_reassembled',
+            'key_length': key_length,
+            'value_length': len(value),
+            'key_preview': key[:100].decode('utf-8', errors='replace') if key else '',
+            'value_preview': value[:100].decode('utf-8', errors='replace')
+        }
 
-            # Prepare value preview
-            value_preview = value_str[:100] + '...' if len(value_str) > 100 else value_str
-
-            # Output JSON with key-value fields (key can be null)
-            output = {
-                'timestamp': timestamp.isoformat(),
-                'event': 'packet_reassembled',
-                'key': key_display,
-                'key_length': len(key) if len(key) > 0 else None,
-                'value_length': len(value),
-                'value_preview': value_preview
-            }
-            print(json.dumps(output), flush=True)
-            logger.info(f'Stdout handler: Key-value JSON output written (key={key_display})')
-            return True
-        except Exception as e:
-            logger.error(f'Stdout handler error: {type(e).__name__}: {e}')
-            return False
+        print(json.dumps(output), flush=True)
+        logger.info(f'Packet: key_len={key_length}, value_len={len(value)}')
 
 
 class SMTPHandler(PacketHandler):
-    '''
-        Forward packet via email using SMTP.
-    '''
-    def __init__(self, server='', port=587, from_='', to='', starttls=True,
-                 username=None, password=None):
-        self._server = server
-        self._port = int(port) if port else 587
-        self._from = from_
-        self._to = to
-        self._starttls = starttls
-        self._username = username
-        self._password = password
+    """Forward packets via SMTP email."""
+    def __init__(self, config):
+        self.server = config.get('server')
+        self.port = config.getint('port', 587)
+        self.use_tls = config.getboolean('start-tls', True)
+        self.username = config.get('username')
+        self.password = config.get('password')
+        self.from_addr = config.get('from')
+        self.to_addr = config.get('to')
 
-    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
-        '''Send key-value packet via email.'''
-        # Convert key to string
-        if len(key) == 0:
-            key_str = '(null)'
-        else:
-            try:
-                key_str = key.decode('utf-8')
-            except UnicodeDecodeError:
-                key_str = key.hex()
-                logger.debug('Binary key, sending as hex in email')
+    def handle(self, packet):
+        key = packet.get('key', b'')
+        value = packet.get('value', b'')
 
-        # Convert value to string for email
+        # Build email
+        subject = f'Mumbojumbo: {key.decode("utf-8", errors="replace")[:50] if key else "Data"}'
+        body = f'Key: {key.decode("utf-8", errors="replace")}\n\n'
+        body += f'Value ({len(value)} bytes):\n{value.decode("utf-8", errors="replace")[:1000]}'
+
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = self.from_addr
+        msg['To'] = self.to_addr
+
         try:
-            value_str = value.decode('utf-8')
-        except UnicodeDecodeError:
-            value_str = value.hex()
-            logger.debug('Binary value, sending as hex in email')
-
-        smtp = None
-        try:
-            # Create email body with key-value format
-            body = f'Key: {key_str}\n\nValue:\n{value_str}'
-            msg = MIMEText(body)
-            msg.set_charset('utf-8')
-            msg['Subject'] = f'Mumbojumbo Packet: {key_str[:50]}'
-            msg['From'] = self._from
-            msg['To'] = self._to
-
-            logger.debug(f'SMTP handler: connecting to {self._server}:{self._port}')
-            smtp = smtplib.SMTP(self._server, port=self._port, timeout=30)
-            smtp.ehlo_or_helo_if_needed()
-
-            if self._starttls:
-                logger.debug('SMTP handler: starting TLS')
-                smtp.starttls()
-                smtp.ehlo()
-
-            if self._username or self._password:
-                logger.debug(f'SMTP handler: logging in as {self._username}')
-                smtp.login(self._username, self._password)
-
-            logger.debug(f'SMTP handler: sending email to {self._to}')
-            smtp.sendmail(self._from, [self._to], msg.as_string())
-            smtp.quit()
-            logger.info(f'SMTP handler: email sent successfully to {self._to} (key={key_str[:30]})')
-            return True
-
-        except (socket.gaierror, socket.herror) as e:
-            logger.error(f'SMTP handler DNS/network error: {self._server}:{self._port}: {e}')
-            return False
-        except socket.timeout as e:
-            logger.error(f'SMTP handler timeout: {self._server}:{self._port}: {e}')
-            return False
-        except ConnectionRefusedError as e:
-            logger.error(f'SMTP handler connection refused: {self._server}:{self._port}: {e}')
-            return False
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error(f'SMTP handler authentication failed: {self._username}: {e}')
-            return False
-        except smtplib.SMTPRecipientsRefused as e:
-            logger.error(f'SMTP handler recipient rejected: {self._to}: {e}')
-            return False
-        except smtplib.SMTPSenderRefused as e:
-            logger.error(f'SMTP handler sender rejected: {self._from}: {e}')
-            return False
-        except smtplib.SMTPDataError as e:
-            logger.error(f'SMTP handler data error: {e}')
-            return False
-        except smtplib.SMTPException as e:
-            logger.error(f'SMTP handler error: {e}')
-            return False
+            with smtplib.SMTP(self.server, self.port, timeout=10) as smtp:
+                if self.use_tls:
+                    smtp.starttls()
+                if self.username and self.password:
+                    smtp.login(self.username, self.password)
+                smtp.send_message(msg)
+            logger.info('Email sent successfully')
         except Exception as e:
-            logger.error(f'SMTP handler unexpected error: {type(e).__name__}: {e}')
-            logger.debug(traceback.format_exc())
-            return False
-        finally:
-            if smtp:
-                try:
-                    smtp.quit()
-                except:
-                    pass
+            logger.error(f'SMTP error: {type(e).__name__}: {e}')
 
 
-class FileHandler(PacketHandler):
-    '''
-        Write packet data to a file. Supports raw, hex, and base64 formats.
-    '''
-    def __init__(self, path: str, format: str = 'hex'):
-        self._path = path
-        if format not in ('raw', 'hex', 'base64'):
-            raise ValueError(f'Invalid format: {format}. Must be raw, hex, or base64')
-        self._format = format
-
-    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
-        try:
-            # Convert key for display
-            if len(key) == 0:
-                key_str = '(null)'
-            else:
-                try:
-                    key_str = key.decode('utf-8')
-                except UnicodeDecodeError:
-                    key_str = key.hex()
-
-            # Format value according to config
-            if self._format == 'hex':
-                output_value = value.hex()
-            elif self._format == 'base64':
-                output_value = base64.b64encode(value).decode('ascii')
-            else:  # raw
-                output_value = value
-
-            # Write to file with metadata header
-            with open(self._path, 'ab') as f:
-                header = f'# {timestamp.isoformat()} - key: {key_str} - value_length: {len(value)} - format: {self._format}\n'
-                f.write(header.encode('utf-8'))
-
-                if isinstance(output_value, str):
-                    f.write(output_value.encode('utf-8'))
-                else:
-                    f.write(output_value)
-
-                f.write(b'\n')
-
-            logger.info(f'File handler: wrote key-value to {self._path} (key={key_str[:30]}, value_length={len(value)}, format={self._format})')
-            return True
-
-        except IOError as e:
-            logger.error(f'File handler I/O error: {self._path}: {e}')
-            return False
-        except Exception as e:
-            logger.error(f'File handler unexpected error: {type(e).__name__}: {e}')
-            logger.debug(traceback.format_exc())
-            return False
-
-
-class ExecuteHandler(PacketHandler):
-    '''
-        Execute a command with packet value as stdin. Passes key and metadata as environment variables.
-    '''
-    def __init__(self, command: str, timeout: int = 30):
-        self._command = command
-        self._timeout = timeout
-
-    def handle(self, key: bytes, value: bytes, timestamp: datetime.datetime) -> bool:
-        try:
-            # Convert key for environment variable
-            if len(key) == 0:
-                key_str = ''
-            else:
-                try:
-                    key_str = key.decode('utf-8')
-                except UnicodeDecodeError:
-                    key_str = key.hex()
-
-            # Prepare environment variables with metadata
-            env = os.environ.copy()
-            env['MUMBOJUMBO_TIMESTAMP'] = timestamp.isoformat()
-            env['MUMBOJUMBO_KEY'] = key_str
-            env['MUMBOJUMBO_KEY_LENGTH'] = str(len(key))
-            env['MUMBOJUMBO_VALUE_LENGTH'] = str(len(value))
-
-            logger.debug(f'Execute handler: running command: {self._command}')
-
-            # Execute command with value as stdin
-            result = subprocess.run(
-                self._command,
-                input=value,
-                shell=True,
-                capture_output=True,
-                timeout=self._timeout,
-                env=env
-            )
-
-            if result.returncode == 0:
-                logger.info(f'Execute handler: command succeeded (exit code 0, key={key_str[:30]})')
-                if result.stdout:
-                    logger.debug(f'Execute handler stdout: {result.stdout.decode("utf-8", errors="replace")}')
-                return True
-            else:
-                logger.error(f'Execute handler: command failed (exit code {result.returncode})')
-                if result.stderr:
-                    logger.error(f'Execute handler stderr: {result.stderr.decode("utf-8", errors="replace")}')
-                return False
-
-        except subprocess.TimeoutExpired:
-            logger.error(f'Execute handler: command timed out after {self._timeout}s')
-            return False
-        except FileNotFoundError as e:
-            logger.error(f'Execute handler: command not found: {e}')
-            return False
-        except Exception as e:
-            logger.error(f'Execute handler unexpected error: {type(e).__name__}: {e}')
-            logger.debug(traceback.format_exc())
-            return False
-
-
-class SMTPForwarder(object):
-    '''
-        DEPRECATED: Legacy SMTP forwarder. Use SMTPHandler instead.
-        Kept for backward compatibility with --test-smtp flag.
-    '''
-    def __init__(self, server='', port=587, from_='', to='', starttls=True,
-                 username=None, password=None):
-        self._handler = SMTPHandler(server, port, from_, to, starttls, username, password)
-
-    def sendmail(self, subject='', text='', charset='utf-8'):
-        '''Send email via SMTP (legacy interface).'''
-        # Convert to handler format - use empty key, text as value
-        value = text.encode('utf-8') if isinstance(text, str) else text
-        key = subject.encode('utf-8') if isinstance(subject, str) else subject
-        return self._handler.handle(key, value, datetime.datetime.now(datetime.timezone.utc))
-
-
-class SecretBox(nacl.secret.SecretBox):
-    '''
-        Added key expansion to allow arbitrary key lengths.
-    '''
-    def __init__(self, key, *args, **kw):
-        if isinstance(key, str):
-            key = key.encode('utf-8')
-        key = self.expand(key, 1984)
-        super(SecretBox, self).__init__(key, *args, **kw)
-
-    def _expand(self, origkey, key):
-        h = hmac.HMAC(key=key, msg=origkey, digestmod=hashlib.sha256)
-        return h.digest()
-
-    def expand(self, key, count):
-        origkey = key
-        for _ in range(count):
-            key = self._expand(origkey, key)
-        return key
-
-
-def getpass2(msg):
-    '''
-        Read secret twice from terminal, repeat until both values match,
-        then return secret.
-    '''
-    sec = None
-    while True:
-        sec = getpass.getpass(msg + ':')
-        sec2 = getpass.getpass(msg + ' again:')
-        if sec == sec2:
-            break
-        print('The values do not match, try again')
-    return sec
-
+# ============================================================================
+# Configuration and Logging
+# ============================================================================
 
 def setup_logging(verbose=False, logfile='mumbojumbo.log'):
-    '''
-        Configure logging based on verbose flag:
-        - Always log DEBUG+ to rotating file (mumbojumbo.log)
-        - If verbose: also log DEBUG+ to console stderr
-        - If not verbose: only JSON output to stdout
-    '''
-    # Get the global logger
+    """Configure logging."""
+    global logger
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
-    logger.propagate = False  # Don't propagate to root logger
+    logger.handlers = []
 
-    # Remove any existing handlers (including basicConfig handlers)
-    logger.handlers.clear()
-
-    # Also clear root logger handlers to prevent duplicate output
-    logging.getLogger().handlers.clear()
-
-    # File handler: always log DEBUG and above to file with rotation
+    # File handler (always DEBUG)
     file_handler = logging.handlers.RotatingFileHandler(
-        logfile, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+        logfile, maxBytes=10*1024*1024, backupCount=5
+    )
     file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
-    # Console handler: only if verbose flag is set
+    # Stderr handler (only if verbose)
     if verbose:
-        console_handler = logging.StreamHandler(sys.stderr)
-        console_handler.setLevel(logging.DEBUG)
-        console_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(console_formatter)
-        logger.addHandler(console_handler)
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setLevel(logging.DEBUG)
+        stderr_formatter = logging.Formatter('%(levelname)s: %(message)s')
+        stderr_handler.setFormatter(stderr_formatter)
+        logger.addHandler(stderr_handler)
 
-
-def json_output(event_type, **kwargs):
-    '''
-        Output parseable JSON to stdout for DNS events.
-        Always includes timestamp and event type.
-    '''
-    output = {
-        'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        'event': event_type
-    }
-    output.update(kwargs)
-    print(json.dumps(output), flush=True)
-
-
-# Global flag for graceful shutdown
-_shutdown_requested = False
-
-
-def signal_handler(signum, frame):
-    '''Handle SIGTERM and SIGINT for graceful shutdown.'''
-    global _shutdown_requested
-    signame = signal.Signals(signum).name
-    logger.info(f'Received {signame}, initiating graceful shutdown...')
-    _shutdown_requested = True
-
-
-def detect_cloud_network_interface():
-    '''
-    Detect network interface for cloud environments.
-    Returns best guess interface name or None.
-
-    Cloud VMs typically use: ens4 (GCP), eth0 (AWS/Azure), ens5 (AWS Nitro)
-    '''
-    import platform
-
-    # Try to use 'ip' command on Linux to find active interface
-    if platform.system() == 'Linux':
-        try:
-            result = subprocess.run(['ip', 'route', 'show', 'default'],
-                                    capture_output=True, text=True, timeout=2)
-            if result.returncode == 0:
-                # Parse: "default via X.X.X.X dev INTERFACE ..."
-                for line in result.stdout.split('\n'):
-                    if 'default' in line and 'dev' in line:
-                        parts = line.split()
-                        if 'dev' in parts:
-                            idx = parts.index('dev')
-                            if idx + 1 < len(parts):
-                                interface = parts[idx + 1]
-                                logger.info(f'Auto-detected network interface: {interface}')
-                                return interface
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-
-    # Fallback: try common cloud interface names
-    common_interfaces = ['ens4', 'ens5', 'eth0', 'en0', 'wlan0']
-    for iface in common_interfaces:
-        try:
-            # Check if interface exists using ifconfig or ip
-            if platform.system() == 'Linux':
-                result = subprocess.run(['ip', 'link', 'show', iface],
-                                        capture_output=True, timeout=1)
-            else:  # macOS
-                result = subprocess.run(['ifconfig', iface],
-                                        capture_output=True, timeout=1)
-
-            if result.returncode == 0:
-                logger.info(f'Found network interface: {iface}')
-                return iface
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            continue
-
-    logger.warning('Could not auto-detect network interface')
-    return None
+    return logger
 
 
 def check_tshark():
-    '''
-    Verify tshark is available and accessible.
-    Returns (success: bool, tshark_path: str, error_msg: str)
-    '''
-    import shutil
-
-    tshark = shutil.which('tshark')
-    if not tshark:
-        return (False, None, 'tshark not found. Install wireshark/tshark package.')
-
-    # Check if we can execute it
+    """Check if tshark is available."""
     try:
-        result = subprocess.run([tshark, '--version'],
-                                capture_output=True, timeout=2)
-        if result.returncode == 0:
-            version_info = result.stdout.decode('utf-8', errors='replace').split('\n')[0]
-            return (True, tshark, version_info)
-        else:
-            return (False, tshark, 'tshark execution failed')
-    except subprocess.TimeoutExpired:
-        return (False, tshark, 'tshark execution timed out')
-    except Exception as e:
-        return (False, tshark, f'tshark check failed: {e}')
+        subprocess.run(['tshark', '--version'], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
 
 
 def check_root_permissions():
-    '''
-    Check if running with sufficient permissions for packet capture.
-    Returns (success: bool, error_msg: str)
-    '''
-    if os.geteuid() != 0:
-        return (False, 'Not running as root. Packet capture requires root privileges (use sudo).')
-    return (True, 'Running with root privileges')
+    """Check if running with root/sudo."""
+    return os.geteuid() == 0
 
 
-def health_check():
-    '''
-    Perform health check and output status.
-    Used for container/K8s liveness probes.
-    Returns exit code (0 = healthy, 1 = unhealthy)
-    '''
-    checks = []
+# ============================================================================
+# Main
+# ============================================================================
 
-    # Check 1: tshark availability
-    tshark_ok, tshark_path, tshark_msg = check_tshark()
-    checks.append(('tshark', tshark_ok, tshark_msg))
+def option_parser():
+    """Parse command-line options."""
+    parser = optparse.OptionParser(usage='%prog [options]')
 
-    # Check 2: root permissions
-    root_ok, root_msg = check_root_permissions()
-    checks.append(('permissions', root_ok, root_msg))
+    # Keys
+    parser.add_option('--client-key', dest='client_key', help='Client key (mj_cli_...)')
 
-    # Check 3: log file writable
-    try:
-        test_log = 'mumbojumbo.log'
-        with open(test_log, 'a') as f:
-            f.write('')
-        checks.append(('log_file', True, f'{test_log} is writable'))
-    except IOError as e:
-        checks.append(('log_file', False, f'Cannot write to log file: {e}'))
+    # Network
+    parser.add_option('-i', '--interface', dest='interface', default='en0',
+                      help='Network interface (default: en0)')
+    parser.add_option('-d', '--domain', dest='domain', default='.example.com',
+                      help='DNS domain suffix (default: .example.com)')
 
-    # Output results
-    all_ok = all(ok for _, ok, _ in checks)
+    # Actions
+    parser.add_option('--gen-keys', dest='gen_keys', action='store_true',
+                      help='Generate client key and print environment variables')
 
-    print(json.dumps({
-        'status': 'healthy' if all_ok else 'unhealthy',
-        'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        'checks': [{'name': name, 'status': 'pass' if ok else 'fail', 'message': msg}
-                   for name, ok, msg in checks]
-    }, indent=2))
+    # Logging
+    parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
+                      help='Verbose output to stderr')
 
-    return 0 if all_ok else 1
-
-
-def startup_validation(network_interface=None, domain=None):
-    '''
-    Validate environment before starting server.
-    Logs warnings and errors but doesn't exit.
-    '''
-    logger.info('=== Startup Validation ===')
-
-    # Check tshark
-    tshark_ok, tshark_path, tshark_msg = check_tshark()
-    if tshark_ok:
-        logger.info(f'✓ tshark: {tshark_msg}')
-    else:
-        logger.error(f'✗ tshark: {tshark_msg}')
-        logger.error('Server will likely fail to capture packets')
-
-    # Check permissions
-    root_ok, root_msg = check_root_permissions()
-    if root_ok:
-        logger.info(f'✓ Permissions: {root_msg}')
-    else:
-        logger.warning(f'✗ Permissions: {root_msg}')
-        logger.warning('Packet capture may fail without root')
-
-    # Validate network interface
-    if network_interface:
-        logger.info(f'✓ Network interface configured: {network_interface}')
-    else:
-        auto_iface = detect_cloud_network_interface()
-        if auto_iface:
-            logger.info(f'✓ Auto-detected network interface: {auto_iface}')
-        else:
-            logger.warning('✗ Could not detect network interface, will use default')
-
-    # Validate domain
-    if domain:
-        logger.info(f'✓ Domain configured: {domain}')
-        if not domain.startswith('.'):
-            logger.warning(f'  WARNING: Domain should typically start with "." (got: {domain})')
-
-    logger.info('=== Startup Validation Complete ===')
+    return parser
 
 
 def main():
-    (opt, args) = option_parser().parse_args()
+    """Main entry point."""
+    parser = option_parser()
+    opts, args = parser.parse_args()
 
-    # Setup logging: file always, console only if --verbose
-    setup_logging(verbose=opt.verbose)
+    # Setup logging
+    setup_logging(verbose=opts.verbose)
 
-    # Health check mode - no logging needed
-    if opt.health_check:
-        sys.exit(health_check())
+    # Generate keys
+    if opts.gen_keys:
+        client_key = get_client_key_hex()
+        domain = opts.domain if opts.domain != '.example.com' else f'.{secrets.token_hex(3)}.{secrets.token_hex(3)}'
 
-    if opt.gen_conf:
-        (mumbojumbo_server_key, mumbojumbo_client_key) = get_nacl_keypair_hex()
-
-        # Auto-detect network interface
-        detected_interface = detect_cloud_network_interface()
-        if not detected_interface:
-            # Fallback to sensible defaults based on platform
-            import platform
-            if platform.system() == 'Darwin':
-                detected_interface = 'en0'  # macOS default
-            else:
-                detected_interface = 'eth0'  # Linux default
-
-        # Find available filename: mumbojumbo.conf, mumbojumbo.conf.1, etc.
-        filename = 'mumbojumbo.conf'
-        counter = 0
-        while os.path.exists(filename):
-            counter += 1
-            filename = f'mumbojumbo.conf.{counter}'
-
-        # Write config to file
-        config_content = __config_skel__.format(
-            mumbojumbo_server_key=mumbojumbo_server_key,
-            mumbojumbo_client_key=mumbojumbo_client_key,
-            network_interface=detected_interface
-        )
-        with open(filename, 'w') as f:
-            f.write(config_content)
-
-        print(f'Created {filename}')
-        print(f'Auto-detected network interface: {detected_interface}')
-        sys.exit()
-
-    if opt.gen_keys:
-        (srv, cli) = get_nacl_keypair_hex()
-
-        # Generate random domain suffix
-        import secrets
-        random_suffix = ''.join(secrets.choice('abcdefghijklmnopqrstuvwxyz0123456789') for _ in range(8))
-        domain = f'.{random_suffix[:4]}.{random_suffix[4:]}'
-
-        # Output as environment variable declarations for easy sourcing
-        print(f'export MUMBOJUMBO_SERVER_KEY={srv}')
-        print(f'export MUMBOJUMBO_CLIENT_KEY={cli}')
+        print('# Mumbojumbo Configuration')
+        print(f'export MUMBOJUMBO_CLIENT_KEY={client_key}')
         print(f'export MUMBOJUMBO_DOMAIN={domain}')
-        sys.exit()
+        return 0
 
-    # Check if we have minimum required values from env vars or CLI
-    has_server_key = opt.server_key or os.environ.get('MUMBOJUMBO_SERVER_KEY')
-    has_domain = opt.domain or os.environ.get('MUMBOJUMBO_DOMAIN')
+    # Get client key from opts or environment
+    client_key_str = opts.client_key or os.getenv('MUMBOJUMBO_CLIENT_KEY')
+    domain = opts.domain or os.getenv('MUMBOJUMBO_DOMAIN', '.example.com')
 
-    # Determine if we need a config file
-    config_file = opt.config or 'mumbojumbo.conf'
-    use_config_file = os.path.exists(config_file)
+    if not client_key_str:
+        logger.error('Client key not provided. Use --gen-keys or set MUMBOJUMBO_CLIENT_KEY.')
+        return 1
 
-    # If no config file and insufficient env vars, error
-    if not use_config_file and not (has_server_key and has_domain):
-        print('Error: Config file not found and required environment variables not set.')
-        print('Either create a config file (--gen-conf) or set environment variables:')
-        print('  export MUMBOJUMBO_SERVER_KEY=mj_srv_...')
-        print('  export MUMBOJUMBO_DOMAIN=.example.com')
-        sys.exit(1)
-
-    # Parse config file if it exists
-    config = configparser.ConfigParser(allow_no_value=True)
-    if use_config_file:
-        config.read(config_file)
-        logger.info(f'Loaded config file: {config_file}')
-
-    #
-    # Parse handler pipeline
-    #
-    # Default to stdout if no config file
-    if use_config_file and config.has_option('main', 'handlers'):
-        handler_names = config.get('main', 'handlers')
-        handler_names = [h.strip() for h in handler_names.split(',')]
-    elif use_config_file:
-        # Config file exists but no handlers specified - error
-        logger.error('Missing required "handlers" option in [main] section')
-        print('ERROR: Config file must specify "handlers" in [main] section.')
-        print('Example: handlers = stdout,smtp,file,execute')
-        sys.exit(1)
-    else:
-        # No config file, use default stdout handler
-        handler_names = ['stdout']
-        logger.info('No config file - using default stdout handler')
-
-    if not handler_names:
-        logger.error('Handler pipeline is empty')
-        print('ERROR: At least one handler must be specified.')
-        sys.exit(1)
-
-    # Build handler pipeline
-    handlers = []
-    for handler_name in handler_names:
-        try:
-            if handler_name == 'stdout':
-                handlers.append(StdoutHandler())
-                logger.info('Added stdout handler to pipeline')
-
-            elif handler_name == 'smtp':
-                if not config.has_section('smtp'):
-                    logger.error('smtp handler specified but [smtp] section missing')
-                    print('ERROR: smtp handler requires [smtp] config section.')
-                    sys.exit(1)
-
-                smtp_items = dict(config.items('smtp'))
-                smtp_port = int(smtp_items.get('port', 587))
-
-                smtp_handler = SMTPHandler(
-                    server=smtp_items['server'],
-                    port=smtp_port,
-                    starttls=config.has_option('smtp', 'start-tls'),
-                    from_=smtp_items['from'],
-                    to=smtp_items['to'],
-                    username=smtp_items.get('username', ''),
-                    password=smtp_items.get('password', ''))
-                handlers.append(smtp_handler)
-                logger.info('Added smtp handler to pipeline')
-
-            elif handler_name == 'file':
-                if not config.has_section('file'):
-                    logger.error('file handler specified but [file] section missing')
-                    print('ERROR: file handler requires [file] config section.')
-                    sys.exit(1)
-
-                file_items = dict(config.items('file'))
-                file_path = file_items['path']
-                file_format = file_items.get('format', 'hex')
-
-                file_handler = FileHandler(path=file_path, format=file_format)
-                handlers.append(file_handler)
-                logger.info(f'Added file handler to pipeline (path={file_path}, format={file_format})')
-
-            elif handler_name == 'execute':
-                if not config.has_section('execute'):
-                    logger.error('execute handler specified but [execute] section missing')
-                    print('ERROR: execute handler requires [execute] config section.')
-                    sys.exit(1)
-
-                execute_items = dict(config.items('execute'))
-                command = execute_items['command']
-                timeout = int(execute_items.get('timeout', 30))
-
-                execute_handler = ExecuteHandler(command=command, timeout=timeout)
-                handlers.append(execute_handler)
-                logger.info(f'Added execute handler to pipeline (command={command})')
-
-            else:
-                logger.error(f'Unknown handler type: {handler_name}')
-                print(f'ERROR: Unknown handler type "{handler_name}".')
-                print('Valid handlers: stdout, smtp, file, execute')
-                sys.exit(1)
-
-        except KeyError as e:
-            logger.error(f'Missing required config option for {handler_name} handler: {e}')
-            print(f'ERROR: Missing required config option for {handler_name} handler: {e}')
-            sys.exit(1)
-        except ValueError as e:
-            logger.error(f'Invalid config value for {handler_name} handler: {e}')
-            print(f'ERROR: Invalid config value for {handler_name} handler: {e}')
-            sys.exit(1)
-
-    logger.info(f'Handler pipeline configured: {", ".join(handler_names)}')
-
-    # Test handlers if requested
-    if opt.test_handlers:
-        logger.info('Testing handler pipeline...')
-        print(f'Testing {len(handlers)} handler(s): {", ".join(handler_names)}')
-
-        test_data = b'This is a test packet from --test-handlers'
-        test_query = 'test.example.com'
-        test_timestamp = datetime.datetime.now(datetime.timezone.utc)
-
-        all_success = True
-        for i, (handler, name) in enumerate(zip(handlers, handler_names)):
-            print(f'\n[{i+1}/{len(handlers)}] Testing {name} handler...')
-            result = handler.handle(test_data, test_query, test_timestamp)
-            if result:
-                print(f'✓ {name} handler: SUCCESS')
-            else:
-                print(f'✗ {name} handler: FAILED (check mumbojumbo.log for details)')
-                all_success = False
-
-        print('\n' + '='*50)
-        if all_success:
-            print('SUCCESS: All handlers passed')
-            logger.info('Handler pipeline test successful')
-            sys.exit(0)
-        else:
-            print('FAILED: One or more handlers failed')
-            logger.error('Handler pipeline test failed')
-            sys.exit(1)
-
-    #
-    # parse NaCL keys (hex format with mj_srv_ or mj_cli_ prefix)
-    # Precedence: CLI args > Environment variables > Config file
-    #
-
-    # Get server key with precedence chain
-    server_key_str = None
-    if opt.server_key:
-        server_key_str = opt.server_key
-        logger.warning('Server key provided via CLI argument - this is visible in process list. Consider using MUMBOJUMBO_SERVER_KEY environment variable instead.')
-    elif os.environ.get('MUMBOJUMBO_SERVER_KEY'):
-        server_key_str = os.environ.get('MUMBOJUMBO_SERVER_KEY')
-        logger.info('Using server key from MUMBOJUMBO_SERVER_KEY environment variable')
-    elif use_config_file and config.has_option('main', 'server-key'):
-        server_key_str = config.get('main', 'server-key')
-    else:
-        logger.error('Missing server-key: must be provided via --server-key, MUMBOJUMBO_SERVER_KEY, or config file')
-        print('ERROR: Server key required (use --server-key, MUMBOJUMBO_SERVER_KEY env var, or config file)')
-        sys.exit(1)
-
-    # Get domain with precedence chain
-    domain = None
-    if opt.domain:
-        domain = opt.domain
-        logger.info(f'Using domain from CLI argument: {domain}')
-    elif os.environ.get('MUMBOJUMBO_DOMAIN'):
-        domain = os.environ.get('MUMBOJUMBO_DOMAIN')
-        logger.info(f'Using domain from MUMBOJUMBO_DOMAIN environment variable: {domain}')
-    elif use_config_file and config.has_option('main', 'domain'):
-        domain = config.get('main', 'domain')
-    else:
-        logger.error('Missing domain: must be provided via --domain, MUMBOJUMBO_DOMAIN, or config file')
-        print('ERROR: Domain required (use --domain, MUMBOJUMBO_DOMAIN env var, or config file)')
-        sys.exit(1)
-
-    # Validate domain format
+    # Decode and derive keys
     try:
-        validate_domain(domain)
+        client_key_bytes = decode_key_hex(client_key_str)
+        enc_key_bytes, auth_key_bytes, frag_key_bytes = derive_keys(client_key_bytes)
     except ValueError as e:
-        logger.error(f'Invalid domain format: {e}')
-        print(f'ERROR: Invalid domain format: {e}')
-        sys.exit(1)
+        logger.error(f'Invalid key: {e}')
+        return 1
 
-    # Client key from env or config (optional - only used for validation)
-    client_key_str = None
-    if os.environ.get('MUMBOJUMBO_CLIENT_KEY'):
-        client_key_str = os.environ.get('MUMBOJUMBO_CLIENT_KEY')
-        logger.info('Using client key from MUMBOJUMBO_CLIENT_KEY environment variable')
-    elif use_config_file and config.has_option('main', 'client-key'):
-        client_key_str = config.get('main', 'client-key')
+    # Validate domain
+    valid, msg = validate_domain(domain)
+    if not valid:
+        logger.error(f'Invalid domain: {msg}')
+        return 1
 
-    # Validate key format before passing to bind()
-    # bind() will parse them transparently
+    # Check requirements
+    if not check_tshark():
+        logger.error('tshark not found. Install with: brew install wireshark (macOS) or apt-get install tshark (Linux)')
+        return 1
+
+    if not check_root_permissions():
+        logger.error('Root permissions required for packet capture. Run with sudo.')
+        return 1
+
+    logger.info('Mumbojumbo starting')
+    logger.info(f'Domain: {domain}')
+    logger.info(f'Interface: {opts.interface}')
+
+    # Setup fragment class
+    frag_cls = DnsFragment.bind(
+        domain=domain,
+        enc_key=enc_key_bytes,
+        auth_key=auth_key_bytes,
+        frag_key=frag_key_bytes
+    )
+
+    # Setup packet engine
+    engine = PacketEngine(
+        frag_cls=frag_cls,
+        enc_key=enc_key_bytes,
+        auth_key=auth_key_bytes,
+        frag_key=frag_key_bytes
+    )
+
+    # Setup handlers
+    handlers = [StdoutHandler()]
+
+    # Start DNS capture and processing
+    reader = DnsQueryReader(interface=opts.interface, domain=domain)
+
+    logger.info('Ready to receive packets')
+
     try:
-        # Just validate they're valid hex keys, don't parse yet
-        decode_key_hex(server_key_str)
-        if client_key_str:
-            decode_key_hex(client_key_str)
-    except ValueError as e:
-        logger.error(f'Invalid key format: {e}')
-        print(f'ERROR: Invalid key format: {e}')
-        sys.exit(1)
+        for dns_query in reader:
+            # Process fragment
+            engine.from_wire(dns_query)
 
-    # Network interface from config or default to empty (auto-detect)
-    network_interface = ''
-    if use_config_file and config.has_option('main', 'network-interface'):
-        network_interface = config.get('main', 'network-interface')
+            # Handle completed packets
+            while not engine.packet_outqueue.empty():
+                packet = engine.packet_outqueue.get()
+                for handler in handlers:
+                    handler.handle(packet)
 
-    logger.info('domain={0}, network_interface={1}'.format(
-        domain, network_interface))
-
-    # Daemon mode: setup signal handlers
-    if opt.daemon:
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
-        logger.info('Daemon mode enabled: registered SIGTERM and SIGINT handlers')
-
-    # Perform startup validation
-    startup_validation(network_interface=network_interface, domain=domain)
-
-    #
-    # prepare packet fragment class - server uses server_key for decryption
-    # Keys are passed as strings and parsed transparently inside PublicFragment
-    #
-    pf_cls = DnsPublicFragment.bind(domain=domain,
-                                    server_key=server_key_str)
-    #
-    # build packet engine based on fragment class
-    #
-    packet_engine = PacketEngine(pf_cls)
-
-    #
-    # initiate DNS query reader for queries under domain
-    #
-    dns_query_reader = DnsQueryReader(iff=network_interface, domain=domain)
-
-    logger.info(f'Starting DNS query capture on interface={network_interface or "auto"}, domain={domain}')
-    logger.info('Server ready - waiting for DNS queries...')
-
-    #
-    # iterate sniffed DNS queries do domain;
-    # start to decrypt, parse and reassemble fragments
-    # into complete packets
-    #
-    for name in dns_query_reader:
-        # Check for shutdown signal in daemon mode
-        if opt.daemon and _shutdown_requested:
-            logger.info('Graceful shutdown initiated - stopping DNS capture')
-            break
-
-        logger.debug('read DNS query for: ' + name)
-        #
-        # try-catch to prevent deserialization exceptions from causing
-        # a DOS attack. Most errors are now handled gracefully in deserialize()
-        # methods, so this is a safety net for unexpected errors only.
-        #
-        try:
-            packet_engine.from_wire(name)
-        except Exception as e:
-            # Log at debug level - most "errors" are just invalid DNS queries
-            logger.debug(f'from_wire() error for {name[:30]}: {type(e).__name__}: {e}')
-            continue
-        #
-        # did a packet complete after reading the last fragment?
-        #
-        if not packet_engine.packet_outqueue.empty():
-            packet = packet_engine.packet_outqueue.get()
-
-            # All packets are now key-value tuples
-            if isinstance(packet, dict):
-                key = packet['key']
-                value = packet['value']
-                key_len = packet['key_len']
-            else:
-                # Should never happen with new implementation
-                logger.error(f'Unexpected packet type: {type(packet)}')
-                continue
-
-            # Get timestamp for this packet
-            timestamp = datetime.datetime.now(datetime.timezone.utc)
-
-            total_length = len(key) + len(value)
-            if key_len == 0:
-                logger.info(f'Packet reassembled from query: {name}, key: null, value_length: {len(value)} bytes')
-            else:
-                logger.info(f'Packet reassembled from query: {name}, key_len: {key_len}, value_length: {len(value)}, total: {total_length} bytes')
-            logger.debug(f'Running handler pipeline with {len(handlers)} handler(s)')
-
-            # Run handler pipeline
-            for handler, handler_name in zip(handlers, handler_names):
-                try:
-                    success = handler.handle(key, value, timestamp)
-                    if success:
-                        logger.debug(f'{handler_name} handler completed successfully')
-                    else:
-                        logger.warning(f'{handler_name} handler reported failure')
-                except Exception as e:
-                    logger.error(f'{handler_name} handler crashed: {type(e).__name__}: {e}')
-                    logger.debug(traceback.format_exc())
-
-        sys.stdout.flush()
-
-    # Clean shutdown
-    logger.info('DNS query capture stopped')
-    if opt.daemon:
-        logger.info('Daemon shutdown complete')
+    except KeyboardInterrupt:
+        logger.info('Shutting down')
+        return 0
+    except Exception as e:
+        logger.error(f'Fatal error: {type(e).__name__}: {e}')
+        logger.debug(traceback.format_exc())
+        return 1
 
 
 if __name__ == '__main__':

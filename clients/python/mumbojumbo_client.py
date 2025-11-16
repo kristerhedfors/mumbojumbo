@@ -1,657 +1,549 @@
 #!/usr/bin/env python3
 """
-Mumbojumbo DNS Client - Reference Implementation
+Mumbojumbo DNS Client v2.0 - Reference Implementation
 
-Sends key-value pairs through DNS queries using the mumbojumbo protocol.
-Minimalist design: only requires pynacl for crypto.
+Sends key-value pairs through DNS queries using mumbojumbo v2.0 protocol.
+Pure Python implementation using only standard library for crypto.
+
+Protocol: ChaCha20-Poly1305 encryption with dual-layer authentication
+Encoding: Base36 (40 bytes → 63 characters per DNS label)
 
 Usage as library:
     from mumbojumbo_client import MumbojumboClient
 
-    client = MumbojumboClient('mj_cli_abc123...', '.example.com')
-    client.send(b'filename.txt', b'Hello, World!')
+    # Initialize with client key (keys are derived internally)
+    client = MumbojumboClient(
+        client_key='mj_cli_abc123...',
+        domain='.example.com'
+    )
+
+    # Send key-value pair
+    client.send(key=b'filename.txt', value=b'Hello, World!')
+
+    # Send value only (no key)
+    client.send(value=b'Data without key')
 
 Usage from CLI:
-    ./mumbojumbo_client.py --client-key mj_cli_abc123... -d .example.com -k mykey -v myvalue
-    echo "data" | ./mumbojumbo_client.py --client-key mj_cli_abc123... -d .example.com
+    ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com -k mykey -v myvalue
+
+    echo "data" | ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com
 """
 
 import sys
 import os
 import argparse
-import base64
 import struct
 import secrets
-import asyncio
-import socket
-import nacl.public
+import subprocess
 
 
-DNS_LABEL_MAX_LEN = 63
+# ============================================================================
+# Cryptography (ChaCha20, Poly1305, Base36) - copied from server
+# ============================================================================
+
+def rotl32(v, c):
+    """Rotate left: 32-bit value v by c bits."""
+    return ((v << c) & 0xffffffff) | (v >> (32 - c))
 
 
-def calculate_safe_max_fragment_data_len(domain):
-    '''
-    Calculate safe maximum fragment data size using simplified formula.
-    Formula: 83 - len(domain) // 3
+def quarter_round(state, a, b, c, d):
+    """ChaCha20 quarter round."""
+    state[a] = (state[a] + state[b]) & 0xffffffff
+    state[d] ^= state[a]
+    state[d] = rotl32(state[d], 16)
+    state[c] = (state[c] + state[d]) & 0xffffffff
+    state[b] ^= state[c]
+    state[b] = rotl32(state[b], 12)
+    state[a] = (state[a] + state[b]) & 0xffffffff
+    state[d] ^= state[a]
+    state[d] = rotl32(state[d], 8)
+    state[c] = (state[c] + state[d]) & 0xffffffff
+    state[b] ^= state[c]
+    state[b] = rotl32(state[b], 7)
 
-    This simplified formula is:
-    - Within 0-2 bytes of optimal for typical domains (3-12 chars)
-    - Within 5-7 bytes for longer domains (22-33 chars)
-    - Always safe (slightly conservative, never exceeds DNS limits)
-    - Requires only one arithmetic operation
+
+def chacha20_block(key, counter, nonce):
+    """Generate 64-byte ChaCha20 keystream block."""
+    constants = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]
+    key_words = list(struct.unpack('<8I', key))
+    counter_word = counter & 0xffffffff
+    nonce_words = list(struct.unpack('<3I', nonce))
+    state = constants + key_words + [counter_word] + nonce_words
+    working_state = state[:]
+    for _ in range(10):
+        quarter_round(working_state, 0, 4, 8, 12)
+        quarter_round(working_state, 1, 5, 9, 13)
+        quarter_round(working_state, 2, 6, 10, 14)
+        quarter_round(working_state, 3, 7, 11, 15)
+        quarter_round(working_state, 0, 5, 10, 15)
+        quarter_round(working_state, 1, 6, 11, 12)
+        quarter_round(working_state, 2, 7, 8, 13)
+        quarter_round(working_state, 3, 4, 9, 14)
+    for i in range(16):
+        working_state[i] = (working_state[i] + state[i]) & 0xffffffff
+    return struct.pack('<16I', *working_state)
+
+
+def chacha20_encrypt(key, nonce, plaintext, counter=0):
+    """Encrypt/decrypt with ChaCha20."""
+    if len(nonce) == 8:
+        nonce = nonce + b'\x00\x00\x00\x00'
+    elif len(nonce) != 12:
+        raise ValueError(f"Nonce must be 8 or 12 bytes, got {len(nonce)}")
+    if len(key) != 32:
+        raise ValueError(f"Key must be 32 bytes, got {len(key)}")
+    keystream = b''
+    blocks_needed = (len(plaintext) + 63) // 64
+    for i in range(blocks_needed):
+        keystream += chacha20_block(key, counter + i, nonce)
+    keystream = keystream[:len(plaintext)]
+    return bytes(p ^ k for p, k in zip(plaintext, keystream))
+
+
+def poly1305_mac(key, msg):
+    """Compute Poly1305 MAC."""
+    if len(key) != 32:
+        raise ValueError(f"Key must be 32 bytes, got {len(key)}")
+    r_bytes = key[:16]
+    s_bytes = key[16:32]
+    r = int.from_bytes(r_bytes, 'little')
+    r &= 0x0ffffffc0ffffffc0ffffffc0fffffff
+    s = int.from_bytes(s_bytes, 'little')
+    p = (1 << 130) - 5
+    accumulator = 0
+    for i in range(0, len(msg), 16):
+        block = msg[i:i+16]
+        if len(block) == 16:
+            n = int.from_bytes(block + b'\x01', 'little')
+        else:
+            n = int.from_bytes(block + b'\x01', 'little')
+        accumulator = ((accumulator + n) * r) % p
+    accumulator = (accumulator + s) % (1 << 128)
+    return accumulator.to_bytes(16, 'little')
+
+
+BASE36_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+
+def base36_encode(data):
+    """Encode bytes to base36 string."""
+    if not data:
+        return '0'
+    num = int.from_bytes(data, 'big')
+    if num == 0:
+        return '0'
+    result = []
+    while num > 0:
+        num, remainder = divmod(num, 36)
+        result.append(BASE36_ALPHABET[remainder])
+    return ''.join(reversed(result))
+
+
+# ============================================================================
+# Protocol Constants
+# ============================================================================
+
+BINARY_PACKET_SIZE = 40
+BASE36_PACKET_SIZE = 63
+PACKET_ID_SIZE = 4  # u32, first in fragment, unencrypted
+FRAGMENT_FLAGS_SIZE = 4  # flags+index (4B)
+FRAGMENT_MAC_SIZE = 4
+FRAGMENT_PAYLOAD_SIZE = 28  # message chunk (encrypted along with flags+mac)
+MESSAGE_NONCE_SIZE = 8
+MESSAGE_INTEGRITY_SIZE = 8
+
+FIRST_FLAG_MASK = 0x80000000
+MORE_FLAG_MASK = 0x40000000
+INDEX_MASK = 0x3FFFFFFF
+
+
+# ============================================================================
+# Key Encoding
+# ============================================================================
+
+def decode_mumbojumbo_key(key_str):
+    """
+    Decode mumbojumbo key string to bytes.
 
     Args:
-        domain: DNS domain string (e.g., '.example.com')
+        key_str: mj_cli_<64_hex_chars> or raw hex
 
     Returns:
-        Maximum safe fragment data length in bytes
-
-    Raises:
-        ValueError: If domain is too long (>143 chars)
-    '''
-    if len(domain) > 143:
-        raise ValueError(f'Domain too long: {len(domain)} chars (max 143)')
-    return 83 - len(domain) // 3
-
-
-def base32_encode(data):
-    """Encode to lowercase base32 without padding."""
-    return base64.b32encode(data).replace(b'=', b'').lower().decode('ascii')
-
-
-def split_to_labels(data, max_len=DNS_LABEL_MAX_LEN):
-    """Split string into DNS label chunks of max_len characters."""
-    return [data[i:i+max_len] for i in range(0, len(data), max_len)]
-
-
-def create_fragment(packet_id, frag_index, frag_count, frag_data, key_len=0):
+        bytes: 32-byte key
     """
-    Create fragment with 19-byte header.
+    if key_str.startswith('mj_'):
+        parts = key_str.split('_')
+        if len(parts) == 3:
+            hex_str = parts[2]
+        else:
+            hex_str = key_str
+    else:
+        hex_str = key_str
 
-    Header format (big-endian):
-    - packet_id: u64 (0 to 2^64-1)
-    - frag_index: u32 (0-based fragment index, up to 4.3 billion)
-    - frag_count: u32 (total fragments in packet, up to 4.3 billion)
-    - frag_data_len: u8 (length of fragment data, 0-255)
-    - key_len: u8 (length of key in reassembled packet, 0-255)
+    try:
+        key_bytes = bytes.fromhex(hex_str)
+    except ValueError as e:
+        raise ValueError(f'Invalid mumbojumbo key: {e}')
+
+    if len(key_bytes) != 32:
+        raise ValueError(f'Key must be 32 bytes, got {len(key_bytes)}')
+
+    return key_bytes
+
+
+def derive_keys(client_key):
     """
-    if not (0 <= packet_id <= 0xFFFFFFFFFFFFFFFF):
-        raise ValueError(f'packet_id out of range: {packet_id}')
-    if not (0 <= frag_index < frag_count):
-        raise ValueError(f'Invalid frag_index {frag_index} for frag_count {frag_count}')
-    if not (0 <= frag_count <= 0xFFFFFFFF):
-        raise ValueError(f'frag_count out of u32 range: {frag_count}')
-    if not (0 <= len(frag_data) <= 255):
-        raise ValueError(f'Fragment data length {len(frag_data)} exceeds u8 limit (0-255)')
-    if not (0 <= key_len <= 255):
-        raise ValueError(f'key_len out of u8 range: {key_len}')
+    Derive encryption, authentication, and fragment keys from client key.
 
-    header = struct.pack('!QIIBB', packet_id, frag_index, frag_count, len(frag_data), key_len)
-    return header + frag_data
+    Args:
+        client_key: bytes, 32-byte master key
 
-
-def encrypt_fragment(plaintext, server_client_key):
-    """Encrypt fragment using NaCl SealedBox (anonymous encryption)."""
-    sealedbox = nacl.public.SealedBox(server_client_key)
-    return bytes(sealedbox.encrypt(plaintext))
-
-
-def create_dns_query(encrypted, domain):
+    Returns:
+        tuple: (enc_key, auth_key, frag_key), each 32 bytes
     """
-    Create DNS query name from encrypted fragment.
+    if len(client_key) != 32:
+        raise ValueError(f'Client key must be 32 bytes, got {len(client_key)}')
 
-    Process:
-    1. Base32 encode encrypted data
-    2. Split into 63-character DNS labels
-    3. Append domain suffix
-    """
-    b32 = base32_encode(encrypted)
-    labels = split_to_labels(b32, DNS_LABEL_MAX_LEN)
-    return '.'.join(labels) + domain
+    # Derive 32-byte keys by concatenating two 16-byte MACs
+    enc_key = poly1305_mac(client_key, b'enc') + poly1305_mac(client_key, b'enc2')
+    auth_key = poly1305_mac(client_key, b'auth') + poly1305_mac(client_key, b'auth2')
+    frag_key = poly1305_mac(client_key, b'frag') + poly1305_mac(client_key, b'frag2')
 
-
-async def send_dns_query_async(dns_name, success_callback=None, error_callback=None):
-    """
-    Send DNS query using native Python socket resolution (fire-and-forget).
-
-    Does not wait for or check responses - just initiates the query.
-    Optionally calls callbacks to track success/error counts.
-    """
-    async def _query_task():
-        """Inner task that tracks success/error."""
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.getaddrinfo(dns_name, None)
-            if success_callback:
-                success_callback()
-        except Exception:
-            if error_callback:
-                error_callback()
-
-    # Create task and suppress exception warnings
-    task = asyncio.create_task(_query_task())
-    # Suppress "Task exception was never retrieved" warnings
-    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+    return enc_key, auth_key, frag_key
 
 
-def fragment_data(data, max_fragment_size):
-    """Split data into fragments of max_fragment_size bytes."""
-    if not data:
-        # Send at least one empty fragment
-        return [b'']
-    return [data[i:i+max_fragment_size]
-            for i in range(0, len(data), max_fragment_size)]
-
+# ============================================================================
+# Client Implementation
+# ============================================================================
 
 class MumbojumboClient:
     """
-    User-friendly Mumbojumbo DNS client for sending key-value pairs via DNS.
+    Mumbojumbo v2.0 DNS client.
 
-    Simple interface:
-    - send(key, value) - Send key-value pair immediately
-    - generate_queries(key, value) - Generate DNS queries without sending
-
-    All fragmentation, encryption, and protocol handling is internal.
+    Encrypts and fragments key-value pairs into DNS queries.
     """
 
-    def __init__(self, server_client_key, domain, max_fragment_size=None):
+    def __init__(self, client_key, domain='.example.com', resolver='8.8.8.8'):
         """
         Initialize client.
 
         Args:
-            server_client_key: Server's public key (mj_cli_ hex string, bytes, or nacl.public.PublicKey)
-            domain: DNS domain suffix (e.g., '.asd.qwe')
-            max_fragment_size: Maximum bytes per fragment (default: auto-calculated from domain)
-
-        Example:
-            client = MumbojumboClient('mj_cli_abc123...', '.example.com')
-            client.send(b'filename.txt', b'file contents...')
+            client_key: str or bytes, mumbojumbo client key (mj_cli_...)
+            domain: str, DNS domain suffix (e.g., '.example.com')
+            resolver: str, DNS resolver to use
         """
-        # Auto-parse hex key format if string is provided
-        if isinstance(server_client_key, str):
-            key_bytes = self._parse_key_hex(server_client_key)
-            self.server_client_key = nacl.public.PublicKey(key_bytes)
-        elif isinstance(server_client_key, bytes):
-            self.server_client_key = nacl.public.PublicKey(server_client_key)
-        else:
-            self.server_client_key = server_client_key
+        # Decode key if string
+        if isinstance(client_key, str):
+            client_key = decode_mumbojumbo_key(client_key)
 
-        self.domain = domain if domain.startswith('.') else '.' + domain
+        # Derive encryption, auth, and fragment keys from client key
+        self.enc_key, self.auth_key, self.frag_key = derive_keys(client_key)
 
-        # Auto-calculate max_fragment_size from domain if not provided
-        if max_fragment_size is None:
-            self.max_fragment_size = calculate_safe_max_fragment_data_len(self.domain)
-        else:
-            self.max_fragment_size = max_fragment_size
+        self.domain = domain
+        self.resolver = resolver
 
-        # Initialize with cryptographically secure random u64
-        self._next_packet_id = secrets.randbits(64)
+        # Packet ID counter (u32: 0-4294967295, wraps)
+        self._next_packet_id = secrets.randbits(32)
 
-    @staticmethod
-    def _parse_key_hex(key_str):
-        """Parse mj_cli_<hex> format key to bytes."""
-        if not key_str.startswith('mj_cli_'):
-            raise ValueError('Key must start with "mj_cli_"')
-        hex_key = key_str[7:]
-        if len(hex_key) != 64:
-            raise ValueError(f'Invalid hex key length: expected 64, got {len(hex_key)}')
-        try:
-            return bytes.fromhex(hex_key)
-        except ValueError as e:
-            raise ValueError(f'Invalid hex key: {e}')
+    def _encrypt_message(self, plaintext):
+        """
+        Encrypt complete message (before fragmentation).
 
-    def _get_next_packet_id(self):
-        """Get next packet ID and increment counter (wraps at 2^64-1)."""
-        packet_id = self._next_packet_id
-        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFFFFFFFFFF
-        return packet_id
+        Args:
+            plaintext: bytes, complete message
 
-    def _validate_key_value(self, key, value):
-        """Validate and normalize key-value pair."""
-        # Handle key: None is allowed and converts to empty bytes
+        Returns:
+            bytes: [nonce (8B)][integrity (8B)][encrypted_kv]
+        """
+        # Generate 8-byte nonce
+        nonce = os.urandom(MESSAGE_NONCE_SIZE)
+
+        # Encrypt with ChaCha20
+        encrypted_kv = chacha20_encrypt(self.enc_key, nonce, plaintext)
+
+        # Compute 8-byte integrity MAC
+        integrity_full = poly1305_mac(self.auth_key, nonce + encrypted_kv)
+        integrity = integrity_full[:MESSAGE_INTEGRITY_SIZE]
+
+        # Build complete message
+        message = nonce + integrity + encrypted_kv
+        return message
+
+    def _create_fragment(self, packet_id, frag_index, is_first, has_more, frag_data):
+        """
+        Create a 40-byte binary fragment with dual-layer encryption.
+
+        Args:
+            packet_id: u32
+            frag_index: int (30-bit)
+            is_first: bool
+            has_more: bool
+            frag_data: bytes (up to 28 bytes)
+
+        Returns:
+            bytes: 40-byte binary packet
+
+        Structure (40 bytes total):
+            Packet ID (4B): u32, big-endian, UNENCRYPTED
+            MAC (4B): Poly1305 over encrypted portion, UNENCRYPTED
+            Encrypted (32B): ChaCha20 encrypted with nonce = packet_id * 3
+                - flags+index (4B)
+                - payload (28B): fragment data
+        """
+        # Build flags+index (4B)
+        flags = 0
+        if is_first:
+            flags |= FIRST_FLAG_MASK
+        if has_more:
+            flags |= MORE_FLAG_MASK
+        flags |= (frag_index & INDEX_MASK)
+        flags_bytes = struct.pack('!I', flags)
+
+        # Build payload: fragment data only (28B)
+        payload = frag_data[:FRAGMENT_PAYLOAD_SIZE]
+
+        # Pad to 28 bytes
+        if len(payload) < FRAGMENT_PAYLOAD_SIZE:
+            payload += b'\x00' * (FRAGMENT_PAYLOAD_SIZE - len(payload))
+
+        # Assemble inner packet (to be encrypted): flags + payload
+        inner = flags_bytes + payload
+        assert len(inner) == 32
+
+        # Encrypt inner packet with ChaCha20
+        # Nonce = packet_id (4 bytes) repeated 3 times = 12 bytes
+        packet_id_bytes = struct.pack('!I', packet_id)
+        nonce = packet_id_bytes * 3
+        encrypted_inner = chacha20_encrypt(self.enc_key, nonce, inner)
+
+        # Compute 4-byte fragment MAC over encrypted portion (validate before decrypt)
+        mac_full = poly1305_mac(self.frag_key, encrypted_inner)
+        mac = mac_full[:4]
+
+        # Assemble final packet: packet_id + mac + encrypted_inner
+        packet = packet_id_bytes + mac + encrypted_inner
+        assert len(packet) == BINARY_PACKET_SIZE
+        return packet
+
+    def _create_dns_query(self, binary_packet):
+        """
+        Encode 40-byte binary packet to DNS query string.
+
+        Args:
+            binary_packet: bytes, 40 bytes
+
+        Returns:
+            str: <63-char-base36>.<domain>
+        """
+        # Base36 encode
+        base36_str = base36_encode(binary_packet)
+
+        # Pad to 63 characters
+        if len(base36_str) < BASE36_PACKET_SIZE:
+            base36_str = '0' * (BASE36_PACKET_SIZE - len(base36_str)) + base36_str
+
+        # Build DNS query
+        dns_query = base36_str + self.domain
+        return dns_query
+
+    def generate_queries(self, key=None, value=None):
+        """
+        Generate DNS queries for a key-value pair.
+
+        Args:
+            key: bytes or None, key data
+            value: bytes, value data
+
+        Returns:
+            list of str: DNS query names
+        """
+        if value is None:
+            raise ValueError('Value cannot be None')
+
+        # Handle key
         if key is None:
             key = b''
 
-        # Validate value: Must be non-empty bytes
-        if value is None:
-            raise ValueError('Value cannot be None - must be bytes with at least 1 byte')
-        if not isinstance(value, bytes):
-            raise TypeError('Value must be bytes (not None)')
-        if len(value) == 0:
-            raise ValueError('Value must be at least 1 byte')
+        # Build plaintext: [key_length (1B)][key_data][value_data]
+        key_length = len(key)
+        if key_length > 255:
+            raise ValueError(f'Key too long: {key_length} bytes (max 255)')
 
-        # Validate key
-        if not isinstance(key, bytes):
-            raise TypeError('Key must be bytes or None')
-        if len(key) > 255:
-            raise ValueError('Key length cannot exceed 255 bytes')
+        plaintext = bytes([key_length]) + key + value
 
-        return key, value
+        # Encrypt message ONCE
+        message = self._encrypt_message(plaintext)
 
-    def _generate_dns_queries(self, key, value):
-        """
-        Internal: Generate DNS queries from key-value pair.
+        # Fragment into 28-byte chunks
+        packet_id = self._next_packet_id
+        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFF
 
-        Handles all protocol details: combines key+value, fragments, encrypts, encodes.
-        """
-        # Validate inputs
-        key, value = self._validate_key_value(key, value)
-
-        # Combine key and value into single data blob
-        data = key + value
-        key_len = len(key)
-
-        # Get packet ID
-        packet_id = self._get_next_packet_id()
-
-        # Fragment data
-        fragments = fragment_data(data, self.max_fragment_size)
-        frag_count = len(fragments)
-
-        # Generate DNS query for each fragment
         queries = []
-        for frag_index, frag_data in enumerate(fragments):
-            # Create fragment with header (key_len same for all fragments)
-            plaintext = create_fragment(packet_id, frag_index, frag_count, frag_data, key_len)
+        offset = 0
 
-            # Encrypt with SealedBox
-            encrypted = encrypt_fragment(plaintext, self.server_client_key)
+        frag_index = 0
+        while offset < len(message):
+            frag_data = message[offset:offset + FRAGMENT_PAYLOAD_SIZE]
+            is_first = (frag_index == 0)
+            has_more = (offset + FRAGMENT_PAYLOAD_SIZE < len(message))
 
-            # Create DNS query name
-            dns_name = create_dns_query(encrypted, self.domain)
-            queries.append(dns_name)
+            # Create binary fragment
+            binary_packet = self._create_fragment(packet_id, frag_index, is_first, has_more, frag_data)
+
+            # Encode to DNS query
+            dns_query = self._create_dns_query(binary_packet)
+            queries.append(dns_query)
+
+            offset += FRAGMENT_PAYLOAD_SIZE
+            frag_index += 1
 
         return queries
 
-    async def _generate_queries_streaming(self, key, value):
+    def send(self, key=None, value=None, delay=0.1):
         """
-        Generate DNS queries as async generator (streaming, no pre-allocation).
-
-        Yields DNS query strings one at a time without storing all in memory.
-        """
-        # Validate inputs
-        key, value = self._validate_key_value(key, value)
-
-        # Combine key and value into single data blob
-        data = key + value
-        key_len = len(key)
-
-        # Get packet ID
-        packet_id = self._get_next_packet_id()
-
-        # Fragment data
-        fragments = fragment_data(data, self.max_fragment_size)
-        frag_count = len(fragments)
-
-        # Generate and yield DNS queries one at a time
-        for frag_index, frag_data in enumerate(fragments):
-            # Create fragment with header (key_len same for all fragments)
-            plaintext = create_fragment(packet_id, frag_index, frag_count, frag_data, key_len)
-
-            # Encrypt with SealedBox
-            encrypted = encrypt_fragment(plaintext, self.server_client_key)
-
-            # Create DNS query name
-            dns_name = create_dns_query(encrypted, self.domain)
-
-            yield dns_name
-
-    def generate_queries(self, key, value):
-        """
-        Generate key-value DNS queries without sending them.
+        Send key-value pair via DNS queries.
 
         Args:
-            key: Key bytes or None (for null/zero-length key)
-            value: Value bytes (MUST be at least 1 byte, cannot be None or empty)
+            key: bytes or None
+            value: bytes
+            delay: float, delay between queries in seconds
 
         Returns:
-            List of DNS query strings
-
-        Example:
-            queries = client.generate_queries(b'mykey', b'myvalue')
-            for query in queries:
-                print(query)
+            int: Number of queries sent
         """
-        return self._generate_dns_queries(key, value)
+        import time
 
-    async def send_async(self, key, value, rate_qps=10, progress_callback=None,
-                         query_callback=None):
-        """
-        Send key-value pair via DNS queries with rate limiting (fire-and-forget).
+        queries = self.generate_queries(key=key, value=value)
 
-        Simple approach:
-        - Fires off DNS queries at controlled rate (no waiting for responses)
-        - Tracks success/error counts in background
-        - O(1) memory usage (streaming)
+        print(f'Sending {len(queries)} DNS queries...', file=sys.stderr)
 
-        Args:
-            key: Key bytes or None (for null/zero-length key)
-            value: Value bytes (MUST be at least 1 byte, cannot be None or empty)
-            rate_qps: Queries per second (default 10)
-            progress_callback: Optional callback(sent, total, succeeded, failed) called periodically
-            query_callback: Optional callback(dns_query) called when query is generated
+        for i, query in enumerate(queries):
+            # Send DNS query using dig
+            try:
+                subprocess.run(
+                    ['dig', f'@{self.resolver}', query, '+short'],
+                    capture_output=True,
+                    timeout=5,
+                    check=False
+                )
+                print(f'  Sent query {i+1}/{len(queries)}: {query[:50]}...', file=sys.stderr)
+            except subprocess.TimeoutExpired:
+                print(f'  Warning: Query {i+1} timed out', file=sys.stderr)
+            except FileNotFoundError:
+                print(f'  Error: dig not found. Install with: brew install bind (macOS) or apt-get install dnsutils (Linux)', file=sys.stderr)
+                return 0
 
-        Returns:
-            Dictionary with summary: {'total': N, 'succeeded': N, 'failed': N}
+            if delay > 0 and i < len(queries) - 1:
+                time.sleep(delay)
 
-        Example:
-            client = MumbojumboClient('mj_cli_abc123...', '.example.com')
-            summary = await client.send_async(b'mykey', b'myvalue', rate_qps=20)
-            print(f"Sent {summary['total']} queries, {summary['succeeded']} succeeded")
-        """
-        total = 0
-        succeeded = 0
-        failed = 0
-        delay_between_queries = 1.0 / rate_qps
-
-        def on_success():
-            nonlocal succeeded
-            succeeded += 1
-
-        def on_error():
-            nonlocal failed
-            failed += 1
-
-        # Generate and send queries with rate limiting
-        async for dns_query in self._generate_queries_streaming(key, value):
-            total += 1
-
-            # Call query callback if provided (for outputting DNS queries)
-            if query_callback:
-                query_callback(dns_query)
-
-            # Fire off DNS query (don't wait) with callbacks
-            await send_dns_query_async(dns_query, on_success, on_error)
-
-            # Call progress callback if provided
-            if progress_callback:
-                progress_callback(total, total, succeeded, failed)
-
-            # Rate limiting: sleep between queries
-            await asyncio.sleep(delay_between_queries)
-
-        # Return summary
-        return {'total': total, 'succeeded': succeeded, 'failed': failed}
-
-    def send_sync(self, key, value, rate_qps=10, progress_callback=None,
-                  query_callback=None):
-        """
-        Synchronous wrapper for send_async() - blocks until all queries sent.
-
-        Args:
-            key: Key bytes or None (for null/zero-length key)
-            value: Value bytes (MUST be at least 1 byte, cannot be None or empty)
-            rate_qps: Queries per second (default 10)
-            progress_callback: Optional callback(sent, total) called after each query sent
-            query_callback: Optional callback(dns_query) called when query is generated
-
-        Example:
-            client = MumbojumboClient('mj_cli_abc123...', '.example.com')
-            client.send_sync(b'mykey', b'myvalue', rate_qps=20)
-        """
-        return asyncio.run(
-            self.send_async(key, value, rate_qps, progress_callback, query_callback)
-        )
-
-    # Legacy aliases for backwards compatibility with tests
-    def send_key_val(self, key, value):
-        """
-        Legacy alias for send_sync(). Use send_async() or send_sync() instead.
-
-        This method exists for backwards compatibility with existing tests.
-        Internally calls send_sync() with default parameters.
-        """
-        return self.send_sync(key, value)
-
-    def generate_queries_key_val(self, key, value):
-        """Legacy alias for generate_queries(). Use generate_queries() instead."""
-        return self.generate_queries(key, value)
+        print(f'Done! Sent {len(queries)} queries.', file=sys.stderr)
+        return len(queries)
 
 
-async def async_main():
-    """Async version of main function."""
+# ============================================================================
+# CLI
+# ============================================================================
+
+def main():
+    """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description='Mumbojumbo DNS Client - Send key-value pairs via DNS queries',
+        description='Mumbojumbo DNS Client v2.0',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-examples:
-  # Send key-value pair explicitly
-  %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey -v myvalue
+        epilog=__doc__
+    )
 
-  # Send value only (null key)
-  %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -v myvalue
+    # Key (required, can come from args, config, or env)
+    parser.add_argument('--client-key', help='Client key (mj_cli_...)')
+    parser.add_argument('--config', help='Config file path')
 
-  # Send files (filename as key, contents as value)
-  # Note: -k/--key is NOT allowed with files
-  %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -r file1.txt file2.txt
+    # Network
+    parser.add_argument('-d', '--domain', default='.example.com', help='DNS domain suffix (default: .example.com)')
+    parser.add_argument('-r', '--resolver', default='8.8.8.8', help='DNS resolver (default: 8.8.8.8)')
 
-  # Send from stdin with null key (key=None) - POSIX-compliant
-  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -
+    # Data
+    parser.add_argument('-k', '--key', help='Key (string, will be encoded as UTF-8)')
+    parser.add_argument('-v', '--value', help='Value (string, will be encoded as UTF-8)')
+    parser.add_argument('--key-file', help='Read key from file (binary)')
+    parser.add_argument('--value-file', help='Read value from file (binary)')
 
-  # Send from stdin with custom key
-  echo "Hello World" | %(prog)s --client-key mj_cli_abc123... -d .asd.qwe -k mykey -
-
-  # Use environment variables
-  export MUMBOJUMBO_CLIENT_KEY=mj_cli_abc123...
-  export MUMBOJUMBO_DOMAIN=.asd.qwe
-  %(prog)s -r file.txt
-
-Configuration precedence: CLI args > Environment variables
-        '''
-    )
-    parser.add_argument(
-        '--client-key',
-        help='Server public key in mj_cli_<hex> format (or use MUMBOJUMBO_CLIENT_KEY env var)'
-    )
-    parser.add_argument(
-        '-d', '--domain',
-        help='DNS domain suffix, e.g., .asd.qwe (or use MUMBOJUMBO_DOMAIN env var)'
-    )
-    parser.add_argument(
-        '-k', '--key',
-        help='Transmission key (for stdin or with -v; NOT allowed with files where filename is key)'
-    )
-    parser.add_argument(
-        '-v', '--value',
-        help='Transmission value (if not provided, reads from stdin or files)'
-    )
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Verbose output'
-    )
-    parser.add_argument(
-        '--rate',
-        type=float,
-        default=10,
-        help='Queries per second rate limit (default: 10)'
-    )
-    parser.add_argument(
-        '-r', '--read',
-        nargs='+',
-        metavar='FILE',
-        help='Files to send (filename as key, contents as value)'
-    )
-    parser.add_argument(
-        'stdin_marker',
-        nargs='?',
-        help='Use "-" to read from stdin (POSIX-compliant)'
-    )
+    # Options
+    parser.add_argument('--delay', type=float, default=0.1, help='Delay between queries in seconds (default: 0.1)')
+    parser.add_argument('--dry-run', action='store_true', help='Generate queries but do not send')
 
     args = parser.parse_args()
 
-    # Check if any input was provided (stdin marker, files, or value)
-    has_stdin = args.stdin_marker == '-'
-    has_files = args.read is not None
-    has_value = args.value is not None
+    # Get client key from args, config, or environment
+    client_key = args.client_key
 
-    if not (has_stdin or has_files or has_value):
-        # No input provided - show help
-        parser.print_help(sys.stderr)
-        return 1
+    # Try config file if not provided via args
+    if not client_key and args.config:
+        try:
+            with open(args.config, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('client-key'):
+                        parts = line.split('=', 1)
+                        if len(parts) == 2:
+                            client_key = parts[1].strip()
+                            break
+        except FileNotFoundError:
+            print(f'Warning: Config file {args.config} not found', file=sys.stderr)
 
-    # Get client key from CLI arg or environment variable
-    client_key_str = args.client_key or os.environ.get('MUMBOJUMBO_CLIENT_KEY')
-    if not client_key_str:
-        print("Error: Server public key required", file=sys.stderr)
-        print("  Provide via --client-key argument or MUMBOJUMBO_CLIENT_KEY environment variable", file=sys.stderr)
-        return 1
+    # Try environment variable if still not provided
+    if not client_key:
+        client_key = os.environ.get('MUMBOJUMBO_CLIENT_KEY')
 
-    # Get domain from CLI arg or environment variable
-    domain = args.domain or os.environ.get('MUMBOJUMBO_DOMAIN')
-    if not domain:
-        print("Error: Domain required", file=sys.stderr)
-        print("  Provide via -d argument or MUMBOJUMBO_DOMAIN environment variable", file=sys.stderr)
-        return 1
+    if not client_key:
+        parser.error('Client key required. Use --client-key, config file, or MUMBOJUMBO_CLIENT_KEY env var.')
 
-    # Validate domain
-    if not domain.startswith('.'):
-        if args.verbose:
-            print(f"Warning: domain should start with '.', got '{domain}'", file=sys.stderr)
-            print(f"         Prepending '.' automatically", file=sys.stderr)
-        domain = '.' + domain
+    # Get key
+    if args.key_file:
+        with open(args.key_file, 'rb') as f:
+            key = f.read()
+    elif args.key:
+        key = args.key.encode('utf-8')
+    else:
+        key = None
 
-    # Create client - key parsing happens transparently in constructor
-    try:
-        client_obj = MumbojumboClient(client_key_str, domain)
-    except Exception as e:
-        print(f"Error initializing client: {e}", file=sys.stderr)
-        return 1
-
-    # Progress callback for verbose mode
-    def progress_callback(sent, total, succeeded, failed):
-        if args.verbose:
-            print(f"\rProgress: {sent}/{total} sent ({succeeded} succeeded, {failed} failed)", end='', file=sys.stderr)
-
-    # Query callback to print DNS queries to stdout (for compatibility with tests)
-    def query_callback(dns_query):
-        print(dns_query)
-
-    if args.value is not None:
-        # Explicit value with optional key
-        key = args.key.encode('utf-8') if args.key is not None else None
+    # Get value
+    if args.value_file:
+        with open(args.value_file, 'rb') as f:
+            value = f.read()
+    elif args.value:
         value = args.value.encode('utf-8')
+    elif not sys.stdin.isatty():
+        # Read from stdin
+        value = sys.stdin.buffer.read()
+    else:
+        parser.error('No value provided. Use -v, --value-file, or pipe data to stdin.')
 
-        if args.verbose:
-            key_display = f"'{args.key}'" if args.key is not None else "'None'"
-            print(f"Sending pair 1/1: key={key_display}, value={len(value)} bytes", file=sys.stderr)
+    if not value:
+        parser.error('Value cannot be empty')
 
-        try:
-            summary = await client_obj.send_async(
-                key, value,
-                rate_qps=args.rate,
-                progress_callback=progress_callback if args.verbose else None,
-                query_callback=query_callback
-            )
-            if args.verbose:
-                print("", file=sys.stderr)  # Newline after progress
-                print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
-        except Exception as e:
-            if args.verbose:
-                print("", file=sys.stderr)  # Newline after progress
-            print(f"Error sending key-value pair: {e}", file=sys.stderr)
-            if args.verbose:
-                import traceback
-                traceback.print_exc(file=sys.stderr)
-            return 1
+    # Create client
+    try:
+        client = MumbojumboClient(
+            client_key=client_key,
+            domain=args.domain,
+            resolver=args.resolver
+        )
+    except ValueError as e:
+        print(f'Error: {e}', file=sys.stderr)
+        return 1
 
-        if args.verbose:
-            print("", file=sys.stderr)
+    # Generate queries
+    queries = client.generate_queries(key=key, value=value)
 
-    elif args.stdin_marker == '-':
-        # POSIX-compliant: "-" means read from stdin
-        # Read from stdin with optional key from -k/--key argument
-        try:
-            stdin_data = sys.stdin.buffer.read()
-        except Exception as e:
-            print(f"Error reading stdin: {e}", file=sys.stderr)
-            return 1
+    if args.dry_run:
+        print(f'Generated {len(queries)} queries (dry run):', file=sys.stderr)
+        for i, query in enumerate(queries):
+            print(f'{i+1}. {query}')
+        return 0
 
-        # Use key from -k/--key argument if provided, otherwise None (null key)
-        if args.key is not None:
-            key = args.key.encode('utf-8')
-        else:
-            key = None
-        value = stdin_data
+    # Send queries
+    count = client.send(key=key, value=value, delay=args.delay)
 
-        if args.verbose:
-            key_display = f"'{args.key}'" if args.key is not None else "'None'"
-            print(f"Sending pair 1/1: key={key_display}, value={len(value)} bytes", file=sys.stderr)
-
-        try:
-            summary = await client_obj.send_async(
-                key, value,
-                rate_qps=args.rate,
-                progress_callback=progress_callback if args.verbose else None,
-                query_callback=query_callback
-            )
-            if args.verbose:
-                print("", file=sys.stderr)  # Newline after progress
-                print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
-        except Exception as e:
-            if args.verbose:
-                print("", file=sys.stderr)  # Newline after progress
-            print(f"Error sending data: {e}", file=sys.stderr)
-            if args.verbose:
-                import traceback
-                traceback.print_exc(file=sys.stderr)
-            return 1
-
-        if args.verbose:
-            print("", file=sys.stderr)
-
-    elif args.read is not None:
-        # Reject -k/--key when sending files (filenames are keys)
-        if args.key is not None:
-            print("Error: Cannot use -k/--key with files (filenames are used as keys)", file=sys.stderr)
-            return 1
-
-        # Send files one at a time - load, send, release
-        for file_index, filepath in enumerate(args.read):
-            # Load current file only
-            try:
-                with open(filepath, 'rb') as f:
-                    file_contents = f.read()
-            except Exception as e:
-                print(f"Error reading file {filepath}: {e}", file=sys.stderr)
-                return 1
-
-            # Send it immediately
-            key = filepath.encode('utf-8')
-            value = file_contents
-
-            if args.verbose:
-                print(f"Sending pair {file_index + 1}/{len(args.read)}: key='{filepath}', value={len(value)} bytes", file=sys.stderr)
-
-            try:
-                summary = await client_obj.send_async(
-                    key, value,
-                    rate_qps=args.rate,
-                    progress_callback=progress_callback if args.verbose else None,
-                    query_callback=query_callback
-                )
-                if args.verbose:
-                    print("", file=sys.stderr)  # Newline after progress
-                    print(f"✓ Sent {summary['total']} queries: {summary['succeeded']} succeeded, {summary['failed']} failed", file=sys.stderr)
-                    print("", file=sys.stderr)
-            except Exception as e:
-                if args.verbose:
-                    print("", file=sys.stderr)  # Newline after progress
-                print(f"Error sending file {filepath}: {e}", file=sys.stderr)
-                if args.verbose:
-                    import traceback
-                    traceback.print_exc(file=sys.stderr)
-                return 1
-
-            # file_contents goes out of scope here, can be garbage collected
-
-    return 0
-
-
-def main():
-    """Synchronous wrapper for async_main()."""
-    return asyncio.run(async_main())
+    return 0 if count > 0 else 1
 
 
 if __name__ == '__main__':
