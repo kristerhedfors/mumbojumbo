@@ -524,11 +524,12 @@ class DnsFragment(EncryptedFragment):
         """
         logger.debug(f'DnsFragment: deserialize() {dns_query[:50]}...')
 
-        if not dns_query.endswith(self._domain):
+        # Case-insensitive domain matching (DNS is case-insensitive)
+        if not dns_query.lower().endswith(self._domain.lower()):
             logger.debug(f'Invalid domain: {dns_query[:30]}')
             return None
 
-        # Extract base36 part
+        # Extract base36 part (domain suffix has same length regardless of case)
         base36_str = dns_query[:-len(self._domain)]
 
         # Decode base36
@@ -799,7 +800,8 @@ class DnsQueryReader(object):
 
         for line in iter(proc.stdout.readline, b''):
             dns_query = line.decode('utf-8', errors='ignore').strip()
-            if dns_query.endswith(self._domain):
+            # Case-insensitive domain matching (DNS is case-insensitive)
+            if dns_query.lower().endswith(self._domain.lower()):
                 logger.debug(f'DNS query: {dns_query[:50]}...')
                 yield dns_query
 

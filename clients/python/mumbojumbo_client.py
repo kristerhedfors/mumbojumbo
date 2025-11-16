@@ -453,12 +453,12 @@ def main():
     )
 
     # Key (required, can come from args, config, or env)
-    parser.add_argument('--client-key', help='Client key (mj_cli_...)')
+    parser.add_argument('--client-key', help='Client key (mj_cli_...) or set MUMBOJUMBO_CLIENT_KEY env var')
     parser.add_argument('--config', help='Config file path')
 
     # Network
-    parser.add_argument('-d', '--domain', default='.example.com', help='DNS domain suffix (default: .example.com)')
-    parser.add_argument('-r', '--resolver', default='8.8.8.8', help='DNS resolver (default: 8.8.8.8)')
+    parser.add_argument('-d', '--domain', help='DNS domain suffix (e.g., .example.com) or set MUMBOJUMBO_DOMAIN env var')
+    parser.add_argument('-r', '--resolver', help='DNS resolver or set MUMBOJUMBO_RESOLVER env var (default: 8.8.8.8)')
 
     # Data
     parser.add_argument('-k', '--key', help='Key (string, will be encoded as UTF-8)')
@@ -496,6 +496,14 @@ def main():
     if not client_key:
         parser.error('Client key required. Use --client-key, config file, or MUMBOJUMBO_CLIENT_KEY env var.')
 
+    # Get domain from args or environment (required)
+    domain = args.domain or os.environ.get('MUMBOJUMBO_DOMAIN')
+    if not domain:
+        parser.error('Domain required. Use -d/--domain or set MUMBOJUMBO_DOMAIN env var.')
+
+    # Get resolver from args or environment (optional, default 8.8.8.8)
+    resolver = args.resolver or os.environ.get('MUMBOJUMBO_RESOLVER', '8.8.8.8')
+
     # Get key
     if args.key_file:
         with open(args.key_file, 'rb') as f:
@@ -524,8 +532,8 @@ def main():
     try:
         client = MumbojumboClient(
             client_key=client_key,
-            domain=args.domain,
-            resolver=args.resolver
+            domain=domain,
+            resolver=resolver
         )
     except ValueError as e:
         print(f'Error: {e}', file=sys.stderr)
