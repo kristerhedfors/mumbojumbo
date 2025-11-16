@@ -176,11 +176,10 @@ def base36_decode(s):
 
 BINARY_PACKET_SIZE = 40
 BASE36_PACKET_SIZE = 63
-FRAGMENT_HEADER_SIZE = 4
-FRAGMENT_MAC_SIZE = 4
-FRAGMENT_PAYLOAD_SIZE = 32
-PACKET_ID_SIZE = 2
-FRAGMENT_DATA_SIZE = 30
+PACKET_ID_SIZE = 4  # u32, first in fragment, unencrypted
+FRAGMENT_MAC_SIZE = 4  # unencrypted, covers encrypted portion
+FRAGMENT_FLAGS_SIZE = 4  # encrypted
+FRAGMENT_PAYLOAD_SIZE = 28  # encrypted
 MESSAGE_NONCE_SIZE = 8
 MESSAGE_INTEGRITY_SIZE = 8
 KEY_LENGTH_SIZE = 1
@@ -231,27 +230,30 @@ class BaseFragment(Bindable):
 
 class Fragment(BaseFragment):
     """
-    Transport packet fragment with new v2.0 protocol.
+    Transport packet fragment with dual-layer encryption protocol.
 
     Wire format (40 bytes):
-        4 bytes: Fragment header (u32 bitfield: first flag, more flag, 30-bit index)
-        4 bytes: Truncated Poly1305 MAC (fragment-level authentication)
-        32 bytes: Fragment payload (2B packet_id + 30B fragment_data)
+        4 bytes: Packet ID (u32, big-endian, UNENCRYPTED)
+        4 bytes: Truncated Poly1305 MAC (over encrypted portion, UNENCRYPTED)
+        32 bytes: Encrypted portion (ChaCha20 with nonce = packet_id × 3)
+            - 4 bytes: Fragment flags (u32 bitfield: first flag, more flag, 30-bit index)
+            - 28 bytes: Fragment payload (message chunk)
 
     Base36 encoded to 63 characters for DNS label.
     """
 
     def __init__(self, packet_id=None, frag_index=0, is_first=False,
-                 has_more=False, frag_key=None, **kw):
+                 has_more=False, frag_key=None, enc_key=None, **kw):
         self._packet_id = packet_id if packet_id is not None else 0
         self._frag_index = frag_index
         self._is_first = is_first
         self._has_more = has_more
         self._frag_key = frag_key
+        self._enc_key = enc_key
         super(Fragment, self).__init__(**kw)
 
-    def _build_header(self):
-        """Build 4-byte header with flags and index."""
+    def _build_flags(self):
+        """Build 4-byte flags with first/more flags and index."""
         flags = 0
         if self._is_first:
             flags |= FIRST_FLAG_MASK
@@ -260,9 +262,9 @@ class Fragment(BaseFragment):
         flags |= (self._frag_index & INDEX_MASK)
         return struct.pack('!I', flags)
 
-    def _parse_header(self, header):
-        """Parse 4-byte header to extract flags and index."""
-        flags = struct.unpack('!I', header)[0]
+    def _parse_flags(self, flags_bytes):
+        """Parse 4-byte flags to extract first/more flags and index."""
+        flags = struct.unpack('!I', flags_bytes)[0]
         is_first = bool(flags & FIRST_FLAG_MASK)
         has_more = bool(flags & MORE_FLAG_MASK)
         frag_index = flags & INDEX_MASK
@@ -270,37 +272,46 @@ class Fragment(BaseFragment):
 
     def serialize(self):
         """
-        Serialize to 40-byte binary packet.
+        Serialize to 40-byte binary packet with dual-layer encryption.
 
         Returns:
-            40 bytes: [header (4B)][MAC (4B)][payload (32B)]
+            40 bytes: [packet_id (4B)][MAC (4B)][encrypted (32B)]
         """
-        # Build payload: [packet_id (2B)][fragment_data (30B)]
-        payload = struct.pack('!H', self._packet_id)  # u16 big-endian
-        payload += self._frag_data[:FRAGMENT_DATA_SIZE]
+        # Build flags
+        flags_bytes = self._build_flags()
 
-        # Pad to 32 bytes if needed
+        # Build payload (28 bytes)
+        payload = self._frag_data[:FRAGMENT_PAYLOAD_SIZE]
         if len(payload) < FRAGMENT_PAYLOAD_SIZE:
             payload += b'\x00' * (FRAGMENT_PAYLOAD_SIZE - len(payload))
 
-        # Compute 4-byte fragment MAC over payload
+        # Assemble inner packet (to be encrypted): flags + payload
+        inner = flags_bytes + payload
+        assert len(inner) == 32
+
+        # Encrypt inner packet with ChaCha20
+        packet_id_bytes = struct.pack('!I', self._packet_id)
+        nonce = packet_id_bytes * 3  # 12 bytes
+        if self._enc_key:
+            encrypted_inner = chacha20_encrypt(self._enc_key, nonce, inner)
+        else:
+            encrypted_inner = inner
+
+        # Compute 4-byte fragment MAC over encrypted portion
         if self._frag_key:
-            mac_full = poly1305_mac(self._frag_key, payload)
+            mac_full = poly1305_mac(self._frag_key, encrypted_inner)
             mac = mac_full[:4]
         else:
             mac = b'\x00\x00\x00\x00'
 
-        # Build header
-        header = self._build_header()
-
-        # Assemble packet
-        packet = header + mac + payload
+        # Assemble final packet
+        packet = packet_id_bytes + mac + encrypted_inner
         assert len(packet) == BINARY_PACKET_SIZE
         return packet
 
     def deserialize(self, packet):
         """
-        Deserialize 40-byte binary packet.
+        Deserialize 40-byte binary packet with dual-layer decryption.
 
         Args:
             packet: 40 bytes
@@ -313,26 +324,36 @@ class Fragment(BaseFragment):
             return None
 
         # Parse packet
-        header = packet[0:4]
+        packet_id_bytes = packet[0:4]
         mac = packet[4:8]
-        payload = packet[8:40]
+        encrypted_inner = packet[8:40]
 
-        # Verify fragment MAC
+        # Verify fragment MAC BEFORE decryption
         if self._frag_key:
-            mac_computed = poly1305_mac(self._frag_key, payload)[:4]
+            mac_computed = poly1305_mac(self._frag_key, encrypted_inner)[:4]
             if mac != mac_computed:
                 logger.debug('Fragment MAC verification failed')
                 return None
 
-        # Parse header
-        is_first, has_more, frag_index = self._parse_header(header)
+        # Decrypt inner packet
+        nonce = packet_id_bytes * 3
+        if self._enc_key:
+            inner = chacha20_decrypt(self._enc_key, nonce, encrypted_inner)
+        else:
+            inner = encrypted_inner
 
-        # Parse payload
-        packet_id = struct.unpack('!H', payload[0:2])[0]
-        frag_data = payload[2:32]
+        # Parse inner packet
+        flags_bytes = inner[0:4]
+        payload = inner[4:32]
 
-        # Remove trailing zeros (no explicit length field in new protocol)
-        frag_data = frag_data.rstrip(b'\x00')
+        # Parse flags
+        is_first, has_more, frag_index = self._parse_flags(flags_bytes)
+
+        # Parse packet_id
+        packet_id = struct.unpack('!I', packet_id_bytes)[0]
+
+        # Remove trailing zeros from payload
+        frag_data = payload.rstrip(b'\x00')
 
         # Build keyword arguments
         kw = {
@@ -341,7 +362,8 @@ class Fragment(BaseFragment):
             'is_first': is_first,
             'has_more': has_more,
             'frag_data': frag_data,
-            'frag_key': self._frag_key
+            'frag_key': self._frag_key,
+            'enc_key': self._enc_key
         }
 
         return self.__class__(**kw)
@@ -516,13 +538,14 @@ def _split2len(s, n):
 
 class PacketEngine(object):
     """
-    Packet fragmentation and reassembly engine for v2.0 protocol.
+    Packet fragmentation and reassembly engine with dual-layer encryption.
 
     Handles:
-    - Message-level encryption (single encryption before fragmentation)
-    - Fragmentation into 30-byte chunks
-    - Fragment-level authentication
-    - Reassembly with integrity verification
+    - Message-level encryption (inner ChaCha20 before fragmentation)
+    - Fragment-level encryption (outer ChaCha20 per fragment)
+    - Fragmentation into 28-byte chunks
+    - Fragment-level authentication (MAC verified before decryption)
+    - Reassembly with integrity verification (handles out-of-order fragments)
     - Key-value extraction
     """
 
@@ -542,12 +565,13 @@ class PacketEngine(object):
         self._frag_key = frag_key
 
         # Reassembly state
-        self._packet_assembly = {}  # packet_id -> list of fragment_data
+        self._packet_assembly = {}  # packet_id -> {index: frag_data}
         self._packet_first_seen = {}  # packet_id -> bool (track first flag)
+        self._packet_last_index = {}  # packet_id -> int (track last fragment index)
         self._packet_outqueue = queue.Queue()
 
-        # Packet ID counter (u16: 0-65535, wraps)
-        self._next_packet_id = secrets.randbits(16)
+        # Packet ID counter (u32: 0-4294967295, wraps)
+        self._next_packet_id = secrets.randbits(32)
 
     @property
     def packet_outqueue(self):
@@ -573,16 +597,16 @@ class PacketEngine(object):
 
         plaintext = bytes([key_length]) + key + value
 
-        # Encrypt message ONCE
+        # Encrypt message ONCE (inner encryption)
         message = EncryptedFragment.encrypt_message(self._enc_key, self._auth_key, plaintext)
 
         logger.debug(f'Encrypted message: {len(message)} bytes')
 
-        # Fragment into 30-byte chunks
+        # Fragment into 28-byte chunks
         packet_id = self._next_packet_id
-        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFF  # Wrap at 2^16-1
+        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFF  # Wrap at 2^32-1
 
-        fragments = _split2len(message, FRAGMENT_DATA_SIZE)
+        fragments = _split2len(message, FRAGMENT_PAYLOAD_SIZE)
         total_fragments = len(fragments)
 
         logger.debug(f'Fragmenting into {total_fragments} fragments (packet_id={packet_id})')
@@ -605,9 +629,33 @@ class PacketEngine(object):
             wire_data = frag.serialize()
             yield wire_data
 
+    def _check_packet_complete(self, packet_id):
+        """
+        Check if packet is complete (has first, last, and all fragments in between).
+
+        Args:
+            packet_id: int
+
+        Returns:
+            bool: True if complete
+        """
+        if packet_id not in self._packet_assembly:
+            return False
+        if not self._packet_first_seen.get(packet_id, False):
+            return False
+        if packet_id not in self._packet_last_index:
+            return False
+
+        # Check we have all fragments from 0 to last_index
+        last_index = self._packet_last_index[packet_id]
+        expected_indices = set(range(last_index + 1))
+        actual_indices = set(self._packet_assembly[packet_id].keys())
+
+        return expected_indices == actual_indices
+
     def from_wire(self, wire_data):
         """
-        Receive and reassemble fragments.
+        Receive and reassemble fragments (handles out-of-order delivery).
 
         If fragment completes a message, verify integrity, decrypt,
         and put (key, value) to packet_outqueue.
@@ -617,7 +665,7 @@ class PacketEngine(object):
         """
         logger.debug(f'from_wire() len(wire_data)={len(wire_data)}')
 
-        # Deserialize fragment
+        # Deserialize fragment (includes outer decryption and MAC verification)
         frag = self._frag_cls().deserialize(wire_data)
         if frag is None:
             logger.debug('Fragment deserialization failed')
@@ -640,33 +688,27 @@ class PacketEngine(object):
         if is_first:
             self._packet_first_seen[packet_id] = True
 
+        # Track last fragment (has_more == False means this is the last)
+        if not has_more:
+            self._packet_last_index[packet_id] = frag_index
+
         # Store fragment
         self._packet_assembly[packet_id][frag_index] = frag_data
 
-        # Check if complete (has_more == False means this is last fragment)
-        if not has_more:
-            logger.debug(f'Last fragment received for packet_id={packet_id}')
-
-            # Verify we have first fragment
-            if not self._packet_first_seen[packet_id]:
-                logger.error(f'Received last fragment before first for packet_id={packet_id}')
-                return
+        # Check if complete (handles out-of-order)
+        if self._check_packet_complete(packet_id):
+            logger.debug(f'Packet complete for packet_id={packet_id}')
 
             # Reassemble message (sort by index)
             fragments = self._packet_assembly[packet_id]
-            indices = sorted(fragments.keys())
+            last_index = self._packet_last_index[packet_id]
 
-            # Check for missing fragments
-            if indices != list(range(len(indices))):
-                logger.error(f'Missing fragments for packet_id={packet_id}: {indices}')
-                return
-
-            # Concatenate fragments
-            message = b''.join(fragments[i] for i in indices)
+            # Concatenate fragments in order
+            message = b''.join(fragments[i] for i in range(last_index + 1))
 
             logger.debug(f'Reassembled message: {len(message)} bytes')
 
-            # Decrypt and verify integrity
+            # Decrypt and verify integrity (inner decryption)
             plaintext = EncryptedFragment.decrypt_message(self._enc_key, self._auth_key, message)
 
             if plaintext is None:
@@ -674,6 +716,7 @@ class PacketEngine(object):
                 # Clean up
                 del self._packet_assembly[packet_id]
                 del self._packet_first_seen[packet_id]
+                del self._packet_last_index[packet_id]
                 return
 
             # Parse key-value
@@ -681,6 +724,7 @@ class PacketEngine(object):
                 logger.error(f'Plaintext too short: {len(plaintext)} bytes')
                 del self._packet_assembly[packet_id]
                 del self._packet_first_seen[packet_id]
+                del self._packet_last_index[packet_id]
                 return
 
             key_length = plaintext[0]
@@ -688,6 +732,7 @@ class PacketEngine(object):
                 logger.error(f'Invalid key_length: {key_length}')
                 del self._packet_assembly[packet_id]
                 del self._packet_first_seen[packet_id]
+                del self._packet_last_index[packet_id]
                 return
 
             key = plaintext[1:1+key_length]
@@ -701,6 +746,7 @@ class PacketEngine(object):
             # Clean up
             del self._packet_assembly[packet_id]
             del self._packet_first_seen[packet_id]
+            del self._packet_last_index[packet_id]
 
 
 # ============================================================================
@@ -741,13 +787,13 @@ class DnsQueryReader(object):
 # Key Generation and Encoding
 # ============================================================================
 
-def encode_key_hex(key_bytes, key_type='key'):
+def encode_key_hex(key_bytes, key_type='cli'):
     """
     Encode key bytes to hex string with prefix.
 
     Args:
         key_bytes: 32-byte key
-        key_type: 'key', 'auth', or 'frag'
+        key_type: 'cli' for client key
 
     Returns:
         str: mj_<type>_<64_hex_chars>
@@ -763,7 +809,7 @@ def decode_key_hex(key_str):
     Decode hex key string to bytes.
 
     Args:
-        key_str: mj_<type>_<64_hex_chars>
+        key_str: mj_<type>_<64_hex_chars> or raw hex
 
     Returns:
         bytes: 32-byte key
@@ -789,22 +835,36 @@ def decode_key_hex(key_str):
     return key_bytes
 
 
-def get_keypair_hex():
+def derive_keys(client_key):
     """
-    Generate three 32-byte keys for new protocol.
+    Derive encryption, authentication, and fragment keys from client key.
+
+    Args:
+        client_key: bytes, 32-byte master key
 
     Returns:
-        dict with 'enc_key', 'auth_key', 'frag_key' (hex encoded)
+        tuple: (enc_key, auth_key, frag_key), each 32 bytes
     """
-    enc_key = secrets.token_bytes(32)
-    auth_key = secrets.token_bytes(32)
-    frag_key = secrets.token_bytes(32)
+    if len(client_key) != 32:
+        raise ValueError(f'Client key must be 32 bytes, got {len(client_key)}')
 
-    return {
-        'enc_key': encode_key_hex(enc_key, 'key'),
-        'auth_key': encode_key_hex(auth_key, 'auth'),
-        'frag_key': encode_key_hex(frag_key, 'frag')
-    }
+    # Derive 32-byte keys by concatenating two 16-byte MACs
+    enc_key = poly1305_mac(client_key, b'enc') + poly1305_mac(client_key, b'enc2')
+    auth_key = poly1305_mac(client_key, b'auth') + poly1305_mac(client_key, b'auth2')
+    frag_key = poly1305_mac(client_key, b'frag') + poly1305_mac(client_key, b'frag2')
+
+    return enc_key, auth_key, frag_key
+
+
+def get_client_key_hex():
+    """
+    Generate a single 32-byte client key.
+
+    Returns:
+        str: mj_cli_<64_hex_chars>
+    """
+    client_key = secrets.token_bytes(32)
+    return encode_key_hex(client_key, 'cli')
 
 
 def validate_domain(domain):
@@ -940,9 +1000,7 @@ def option_parser():
     parser = optparse.OptionParser(usage='%prog [options]')
 
     # Keys
-    parser.add_option('--enc-key', dest='enc_key', help='Encryption key (mj_key_...)')
-    parser.add_option('--auth-key', dest='auth_key', help='Auth key (mj_auth_...)')
-    parser.add_option('--frag-key', dest='frag_key', help='Fragment key (mj_frag_...)')
+    parser.add_option('--client-key', dest='client_key', help='Client key (mj_cli_...)')
 
     # Network
     parser.add_option('-i', '--interface', dest='interface', default='en0',
@@ -952,7 +1010,7 @@ def option_parser():
 
     # Actions
     parser.add_option('--gen-keys', dest='gen_keys', action='store_true',
-                      help='Generate keys and print environment variables')
+                      help='Generate client key and print environment variables')
 
     # Logging
     parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
@@ -971,31 +1029,26 @@ def main():
 
     # Generate keys
     if opts.gen_keys:
-        keys = get_keypair_hex()
+        client_key = get_client_key_hex()
         domain = opts.domain if opts.domain != '.example.com' else f'.{secrets.token_hex(3)}.{secrets.token_hex(3)}'
 
-        print('# Mumbojumbo v2.0 Configuration')
-        print(f'export MUMBOJUMBO_ENC_KEY={keys["enc_key"]}')
-        print(f'export MUMBOJUMBO_AUTH_KEY={keys["auth_key"]}')
-        print(f'export MUMBOJUMBO_FRAG_KEY={keys["frag_key"]}')
+        print('# Mumbojumbo Configuration')
+        print(f'export MUMBOJUMBO_CLIENT_KEY={client_key}')
         print(f'export MUMBOJUMBO_DOMAIN={domain}')
         return 0
 
-    # Get keys from opts or environment
-    enc_key = opts.enc_key or os.getenv('MUMBOJUMBO_ENC_KEY')
-    auth_key = opts.auth_key or os.getenv('MUMBOJUMBO_AUTH_KEY')
-    frag_key = opts.frag_key or os.getenv('MUMBOJUMBO_FRAG_KEY')
+    # Get client key from opts or environment
+    client_key_str = opts.client_key or os.getenv('MUMBOJUMBO_CLIENT_KEY')
     domain = opts.domain or os.getenv('MUMBOJUMBO_DOMAIN', '.example.com')
 
-    if not enc_key or not auth_key or not frag_key:
-        logger.error('Keys not provided. Use --gen-keys or set environment variables.')
+    if not client_key_str:
+        logger.error('Client key not provided. Use --gen-keys or set MUMBOJUMBO_CLIENT_KEY.')
         return 1
 
-    # Decode keys
+    # Decode and derive keys
     try:
-        enc_key_bytes = decode_key_hex(enc_key)
-        auth_key_bytes = decode_key_hex(auth_key)
-        frag_key_bytes = decode_key_hex(frag_key)
+        client_key_bytes = decode_key_hex(client_key_str)
+        enc_key_bytes, auth_key_bytes, frag_key_bytes = derive_keys(client_key_bytes)
     except ValueError as e:
         logger.error(f'Invalid key: {e}')
         return 1
@@ -1015,7 +1068,7 @@ def main():
         logger.error('Root permissions required for packet capture. Run with sudo.')
         return 1
 
-    logger.info('Mumbojumbo v2.0 starting')
+    logger.info('Mumbojumbo starting')
     logger.info(f'Domain: {domain}')
     logger.info(f'Interface: {opts.interface}')
 
