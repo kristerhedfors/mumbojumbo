@@ -11,11 +11,9 @@ Encoding: Base36 (40 bytes → 63 characters per DNS label)
 Usage as library:
     from mumbojumbo_client import MumbojumboClient
 
-    # Initialize with three keys
+    # Initialize with client key (keys are derived internally)
     client = MumbojumboClient(
-        enc_key='mj_key_abc123...',
-        auth_key='mj_auth_def456...',
-        frag_key='mj_frag_ghi789...',
+        client_key='mj_cli_abc123...',
         domain='.example.com'
     )
 
@@ -26,10 +24,9 @@ Usage as library:
     client.send(value=b'Data without key')
 
 Usage from CLI:
-    ./mumbojumbo_client.py --enc-key mj_key_... --auth-key mj_auth_... --frag-key mj_frag_... \\
-                           -d .example.com -k mykey -v myvalue
+    ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com -k mykey -v myvalue
 
-    echo "data" | ./mumbojumbo_client.py --enc-key ... --auth-key ... --frag-key ... -d .example.com
+    echo "data" | ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com
 """
 
 import sys
@@ -148,10 +145,9 @@ def base36_encode(data):
 
 BINARY_PACKET_SIZE = 40
 BASE36_PACKET_SIZE = 63
-FRAGMENT_HEADER_SIZE = 4
+FRAGMENT_HEADER_SIZE = 6  # flags+index (4B) + packet_id (2B)
 FRAGMENT_MAC_SIZE = 4
-FRAGMENT_PAYLOAD_SIZE = 32
-PACKET_ID_SIZE = 2
+FRAGMENT_PAYLOAD_SIZE = 30  # frag_data only (no packet_id)
 FRAGMENT_DATA_SIZE = 30
 MESSAGE_NONCE_SIZE = 8
 MESSAGE_INTEGRITY_SIZE = 8
@@ -165,12 +161,12 @@ INDEX_MASK = 0x3FFFFFFF
 # Key Encoding
 # ============================================================================
 
-def decode_key_hex(key_str):
+def decode_mumbojumbo_key(key_str):
     """
-    Decode hex key string to bytes.
+    Decode mumbojumbo key string to bytes.
 
     Args:
-        key_str: mj_<type>_<64_hex_chars> or raw hex
+        key_str: mj_cli_<64_hex_chars> or raw hex
 
     Returns:
         bytes: 32-byte key
@@ -187,12 +183,33 @@ def decode_key_hex(key_str):
     try:
         key_bytes = bytes.fromhex(hex_str)
     except ValueError as e:
-        raise ValueError(f'Invalid hex string: {e}')
+        raise ValueError(f'Invalid mumbojumbo key: {e}')
 
     if len(key_bytes) != 32:
         raise ValueError(f'Key must be 32 bytes, got {len(key_bytes)}')
 
     return key_bytes
+
+
+def derive_keys(client_key):
+    """
+    Derive encryption, authentication, and fragment keys from client key.
+
+    Args:
+        client_key: bytes, 32-byte master key
+
+    Returns:
+        tuple: (enc_key, auth_key, frag_key), each 32 bytes
+    """
+    if len(client_key) != 32:
+        raise ValueError(f'Client key must be 32 bytes, got {len(client_key)}')
+
+    # Derive 32-byte keys by concatenating two 16-byte MACs
+    enc_key = poly1305_mac(client_key, b'enc') + poly1305_mac(client_key, b'enc2')
+    auth_key = poly1305_mac(client_key, b'auth') + poly1305_mac(client_key, b'auth2')
+    frag_key = poly1305_mac(client_key, b'frag') + poly1305_mac(client_key, b'frag2')
+
+    return enc_key, auth_key, frag_key
 
 
 # ============================================================================
@@ -206,28 +223,22 @@ class MumbojumboClient:
     Encrypts and fragments key-value pairs into DNS queries.
     """
 
-    def __init__(self, enc_key, auth_key, frag_key, domain='.example.com', resolver='8.8.8.8'):
+    def __init__(self, client_key, domain='.example.com', resolver='8.8.8.8'):
         """
         Initialize client.
 
         Args:
-            enc_key: str or bytes, encryption key (ChaCha20)
-            auth_key: str or bytes, authentication key (Poly1305, message-level)
-            frag_key: str or bytes, fragment MAC key (Poly1305, fragment-level)
+            client_key: str or bytes, mumbojumbo client key (mj_cli_...)
             domain: str, DNS domain suffix (e.g., '.example.com')
             resolver: str, DNS resolver to use
         """
-        # Decode keys if strings
-        if isinstance(enc_key, str):
-            enc_key = decode_key_hex(enc_key)
-        if isinstance(auth_key, str):
-            auth_key = decode_key_hex(auth_key)
-        if isinstance(frag_key, str):
-            frag_key = decode_key_hex(frag_key)
+        # Decode key if string
+        if isinstance(client_key, str):
+            client_key = decode_mumbojumbo_key(client_key)
 
-        self.enc_key = enc_key
-        self.auth_key = auth_key
-        self.frag_key = frag_key
+        # Derive encryption, auth, and fragment keys from client key
+        self.enc_key, self.auth_key, self.frag_key = derive_keys(client_key)
+
         self.domain = domain
         self.resolver = resolver
 
@@ -271,29 +282,33 @@ class MumbojumboClient:
 
         Returns:
             bytes: 40-byte binary packet
+
+        Structure (40 bytes total):
+            Header (6B): [flags+index (4B)][packet_id (2B)]
+            MAC (4B): covers header + payload
+            Payload (30B): fragment data only
         """
-        # Build header
+        # Build header: flags+index (4B) + packet_id (2B)
         flags = 0
         if is_first:
             flags |= FIRST_FLAG_MASK
         if has_more:
             flags |= MORE_FLAG_MASK
         flags |= (frag_index & INDEX_MASK)
-        header = struct.pack('!I', flags)
+        header = struct.pack('!I', flags) + struct.pack('!H', packet_id)
 
-        # Build payload: [packet_id (2B)][fragment_data (30B)]
-        payload = struct.pack('!H', packet_id)
-        payload += frag_data[:FRAGMENT_DATA_SIZE]
+        # Build payload: fragment data only (30B)
+        payload = frag_data[:FRAGMENT_DATA_SIZE]
 
-        # Pad to 32 bytes
+        # Pad to 30 bytes
         if len(payload) < FRAGMENT_PAYLOAD_SIZE:
             payload += b'\x00' * (FRAGMENT_PAYLOAD_SIZE - len(payload))
 
-        # Compute 4-byte fragment MAC
-        mac_full = poly1305_mac(self.frag_key, payload)
+        # Compute 4-byte fragment MAC (covers EVERYTHING: header + payload)
+        mac_full = poly1305_mac(self.frag_key, header + payload)
         mac = mac_full[:4]
 
-        # Assemble packet
+        # Assemble packet: header + mac + payload
         packet = header + mac + payload
         assert len(packet) == BINARY_PACKET_SIZE
         return packet
@@ -425,10 +440,9 @@ def main():
         epilog=__doc__
     )
 
-    # Keys (required)
-    parser.add_argument('--enc-key', required=True, help='Encryption key (mj_key_...)')
-    parser.add_argument('--auth-key', required=True, help='Auth key (mj_auth_...)')
-    parser.add_argument('--frag-key', required=True, help='Fragment key (mj_frag_...)')
+    # Key (required, can come from args, config, or env)
+    parser.add_argument('--client-key', help='Client key (mj_cli_...)')
+    parser.add_argument('--config', help='Config file path')
 
     # Network
     parser.add_argument('-d', '--domain', default='.example.com', help='DNS domain suffix (default: .example.com)')
@@ -445,6 +459,30 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='Generate queries but do not send')
 
     args = parser.parse_args()
+
+    # Get client key from args, config, or environment
+    client_key = args.client_key
+
+    # Try config file if not provided via args
+    if not client_key and args.config:
+        try:
+            with open(args.config, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('client-key'):
+                        parts = line.split('=', 1)
+                        if len(parts) == 2:
+                            client_key = parts[1].strip()
+                            break
+        except FileNotFoundError:
+            print(f'Warning: Config file {args.config} not found', file=sys.stderr)
+
+    # Try environment variable if still not provided
+    if not client_key:
+        client_key = os.environ.get('MUMBOJUMBO_CLIENT_KEY')
+
+    if not client_key:
+        parser.error('Client key required. Use --client-key, config file, or MUMBOJUMBO_CLIENT_KEY env var.')
 
     # Get key
     if args.key_file:
@@ -473,9 +511,7 @@ def main():
     # Create client
     try:
         client = MumbojumboClient(
-            enc_key=args.enc_key,
-            auth_key=args.auth_key,
-            frag_key=args.frag_key,
+            client_key=client_key,
             domain=args.domain,
             resolver=args.resolver
         )
