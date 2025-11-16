@@ -2,9 +2,9 @@
 
 ## Overview
 
-Encrypted DNS tunneling protocol for key-value transmission. Uses ChaCha20-Poly1305 with dual-layer authentication and single-label base36 DNS encoding.
+Encrypted DNS tunneling protocol for key-value transmission. Uses ChaCha20-Poly1305 with **dual-layer encryption** (fragment + message level) and single-label base36 DNS encoding.
 
-**Features:** Single client key with derivation, 40-byte wire format, 63-character DNS labels, dual MACs (fragment + message level).
+**Features:** Single client key with derivation, 40-byte wire format, 63-character DNS labels, dual encryption layers.
 
 **Use Cases:** Educational, authorized security testing, CTF challenges, network research.
 
@@ -16,10 +16,12 @@ Encrypted DNS tunneling protocol for key-value transmission. Uses ChaCha20-Poly1
 
 ```
 Sender:
-  Key-Value → Encrypt (ChaCha20) → Fragment (30B chunks) → MAC + Encode → DNS Query
+  Key-Value → Encrypt (inner ChaCha20) → Fragment (28B chunks)
+            → Encrypt each fragment (outer ChaCha20) → MAC → Base36 → DNS Query
 
 Receiver:
-  DNS Query → Decode + Verify MAC → Reassemble → Verify Integrity → Decrypt → Key-Value
+  DNS Query → Base36 decode → Verify MAC → Decrypt fragment (outer)
+            → Reassemble → Verify integrity → Decrypt message (inner) → Key-Value
 ```
 
 ---
@@ -38,14 +40,11 @@ Client Key: mj_cli_<64_hex_chars>
 
 ```python
 def derive_keys(client_key):
-    """Derive enc, auth, frag keys from client key."""
     enc_key = poly1305_mac(client_key, b'enc') + poly1305_mac(client_key, b'enc2')
     auth_key = poly1305_mac(client_key, b'auth') + poly1305_mac(client_key, b'auth2')
     frag_key = poly1305_mac(client_key, b'frag') + poly1305_mac(client_key, b'frag2')
     return enc_key, auth_key, frag_key  # Each 32 bytes
 ```
-
-Each derived key concatenates two 16-byte Poly1305 MACs for 32 bytes total.
 
 ### Key Generation
 
@@ -69,23 +68,51 @@ export MUMBOJUMBO_DOMAIN=.example.com
 ### Binary Structure
 
 ```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 ├───────────────────────────────────────────────────────────────┤
-│              Fragment Header (u32, flags+index)               │ 4B
-├───────────────────────────────────────────────────────────────┤
-│              Packet ID (u16, big-endian)                      │ 2B
+│              Packet ID (u32, big-endian)                      │ 4B
 ├───────────────────────────────────────────────────────────────┤
 │              Truncated Poly1305 MAC (4 bytes)                 │ 4B
+│              (covers encrypted portion below)                  │
 ├───────────────────────────────────────────────────────────────┤
 │                                                               │
-│              Fragment Payload (30 bytes)                      │ 30B
+│              ENCRYPTED PORTION (32 bytes)                     │
+│              ChaCha20, nonce = packet_id × 3                  │
+│                                                               │
+│   ┌───────────────────────────────────────────────────────┐  │
+│   │         Fragment Flags (u32, flags+index)             │  │ 4B
+│   ├───────────────────────────────────────────────────────┤  │
+│   │         Fragment Payload (28 bytes)                   │  │ 28B
+│   └───────────────────────────────────────────────────────┘  │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
 Total: 40 bytes → Base36 → 63 characters
 ```
 
-### Fragment Header (4 bytes)
+### Packet ID (4 bytes)
+
+Big-endian u32 (0-4294967295). Identifies which message this fragment belongs to.
+
+**Also serves as nonce for outer encryption:** Repeated 3× to form 12-byte ChaCha20 nonce.
+
+### Fragment MAC (4 bytes)
+
+Truncated Poly1305 MAC over the **encrypted portion** (32 bytes):
+
+```python
+mac = poly1305_mac(frag_key, encrypted_inner)[:4]
+```
+
+**Verified BEFORE decryption** to reject invalid fragments early.
+
+### Encrypted Portion (32 bytes)
+
+Encrypted with `enc_key` using nonce = `packet_id_bytes × 3`.
+
+Contains:
+- **Fragment Flags (4 bytes):** Bitfield with first/more flags and fragment index
+- **Fragment Payload (28 bytes):** Chunk of inner encrypted message
+
+### Fragment Flags (4 bytes, encrypted)
 
 ```
 Bit 31 (MSB):  First Fragment Flag (1 = first, 0 = continuation)
@@ -94,26 +121,14 @@ Bits 29-0:     Fragment Index (0 to 1,073,741,823)
 ```
 
 Examples:
-- `0x80000000` = First & last fragment (single-fragment message), index 0
+- `0x80000000` = First & last (single-fragment message), index 0
 - `0xC0000000` = First fragment, more coming, index 0
 - `0x40000001` = Continuation, more coming, index 1
 - `0x00000002` = Last fragment, index 2
 
-### Packet ID (2 bytes)
+### Fragment Payload (28 bytes, encrypted)
 
-Big-endian u16 (0-65535). Identifies which message this fragment belongs to.
-
-### Fragment MAC (4 bytes)
-
-Truncated Poly1305 MAC over **header + payload** (36 bytes total):
-
-```python
-mac = poly1305_mac(frag_key, header + payload)[:4]
-```
-
-### Fragment Payload (30 bytes)
-
-Chunk of the encrypted message. Last fragment may be shorter (zero-padded).
+Chunk of the inner encrypted message. Last fragment may be shorter (zero-padded).
 
 ### Base36 Encoding
 
@@ -123,9 +138,9 @@ DNS query: `<63chars>.<domain>`
 
 ---
 
-## Layer 2: Message Structure
+## Layer 2: Message Structure (Inner)
 
-After reassembling all fragments for a packet_id:
+After decrypting and reassembling all fragments for a packet_id:
 
 ```
 ┌──────────┬─────────────┬────────────────────┐
@@ -136,13 +151,13 @@ After reassembling all fragments for a packet_id:
 
 ### Message Nonce (8 bytes)
 
-Random nonce for ChaCha20. Zero-padded to 12 bytes: `nonce || 0x00000000`
+Random nonce for inner ChaCha20. Zero-padded to 12 bytes: `nonce || 0x00000000`
 
 ### Message Integrity (8 bytes)
 
 Poly1305 MAC over `nonce || encrypted_kv`, truncated to 8 bytes.
 
-**MUST be verified BEFORE decryption.**
+**MUST be verified BEFORE inner decryption.**
 
 ### Encrypted Key-Value (N bytes)
 
@@ -152,7 +167,7 @@ ChaCha20-encrypted plaintext. Only decrypted after integrity passes.
 
 ## Layer 3: Plaintext Key-Value
 
-After decryption:
+After inner decryption:
 
 ```
 ┌──────────┬──────────┬──────────┐
@@ -177,37 +192,41 @@ def send(key, value, client_key, domain):
     # 2. Build plaintext
     plaintext = bytes([len(key)]) + key + value
 
-    # 3. Encrypt
-    nonce = os.urandom(8)
-    encrypted = chacha20_encrypt(enc_key, nonce, plaintext)
+    # 3. Inner encryption (message level)
+    nonce_inner = os.urandom(8)
+    encrypted_kv = chacha20_encrypt(enc_key, nonce_inner, plaintext)
+    integrity = poly1305_mac(auth_key, nonce_inner + encrypted_kv)[:8]
+    message = nonce_inner + integrity + encrypted_kv
 
-    # 4. Compute message integrity
-    integrity = poly1305_mac(auth_key, nonce + encrypted)[:8]
+    # 4. Fragment into 28-byte chunks
+    packet_id = random_u32()
+    fragments = [message[i:i+28] for i in range(0, len(message), 28)]
 
-    # 5. Build complete message
-    message = nonce + integrity + encrypted
-
-    # 6. Fragment into 30-byte chunks
-    packet_id = random_u16()
-    fragments = [message[i:i+30] for i in range(0, len(message), 30)]
-
-    # 7. Build and send packets
+    # 5. Build and send packets
     for i, frag_data in enumerate(fragments):
         is_first = (i == 0)
         has_more = (i < len(fragments) - 1)
 
-        # Header: flags + index
+        # Build flags
         flags = (is_first << 31) | (has_more << 30) | i
-        header = struct.pack('!I', flags) + struct.pack('!H', packet_id)
+        flags_bytes = struct.pack('!I', flags)
 
-        # Payload: fragment data (zero-padded to 30 bytes)
-        payload = frag_data.ljust(30, b'\x00')
+        # Pad payload to 28 bytes
+        payload = frag_data.ljust(28, b'\x00')
 
-        # MAC covers header + payload
-        mac = poly1305_mac(frag_key, header + payload)[:4]
+        # Build inner packet (to be encrypted)
+        inner = flags_bytes + payload  # 32 bytes
 
-        # Assemble packet
-        packet = header + mac + payload  # 40 bytes
+        # Outer encryption (fragment level)
+        packet_id_bytes = struct.pack('!I', packet_id)
+        nonce_outer = packet_id_bytes * 3  # 12 bytes
+        encrypted_inner = chacha20_encrypt(enc_key, nonce_outer, inner)
+
+        # Compute MAC over encrypted portion (verify before decrypt)
+        mac = poly1305_mac(frag_key, encrypted_inner)[:4]
+
+        # Assemble final packet
+        packet = packet_id_bytes + mac + encrypted_inner  # 40 bytes
 
         # Encode and send
         dns_label = base36_encode(packet)  # 63 chars
@@ -228,42 +247,50 @@ def receive(dns_query, client_key):
     packet = base36_decode(label)  # 40 bytes
 
     # 3. Parse packet
-    header = packet[0:6]       # flags+index (4B) + packet_id (2B)
-    mac = packet[6:10]         # 4B
-    payload = packet[10:40]    # 30B
+    packet_id_bytes = packet[0:4]
+    mac = packet[4:8]
+    encrypted_inner = packet[8:40]
 
-    # 4. Verify fragment MAC
-    computed_mac = poly1305_mac(frag_key, header + payload)[:4]
+    # 4. Verify fragment MAC BEFORE decryption
+    computed_mac = poly1305_mac(frag_key, encrypted_inner)[:4]
     if computed_mac != mac:
         raise Error("Fragment MAC failed")
 
-    # 5. Parse header
-    flags = struct.unpack('!I', header[0:4])[0]
-    packet_id = struct.unpack('!H', header[4:6])[0]
+    # 5. Outer decryption (fragment level)
+    nonce_outer = packet_id_bytes * 3
+    inner = chacha20_encrypt(enc_key, nonce_outer, encrypted_inner)  # decrypt
+
+    # 6. Parse inner packet
+    flags_bytes = inner[0:4]
+    payload = inner[4:32]
+
+    # 7. Parse flags
+    flags = struct.unpack('!I', flags_bytes)[0]
+    packet_id = struct.unpack('!I', packet_id_bytes)[0]
     is_first = (flags >> 31) & 1
     has_more = (flags >> 30) & 1
     index = flags & 0x3FFFFFFF
 
-    # 6. Buffer fragment
+    # 8. Buffer fragment
     buffer[packet_id][index] = payload
 
-    # 7. Check completion (has_more == 0)
+    # 9. Check completion (has_more == 0)
     if not has_more:
         # Reassemble
         message = b''.join(buffer[packet_id])
 
         # Parse message
-        nonce = message[0:8]
+        nonce_inner = message[0:8]
         integrity = message[8:16]
-        encrypted = message[16:]
+        encrypted_kv = message[16:]
 
-        # Verify integrity BEFORE decryption
-        computed = poly1305_mac(auth_key, nonce + encrypted)[:8]
+        # Verify integrity BEFORE inner decryption
+        computed = poly1305_mac(auth_key, nonce_inner + encrypted_kv)[:8]
         if computed != integrity:
             raise SecurityError("Message integrity failed")
 
-        # Decrypt
-        plaintext = chacha20_decrypt(enc_key, nonce, encrypted)
+        # Inner decryption (message level)
+        plaintext = chacha20_encrypt(enc_key, nonce_inner, encrypted_kv)
 
         # Parse key-value
         key_len = plaintext[0]
@@ -281,9 +308,10 @@ def receive(dns_query, client_key):
 # Wire format
 BINARY_PACKET_SIZE = 40
 BASE36_PACKET_SIZE = 63
-FRAGMENT_HEADER_SIZE = 6      # flags+index (4B) + packet_id (2B)
+PACKET_ID_SIZE = 4            # u32
 FRAGMENT_MAC_SIZE = 4
-FRAGMENT_PAYLOAD_SIZE = 30
+FRAGMENT_FLAGS_SIZE = 4       # encrypted
+FRAGMENT_PAYLOAD_SIZE = 28    # encrypted
 
 # Message structure
 MESSAGE_NONCE_SIZE = 8
@@ -297,7 +325,7 @@ INDEX_MASK = 0x3FFFFFFF
 
 # Crypto
 KEY_SIZE = 32
-CHACHA20_NONCE_SIZE = 8       # Zero-padded to 12
+CHACHA20_NONCE_SIZE = 12
 POLY1305_FULL_TAG = 16
 ```
 
@@ -306,17 +334,18 @@ POLY1305_FULL_TAG = 16
 ## Security Properties
 
 **Provides:**
-- Confidentiality (ChaCha20, 256-bit keys)
-- Message integrity (8-byte Poly1305, verified before decrypt)
-- Fragment authentication (4-byte Poly1305)
-- Single encryption point (encrypt once at sender)
+- **Confidentiality:** Dual ChaCha20 encryption (fragment + message level)
+- **Message integrity:** 8-byte Poly1305 MAC verified before inner decrypt
+- **Fragment authentication:** 4-byte Poly1305 MAC verified before outer decrypt
+- **Replay resistance per fragment:** Packet ID as nonce prevents replay within session
+- **Traffic obfuscation:** Encrypted flags hide fragment metadata
 
 **Does NOT provide:**
-- Replay protection
+- Long-term replay protection (no timestamps)
 - Forward secrecy
 - Sender authentication
 - Rate limiting
-- Traffic analysis protection
+- Traffic analysis protection (DNS patterns visible)
 
 ---
 
@@ -327,17 +356,33 @@ Message: key="", value=b"HI"
 
 SENDER:
 1. Plaintext: [0x00]b"HI" = 3 bytes
-2. Nonce: 0x0102030405060708
-3. Encrypted: 0xABCDEF (3 bytes)
+2. Inner nonce: 0x0102030405060708
+3. Encrypted KV: 0xABCDEF (3 bytes)
 4. Integrity: 0x1122334455667788
 5. Message: [8B nonce][8B integrity][3B encrypted] = 19 bytes
-6. Fragment: packet_id=0x0001, index=0, first=1, more=0
-7. Header: 0x80000000 0x0001 (6 bytes)
-8. Payload: [19B message][11B zeros] (30 bytes)
-9. MAC: poly1305(frag_key, header+payload)[:4]
-10. Packet: [header][mac][payload] = 40 bytes
-11. Base36: "XYZ...ABC" (63 chars)
-12. DNS: XYZ...ABC.example.com
+6. Fragment: packet_id=0x00001234, index=0, first=1, more=0
+7. Flags: 0x80000000 (4 bytes)
+8. Payload: [19B message][9B zeros] (28 bytes)
+9. Inner: [flags][payload] = 32 bytes
+10. Outer nonce: 0x00001234 × 3 = 12 bytes
+11. Encrypted inner: chacha20(enc_key, outer_nonce, inner) = 32 bytes
+12. MAC: poly1305(frag_key, encrypted_inner)[:4] = 4 bytes
+13. Packet: [packet_id][mac][encrypted_inner] = 40 bytes
+14. Base36: "XYZ...ABC" (63 chars)
+15. DNS: XYZ...ABC.example.com
+
+RECEIVER:
+1. Base36 decode → 40 bytes
+2. Parse: packet_id, mac, encrypted_inner
+3. Verify fragment MAC ✓ (before decrypt)
+4. Outer decrypt: nonce=packet_id×3
+5. Parse inner: flags, payload
+6. Parse flags: first=1, more=0, index=0
+7. Reassemble: 19 bytes
+8. Parse message: nonce, integrity, encrypted_kv
+9. Verify message integrity ✓
+10. Inner decrypt → [0x00]b"HI"
+11. Output: key="", value=b"HI"
 ```
 
 ---
@@ -347,7 +392,7 @@ SENDER:
 ```
 Original: N bytes (1B key_len + key + value)
 Message: N + 16 bytes (nonce + integrity + encrypted)
-Fragments: ceil((N+16) / 30)
+Fragments: ceil((N+16) / 28)
 Binary: fragments × 40 bytes
 Base36: fragments × 63 chars
 DNS: + domain suffix per query
@@ -356,10 +401,10 @@ DNS: + domain suffix per query
 **1KB Example:**
 - Plaintext: 1024 bytes
 - Message: 1040 bytes
-- Fragments: 35
-- Binary: 1400 bytes
-- Base36: 2205 chars
-- Overhead: ~2.2×
+- Fragments: 38 (ceil(1040/28))
+- Binary: 1520 bytes
+- Base36: 2394 chars
+- Overhead: ~2.3×
 
 ---
 

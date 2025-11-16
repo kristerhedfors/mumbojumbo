@@ -145,10 +145,10 @@ def base36_encode(data):
 
 BINARY_PACKET_SIZE = 40
 BASE36_PACKET_SIZE = 63
-FRAGMENT_HEADER_SIZE = 6  # flags+index (4B) + packet_id (2B)
+PACKET_ID_SIZE = 4  # u32, first in fragment, unencrypted
+FRAGMENT_FLAGS_SIZE = 4  # flags+index (4B)
 FRAGMENT_MAC_SIZE = 4
-FRAGMENT_PAYLOAD_SIZE = 30  # frag_data only (no packet_id)
-FRAGMENT_DATA_SIZE = 30
+FRAGMENT_PAYLOAD_SIZE = 28  # message chunk (encrypted along with flags+mac)
 MESSAGE_NONCE_SIZE = 8
 MESSAGE_INTEGRITY_SIZE = 8
 
@@ -242,8 +242,8 @@ class MumbojumboClient:
         self.domain = domain
         self.resolver = resolver
 
-        # Packet ID counter (u16: 0-65535, wraps)
-        self._next_packet_id = secrets.randbits(16)
+        # Packet ID counter (u32: 0-4294967295, wraps)
+        self._next_packet_id = secrets.randbits(32)
 
     def _encrypt_message(self, plaintext):
         """
@@ -271,45 +271,57 @@ class MumbojumboClient:
 
     def _create_fragment(self, packet_id, frag_index, is_first, has_more, frag_data):
         """
-        Create a 40-byte binary fragment.
+        Create a 40-byte binary fragment with dual-layer encryption.
 
         Args:
-            packet_id: u16
+            packet_id: u32
             frag_index: int (30-bit)
             is_first: bool
             has_more: bool
-            frag_data: bytes (up to 30 bytes)
+            frag_data: bytes (up to 28 bytes)
 
         Returns:
             bytes: 40-byte binary packet
 
         Structure (40 bytes total):
-            Header (6B): [flags+index (4B)][packet_id (2B)]
-            MAC (4B): covers header + payload
-            Payload (30B): fragment data only
+            Packet ID (4B): u32, big-endian, UNENCRYPTED
+            MAC (4B): Poly1305 over encrypted portion, UNENCRYPTED
+            Encrypted (32B): ChaCha20 encrypted with nonce = packet_id * 3
+                - flags+index (4B)
+                - payload (28B): fragment data
         """
-        # Build header: flags+index (4B) + packet_id (2B)
+        # Build flags+index (4B)
         flags = 0
         if is_first:
             flags |= FIRST_FLAG_MASK
         if has_more:
             flags |= MORE_FLAG_MASK
         flags |= (frag_index & INDEX_MASK)
-        header = struct.pack('!I', flags) + struct.pack('!H', packet_id)
+        flags_bytes = struct.pack('!I', flags)
 
-        # Build payload: fragment data only (30B)
-        payload = frag_data[:FRAGMENT_DATA_SIZE]
+        # Build payload: fragment data only (28B)
+        payload = frag_data[:FRAGMENT_PAYLOAD_SIZE]
 
-        # Pad to 30 bytes
+        # Pad to 28 bytes
         if len(payload) < FRAGMENT_PAYLOAD_SIZE:
             payload += b'\x00' * (FRAGMENT_PAYLOAD_SIZE - len(payload))
 
-        # Compute 4-byte fragment MAC (covers EVERYTHING: header + payload)
-        mac_full = poly1305_mac(self.frag_key, header + payload)
+        # Assemble inner packet (to be encrypted): flags + payload
+        inner = flags_bytes + payload
+        assert len(inner) == 32
+
+        # Encrypt inner packet with ChaCha20
+        # Nonce = packet_id (4 bytes) repeated 3 times = 12 bytes
+        packet_id_bytes = struct.pack('!I', packet_id)
+        nonce = packet_id_bytes * 3
+        encrypted_inner = chacha20_encrypt(self.enc_key, nonce, inner)
+
+        # Compute 4-byte fragment MAC over encrypted portion (validate before decrypt)
+        mac_full = poly1305_mac(self.frag_key, encrypted_inner)
         mac = mac_full[:4]
 
-        # Assemble packet: header + mac + payload
-        packet = header + mac + payload
+        # Assemble final packet: packet_id + mac + encrypted_inner
+        packet = packet_id_bytes + mac + encrypted_inner
         assert len(packet) == BINARY_PACKET_SIZE
         return packet
 
@@ -362,18 +374,18 @@ class MumbojumboClient:
         # Encrypt message ONCE
         message = self._encrypt_message(plaintext)
 
-        # Fragment into 30-byte chunks
+        # Fragment into 28-byte chunks
         packet_id = self._next_packet_id
-        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFF
+        self._next_packet_id = (self._next_packet_id + 1) & 0xFFFFFFFF
 
         queries = []
         offset = 0
 
         frag_index = 0
         while offset < len(message):
-            frag_data = message[offset:offset + FRAGMENT_DATA_SIZE]
+            frag_data = message[offset:offset + FRAGMENT_PAYLOAD_SIZE]
             is_first = (frag_index == 0)
-            has_more = (offset + FRAGMENT_DATA_SIZE < len(message))
+            has_more = (offset + FRAGMENT_PAYLOAD_SIZE < len(message))
 
             # Create binary fragment
             binary_packet = self._create_fragment(packet_id, frag_index, is_first, has_more, frag_data)
@@ -382,7 +394,7 @@ class MumbojumboClient:
             dns_query = self._create_dns_query(binary_packet)
             queries.append(dns_query)
 
-            offset += FRAGMENT_DATA_SIZE
+            offset += FRAGMENT_PAYLOAD_SIZE
             frag_index += 1
 
         return queries
