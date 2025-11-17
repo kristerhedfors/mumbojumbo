@@ -930,6 +930,8 @@ handlers = stdout
 client-key = {client_key}
 
 [smtp]
+# Optional glob pattern to filter which keys this handler processes
+# key-filter = sensor_*
 server = 127.0.0.1
 port = 587
 start-tls
@@ -939,11 +941,15 @@ from = someuser@somehost.xy
 to = otheruser@otherhost.xy
 
 [file]
+# Optional glob pattern to filter which keys this handler processes
+# key-filter = *debug*
 path = /var/log/mumbojumbo-packets.log
 # Format: raw, hex (default), or base64
 format = hex
 
 [execute]
+# Optional glob pattern to filter which keys this handler processes
+# key-filter = alert_*
 command = /usr/local/bin/process-packet.sh
 # Timeout in seconds
 timeout = 5
