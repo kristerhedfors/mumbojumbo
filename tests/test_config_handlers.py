@@ -15,8 +15,10 @@ import pytest
 from mumbojumbo import (
     StdoutHandler,
     SMTPHandler,
-    FileHandler,
+    UploadHandler,
+    PacketLogHandler,
     ExecuteHandler,
+    FilteredHandler,
     build_handlers,
     get_default_interface,
     __config_skel__,
@@ -29,7 +31,7 @@ class TestConfigSkeleton:
     """Test config skeleton generation."""
 
     def test_config_skeleton_has_all_sections(self):
-        """Config skeleton should have main, smtp, file, execute sections."""
+        """Config skeleton should have main, smtp, upload, packetlog, execute sections."""
         # Fill in placeholders
         config_content = __config_skel__.format(
             client_key='mj_cli_' + '00' * 32,
@@ -42,7 +44,8 @@ class TestConfigSkeleton:
 
         assert config.has_section('main')
         assert config.has_section('smtp')
-        assert config.has_section('file')
+        assert config.has_section('upload')
+        assert config.has_section('packetlog')
         assert config.has_section('execute')
 
     def test_config_skeleton_main_section_has_required_fields(self):
@@ -79,8 +82,8 @@ class TestConfigSkeleton:
         assert config.has_option('smtp', 'from')
         assert config.has_option('smtp', 'to')
 
-    def test_config_skeleton_file_section_fields(self):
-        """File section should have path and format."""
+    def test_config_skeleton_upload_section_fields(self):
+        """Upload section should have output-dir."""
         config_content = __config_skel__.format(
             client_key='mj_cli_' + '00' * 32,
             domain='.test.example.com',
@@ -90,8 +93,21 @@ class TestConfigSkeleton:
         config = configparser.ConfigParser(allow_no_value=True)
         config.read_string(config_content)
 
-        assert config.has_option('file', 'path')
-        assert config.has_option('file', 'format')
+        assert config.has_option('upload', 'output-dir')
+
+    def test_config_skeleton_packetlog_section_fields(self):
+        """Packetlog section should have path and format."""
+        config_content = __config_skel__.format(
+            client_key='mj_cli_' + '00' * 32,
+            domain='.test.example.com',
+            network_interface='en0'
+        )
+
+        config = configparser.ConfigParser(allow_no_value=True)
+        config.read_string(config_content)
+
+        assert config.has_option('packetlog', 'path')
+        assert config.has_option('packetlog', 'format')
 
     def test_config_skeleton_execute_section_fields(self):
         """Execute section should have command and timeout."""
@@ -183,19 +199,19 @@ class TestStdoutHandler:
         assert '"value_length": 200' in captured.out
 
 
-class TestFileHandler:
-    """Test FileHandler functionality."""
+class TestPacketLogHandler:
+    """Test PacketLogHandler functionality."""
 
     def test_init_invalid_format_raises(self):
-        """FileHandler should reject invalid formats."""
+        """PacketLogHandler should reject invalid formats."""
         with pytest.raises(ValueError) as exc_info:
-            FileHandler('/tmp/test.log', format='invalid')
+            PacketLogHandler('/tmp/test.log', format='invalid')
         assert 'Invalid format' in str(exc_info.value)
 
     def test_handle_hex_format(self, tmp_path):
-        """FileHandler should write hex format correctly."""
+        """PacketLogHandler should write hex format correctly."""
         log_file = tmp_path / 'test.log'
-        handler = FileHandler(str(log_file), format='hex')
+        handler = PacketLogHandler(str(log_file), format='hex')
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         result = handler.handle(b'key', b'\xde\xad\xbe\xef', timestamp)
@@ -206,9 +222,9 @@ class TestFileHandler:
         assert 'format: hex' in content
 
     def test_handle_base64_format(self, tmp_path):
-        """FileHandler should write base64 format correctly."""
+        """PacketLogHandler should write base64 format correctly."""
         log_file = tmp_path / 'test.log'
-        handler = FileHandler(str(log_file), format='base64')
+        handler = PacketLogHandler(str(log_file), format='base64')
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         result = handler.handle(b'key', b'\xde\xad\xbe\xef', timestamp)
@@ -220,9 +236,9 @@ class TestFileHandler:
         assert 'format: base64' in content
 
     def test_handle_raw_format(self, tmp_path):
-        """FileHandler should write raw format correctly."""
+        """PacketLogHandler should write raw format correctly."""
         log_file = tmp_path / 'test.log'
-        handler = FileHandler(str(log_file), format='raw')
+        handler = PacketLogHandler(str(log_file), format='raw')
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         result = handler.handle(b'key', b'raw data', timestamp)
@@ -232,9 +248,9 @@ class TestFileHandler:
         assert b'raw data' in content
 
     def test_handle_appends_to_file(self, tmp_path):
-        """FileHandler should append to existing file."""
+        """PacketLogHandler should append to existing file."""
         log_file = tmp_path / 'test.log'
-        handler = FileHandler(str(log_file), format='hex')
+        handler = PacketLogHandler(str(log_file), format='hex')
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         handler.handle(b'key1', b'value1', timestamp)
@@ -247,7 +263,7 @@ class TestFileHandler:
     def test_handle_empty_key_shows_null(self, tmp_path):
         """Empty key should display as (null)."""
         log_file = tmp_path / 'test.log'
-        handler = FileHandler(str(log_file), format='hex')
+        handler = PacketLogHandler(str(log_file), format='hex')
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         handler.handle(b'', b'value', timestamp)
@@ -256,13 +272,144 @@ class TestFileHandler:
         assert '(null)' in content
 
     def test_handle_io_error_returns_false(self):
-        """FileHandler should return False on I/O error."""
-        handler = FileHandler('/nonexistent/path/test.log', format='hex')
+        """PacketLogHandler should return False on I/O error."""
+        handler = PacketLogHandler('/nonexistent/path/test.log', format='hex')
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         result = handler.handle(b'key', b'value', timestamp)
 
         assert result is False
+
+
+class TestUploadHandler:
+    """Test UploadHandler functionality for receiving files from clients."""
+
+    def test_init_creates_output_dir(self, tmp_path):
+        """UploadHandler should create output directory if it doesn't exist."""
+        output_dir = tmp_path / 'new_dir'
+        assert not output_dir.exists()
+
+        handler = UploadHandler(str(output_dir))
+
+        assert output_dir.exists()
+        assert output_dir.is_dir()
+
+    def test_handle_writes_file_short_prefix(self, tmp_path):
+        """UploadHandler should write file with u:// prefix."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'u://test.txt', b'Hello, World!', timestamp)
+
+        assert result is True
+        written_file = output_dir / 'test.txt'
+        assert written_file.exists()
+        assert written_file.read_bytes() == b'Hello, World!'
+
+    def test_handle_writes_file_long_prefix(self, tmp_path):
+        """UploadHandler should write file with upload:// prefix."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'upload://test.txt', b'Hello, World!', timestamp)
+
+        assert result is True
+        written_file = output_dir / 'test.txt'
+        assert written_file.exists()
+        assert written_file.read_bytes() == b'Hello, World!'
+
+    def test_handle_creates_subdirectories(self, tmp_path):
+        """UploadHandler should create subdirectories as needed."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'u://subdir/nested/file.txt', b'nested content', timestamp)
+
+        assert result is True
+        written_file = output_dir / 'subdir' / 'nested' / 'file.txt'
+        assert written_file.exists()
+        assert written_file.read_bytes() == b'nested content'
+
+    def test_handle_blocks_path_traversal_dotdot(self, tmp_path):
+        """UploadHandler should block path traversal with .. in filename."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'u://../../../etc/passwd', b'malicious', timestamp)
+
+        assert result is False
+        # Ensure no file was created outside output_dir
+        assert not (tmp_path / 'etc').exists()
+
+    def test_handle_blocks_absolute_path(self, tmp_path):
+        """UploadHandler should block absolute paths."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'u:///etc/passwd', b'malicious', timestamp)
+
+        assert result is False
+
+    def test_handle_rejects_non_upload_prefix(self, tmp_path):
+        """UploadHandler should reject keys without u:// or upload:// prefix."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'data.txt', b'content', timestamp)
+
+        assert result is False
+
+    def test_handle_rejects_empty_filename(self, tmp_path):
+        """UploadHandler should reject empty filename after prefix."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'u://', b'content', timestamp)
+
+        assert result is False
+
+    def test_handle_rejects_invalid_utf8_key(self, tmp_path):
+        """UploadHandler should reject non-UTF-8 keys."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'\xff\xfe\xfd', b'content', timestamp)
+
+        assert result is False
+
+    def test_handle_binary_content(self, tmp_path):
+        """UploadHandler should handle binary file content."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+        binary_data = bytes(range(256))
+
+        result = handler.handle(b'u://binary.bin', binary_data, timestamp)
+
+        assert result is True
+        written_file = output_dir / 'binary.bin'
+        assert written_file.read_bytes() == binary_data
+
+    def test_handle_overwrites_existing_file(self, tmp_path):
+        """UploadHandler should overwrite existing files."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        handler.handle(b'u://test.txt', b'original', timestamp)
+        result = handler.handle(b'u://test.txt', b'updated', timestamp)
+
+        assert result is True
+        written_file = output_dir / 'test.txt'
+        assert written_file.read_bytes() == b'updated'
 
 
 class TestExecuteHandler:
@@ -358,17 +505,28 @@ class TestBuildHandlers:
         assert len(handlers) == 1
         assert isinstance(handlers[0], StdoutHandler)
 
-    def test_build_file_handler(self, tmp_path):
-        """Should build FileHandler from config."""
+    def test_build_upload_handler(self, tmp_path):
+        """Should build UploadHandler from config."""
         config = configparser.ConfigParser()
-        config.add_section('file')
-        config.set('file', 'path', str(tmp_path / 'test.log'))
-        config.set('file', 'format', 'hex')
+        config.add_section('upload')
+        config.set('upload', 'output-dir', str(tmp_path / 'files'))
 
-        handlers = build_handlers(config, ['file'])
+        handlers = build_handlers(config, ['upload'])
 
         assert len(handlers) == 1
-        assert isinstance(handlers[0], FileHandler)
+        assert isinstance(handlers[0], UploadHandler)
+
+    def test_build_packetlog_handler(self, tmp_path):
+        """Should build PacketLogHandler from config."""
+        config = configparser.ConfigParser()
+        config.add_section('packetlog')
+        config.set('packetlog', 'path', str(tmp_path / 'test.log'))
+        config.set('packetlog', 'format', 'hex')
+
+        handlers = build_handlers(config, ['packetlog'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], PacketLogHandler)
 
     def test_build_execute_handler(self):
         """Should build ExecuteHandler from config."""
@@ -385,23 +543,23 @@ class TestBuildHandlers:
     def test_build_multiple_handlers(self, tmp_path):
         """Should build multiple handlers in pipeline."""
         config = configparser.ConfigParser()
-        config.add_section('file')
-        config.set('file', 'path', str(tmp_path / 'test.log'))
-        config.set('file', 'format', 'hex')
+        config.add_section('packetlog')
+        config.set('packetlog', 'path', str(tmp_path / 'test.log'))
+        config.set('packetlog', 'format', 'hex')
 
-        handlers = build_handlers(config, ['stdout', 'file'])
+        handlers = build_handlers(config, ['stdout', 'packetlog'])
 
         assert len(handlers) == 2
         assert isinstance(handlers[0], StdoutHandler)
-        assert isinstance(handlers[1], FileHandler)
+        assert isinstance(handlers[1], PacketLogHandler)
 
     def test_build_missing_section_exits(self):
         """Should exit if required section is missing."""
         config = configparser.ConfigParser()
-        # No 'file' section
+        # No 'upload' section
 
         with pytest.raises(SystemExit):
-            build_handlers(config, ['file'])
+            build_handlers(config, ['upload'])
 
     def test_build_unknown_handler_exits(self):
         """Should exit for unknown handler type."""
@@ -469,3 +627,278 @@ class TestGetClientKeyHex:
         key1 = get_client_key_hex()
         key2 = get_client_key_hex()
         assert key1 != key2
+
+
+class TestFilteredHandler:
+    """Test FilteredHandler wrapper functionality."""
+
+    def test_matching_key_passes_through(self, capsys):
+        """Matching key should be passed to underlying handler."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'sensor_*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = filtered.handle(b'sensor_temperature', b'25.5', timestamp)
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert '"key": "sensor_temperature"' in captured.out
+
+    def test_non_matching_key_skipped(self, capsys):
+        """Non-matching key should be skipped."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'sensor_*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = filtered.handle(b'log_error', b'some error', timestamp)
+
+        assert result is True  # Returns True to indicate "handled" (skipped)
+        captured = capsys.readouterr()
+        assert captured.out == ''  # No output
+
+    def test_glob_star_pattern(self, capsys):
+        """Test * glob pattern matches any characters."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, '*debug*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match
+        result = filtered.handle(b'app_debug_log', b'value', timestamp)
+        assert result is True
+        captured = capsys.readouterr()
+        assert '"key": "app_debug_log"' in captured.out
+
+        # Should not match
+        result = filtered.handle(b'app_info_log', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_glob_question_mark_pattern(self, capsys):
+        """Test ? glob pattern matches single character."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'log_?')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match
+        result = filtered.handle(b'log_1', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "log_1"' in captured.out
+
+        # Should not match (too long)
+        result = filtered.handle(b'log_12', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_glob_bracket_pattern(self, capsys):
+        """Test [seq] glob pattern matches character in sequence."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'data_[abc]')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match
+        result = filtered.handle(b'data_a', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "data_a"' in captured.out
+
+        # Should not match
+        result = filtered.handle(b'data_d', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_glob_negated_bracket_pattern(self, capsys):
+        """Test [!seq] glob pattern matches character not in sequence."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'key_[!0-9]')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match (letter, not digit)
+        result = filtered.handle(b'key_a', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "key_a"' in captured.out
+
+        # Should not match (digit)
+        result = filtered.handle(b'key_5', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_utf8_key_decoding(self, capsys):
+        """Test that UTF-8 keys are properly decoded for pattern matching."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'café_*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match UTF-8 key
+        result = filtered.handle('café_order'.encode('utf-8'), b'latte', timestamp)
+        captured = capsys.readouterr()
+        # JSON escapes non-ASCII, so check for either form
+        assert 'caf' in captured.out and 'order' in captured.out
+        assert result is True
+
+    def test_invalid_utf8_key_uses_replacement(self, capsys):
+        """Test that invalid UTF-8 bytes use replacement character."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, '*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Invalid UTF-8 should still be handled (with replacement char)
+        result = filtered.handle(b'\xff\xfe', b'value', timestamp)
+        assert result is True
+        captured = capsys.readouterr()
+        assert captured.out != ''  # Should output something
+
+    def test_empty_key_matches_empty_pattern(self, capsys):
+        """Test that empty key matches empty pattern or * pattern."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, '*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = filtered.handle(b'', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": null' in captured.out
+
+    def test_exact_match_pattern(self, capsys):
+        """Test exact match without wildcards."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'exact_key')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match
+        result = filtered.handle(b'exact_key', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "exact_key"' in captured.out
+
+        # Should not match
+        result = filtered.handle(b'exact_key_2', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_handler_return_value_propagated(self):
+        """Test that underlying handler's return value is propagated."""
+        # Use ExecuteHandler that returns False on failure
+        inner_handler = ExecuteHandler('exit 1', timeout=1)
+        filtered = FilteredHandler(inner_handler, '*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = filtered.handle(b'key', b'value', timestamp)
+        assert result is False  # Propagated from inner handler
+
+
+class TestBuildHandlersWithKeyFilter:
+    """Test handler pipeline building with key-filter support."""
+
+    def test_build_stdout_with_key_filter(self):
+        """Should wrap StdoutHandler with FilteredHandler when key-filter specified."""
+        config = configparser.ConfigParser()
+        config.add_section('stdout')
+        config.set('stdout', 'key-filter', 'sensor_*')
+
+        handlers = build_handlers(config, ['stdout'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], FilteredHandler)
+        assert isinstance(handlers[0]._handler, StdoutHandler)
+        assert handlers[0]._pattern == 'sensor_*'
+
+    def test_build_upload_with_key_filter(self, tmp_path):
+        """Should wrap UploadHandler with FilteredHandler when key-filter specified."""
+        config = configparser.ConfigParser()
+        config.add_section('upload')
+        config.set('upload', 'output-dir', str(tmp_path / 'files'))
+        config.set('upload', 'key-filter', 'u://*')
+
+        handlers = build_handlers(config, ['upload'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], FilteredHandler)
+        assert isinstance(handlers[0]._handler, UploadHandler)
+        assert handlers[0]._pattern == 'u://*'
+
+    def test_build_packetlog_with_key_filter(self, tmp_path):
+        """Should wrap PacketLogHandler with FilteredHandler when key-filter specified."""
+        config = configparser.ConfigParser()
+        config.add_section('packetlog')
+        config.set('packetlog', 'path', str(tmp_path / 'test.log'))
+        config.set('packetlog', 'format', 'hex')
+        config.set('packetlog', 'key-filter', '*debug*')
+
+        handlers = build_handlers(config, ['packetlog'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], FilteredHandler)
+        assert isinstance(handlers[0]._handler, PacketLogHandler)
+        assert handlers[0]._pattern == '*debug*'
+
+    def test_build_execute_with_key_filter(self):
+        """Should wrap ExecuteHandler with FilteredHandler when key-filter specified."""
+        config = configparser.ConfigParser()
+        config.add_section('execute')
+        config.set('execute', 'command', '/bin/true')
+        config.set('execute', 'timeout', '30')
+        config.set('execute', 'key-filter', 'alert_*')
+
+        handlers = build_handlers(config, ['execute'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], FilteredHandler)
+        assert isinstance(handlers[0]._handler, ExecuteHandler)
+        assert handlers[0]._pattern == 'alert_*'
+
+    def test_build_handler_without_key_filter(self, tmp_path):
+        """Handler without key-filter should not be wrapped."""
+        config = configparser.ConfigParser()
+        config.add_section('packetlog')
+        config.set('packetlog', 'path', str(tmp_path / 'test.log'))
+        config.set('packetlog', 'format', 'hex')
+        # No key-filter
+
+        handlers = build_handlers(config, ['packetlog'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], PacketLogHandler)
+        assert not isinstance(handlers[0], FilteredHandler)
+
+    def test_build_multiple_handlers_with_different_filters(self, tmp_path):
+        """Multiple handlers can have different key filters."""
+        config = configparser.ConfigParser()
+        config.add_section('stdout')
+        config.set('stdout', 'key-filter', 'sensor_*')
+        config.add_section('packetlog')
+        config.set('packetlog', 'path', str(tmp_path / 'test.log'))
+        config.set('packetlog', 'format', 'hex')
+        config.set('packetlog', 'key-filter', '*debug*')
+        config.add_section('execute')
+        config.set('execute', 'command', '/bin/true')
+        config.set('execute', 'timeout', '30')
+        # No key-filter for execute
+
+        handlers = build_handlers(config, ['stdout', 'packetlog', 'execute'])
+
+        assert len(handlers) == 3
+        # stdout - filtered
+        assert isinstance(handlers[0], FilteredHandler)
+        assert handlers[0]._pattern == 'sensor_*'
+        # packetlog - filtered
+        assert isinstance(handlers[1], FilteredHandler)
+        assert handlers[1]._pattern == '*debug*'
+        # execute - not filtered
+        assert isinstance(handlers[2], ExecuteHandler)
+        assert not isinstance(handlers[2], FilteredHandler)
+
+    def test_functional_key_filtering(self, capsys, tmp_path):
+        """Test that key filtering actually works in pipeline."""
+        config = configparser.ConfigParser()
+        config.add_section('stdout')
+        config.set('stdout', 'key-filter', 'sensor_*')
+
+        handlers = build_handlers(config, ['stdout'])
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should be processed
+        handlers[0].handle(b'sensor_temp', b'25', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "sensor_temp"' in captured.out
+
+        # Should be skipped
+        handlers[0].handle(b'log_error', b'err', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''

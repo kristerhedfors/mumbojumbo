@@ -465,6 +465,7 @@ def main():
     parser.add_argument('-v', '--value', help='Value (string, will be encoded as UTF-8)')
     parser.add_argument('--key-file', help='Read key from file (binary)')
     parser.add_argument('--value-file', help='Read value from file (binary)')
+    parser.add_argument('-u', '--upload', nargs='+', metavar='FILE', help='Upload files (key=u://<filename>, value=file contents)')
 
     # Options
     parser.add_argument('--delay', type=float, default=0.1, help='Delay between queries in seconds (default: 0.1)')
@@ -513,7 +514,8 @@ def main():
     else:
         key = None
 
-    # Get value
+    # Get value (not required if uploading files)
+    value = None
     if args.value_file:
         with open(args.value_file, 'rb') as f:
             value = f.read()
@@ -522,10 +524,10 @@ def main():
     elif not sys.stdin.isatty():
         # Read from stdin
         value = sys.stdin.buffer.read()
-    else:
-        parser.error('No value provided. Use -v, --value-file, or pipe data to stdin.')
+    elif not args.upload:
+        parser.error('No value provided. Use -v, --value-file, -u/--upload, or pipe data to stdin.')
 
-    if not value:
+    if not value and not args.upload:
         parser.error('Value cannot be empty')
 
     # Create client
@@ -538,6 +540,39 @@ def main():
     except ValueError as e:
         print(f'Error: {e}', file=sys.stderr)
         return 1
+
+    # Handle file uploads if -u/--upload specified
+    if args.upload:
+        total_queries = 0
+        for filepath in args.upload:
+            # Read file contents
+            try:
+                with open(filepath, 'rb') as f:
+                    file_contents = f.read()
+            except FileNotFoundError:
+                print(f'Error: File not found: {filepath}', file=sys.stderr)
+                return 1
+            except IOError as e:
+                print(f'Error reading {filepath}: {e}', file=sys.stderr)
+                return 1
+
+            # Construct key as u://<filename>
+            filename = os.path.basename(filepath)
+            upload_key = f'u://{filename}'.encode('utf-8')
+
+            if args.dry_run:
+                queries = client.generate_queries(key=upload_key, value=file_contents)
+                print(f'File {filepath} -> {len(queries)} queries (dry run):', file=sys.stderr)
+                for i, query in enumerate(queries):
+                    print(f'{i+1}. {query}')
+            else:
+                print(f'Uploading {filepath} as u://{filename}...', file=sys.stderr)
+                count = client.send(key=upload_key, value=file_contents, delay=args.delay)
+                total_queries += count
+
+        if args.dry_run:
+            return 0
+        return 0 if total_queries > 0 else 1
 
     # Generate queries
     queries = client.generate_queries(key=key, value=value)

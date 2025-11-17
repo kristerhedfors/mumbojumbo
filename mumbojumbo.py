@@ -13,6 +13,7 @@ For educational and authorized security testing only.
 """
 
 import base64
+import fnmatch
 import functools
 import logging
 import logging.handlers
@@ -923,12 +924,14 @@ domain = {domain}
 # Common values: macOS (en0, en1), Linux (eth0, ens4, ens5, wlan0)
 network-interface = {network_interface}
 # Handler pipeline: comma-separated list of handlers (REQUIRED)
-# Available handlers: stdout, smtp, file, execute
+# Available handlers: stdout, smtp, upload, packetlog, execute
 handlers = stdout
 # Client key (master secret from which all keys are derived)
 client-key = {client_key}
 
 [smtp]
+# Optional glob pattern to filter which keys this handler processes
+# key-filter = sensor_*
 server = 127.0.0.1
 port = 587
 start-tls
@@ -937,12 +940,21 @@ password = yourpasswordhere
 from = someuser@somehost.xy
 to = otheruser@otherhost.xy
 
-[file]
+[upload]
+# Receive files from clients (key must be u:// or upload:// URL)
+# key-filter = u://*
+output-dir = /var/mumbojumbo/files
+
+[packetlog]
+# Optional glob pattern to filter which keys this handler processes
+# key-filter = *debug*
 path = /var/log/mumbojumbo-packets.log
 # Format: raw, hex (default), or base64
 format = hex
 
 [execute]
+# Optional glob pattern to filter which keys this handler processes
+# key-filter = alert_*
 command = /usr/local/bin/process-packet.sh
 # Timeout in seconds
 timeout = 5
@@ -968,6 +980,21 @@ class PacketHandler:
             bool: True on success, False on failure
         """
         raise NotImplementedError('Subclasses must implement handle()')
+
+
+class FilteredHandler(PacketHandler):
+    """Wrapper that filters packets by key pattern using glob matching."""
+    def __init__(self, handler, key_pattern):
+        self._handler = handler
+        self._pattern = key_pattern
+
+    def handle(self, key, value, timestamp):
+        """Only pass through packets whose key matches the glob pattern."""
+        key_str = key.decode('utf-8', errors='replace')
+        if not fnmatch.fnmatch(key_str, self._pattern):
+            logger.debug(f'Key {key_str!r} does not match pattern {self._pattern!r}, skipping handler')
+            return True  # Skip non-matching keys
+        return self._handler.handle(key, value, timestamp)
 
 
 class StdoutHandler(PacketHandler):
@@ -1110,8 +1137,8 @@ class SMTPHandler(PacketHandler):
                     pass
 
 
-class FileHandler(PacketHandler):
-    """Write packet data to a file. Supports raw, hex, and base64 formats."""
+class PacketLogHandler(PacketHandler):
+    """Write packet data to a log file. Supports raw, hex, and base64 formats."""
     def __init__(self, path, format='hex'):
         self._path = path
         if format not in ('raw', 'hex', 'base64'):
@@ -1149,14 +1176,71 @@ class FileHandler(PacketHandler):
 
                 f.write(b'\n')
 
-            logger.info(f'File handler: wrote key-value to {self._path} (key={key_str[:30]}, value_length={len(value)}, format={self._format})')
+            logger.info(f'PacketLog handler: wrote key-value to {self._path} (key={key_str[:30]}, value_length={len(value)}, format={self._format})')
             return True
 
         except IOError as e:
-            logger.error(f'File handler I/O error: {self._path}: {e}')
+            logger.error(f'PacketLog handler I/O error: {self._path}: {e}')
             return False
         except Exception as e:
-            logger.error(f'File handler unexpected error: {type(e).__name__}: {e}')
+            logger.error(f'PacketLog handler unexpected error: {type(e).__name__}: {e}')
+            logger.debug(traceback.format_exc())
+            return False
+
+
+class UploadHandler(PacketHandler):
+    """Receive files from clients. Key is u:// or upload:// URL, stripped to filename."""
+    def __init__(self, output_dir):
+        self._output_dir = os.path.realpath(output_dir)
+        os.makedirs(self._output_dir, exist_ok=True)
+
+    def handle(self, key, value, timestamp):
+        try:
+            # Decode key as UTF-8
+            try:
+                key_str = key.decode('utf-8')
+            except UnicodeDecodeError:
+                logger.error(f'UploadHandler: key is not valid UTF-8')
+                return False
+
+            # Strip u:// or upload:// prefix
+            if key_str.startswith('u://') or key_str.startswith('upload://'):
+                filename = key_str.removeprefix('u://') if key_str.startswith('u://') else key_str.removeprefix('upload://')
+            else:
+                logger.error(f'UploadHandler: key does not start with u:// or upload:// prefix: {key_str[:50]}')
+                return False
+
+            # Validate filename is not empty
+            if not filename:
+                logger.error('UploadHandler: empty filename after stripping prefix')
+                return False
+
+            # Build full path and validate it stays within output_dir
+            full_path = os.path.realpath(os.path.join(self._output_dir, filename))
+
+            # Security check: ensure path is within output_dir
+            # Use os.sep to handle both trailing slash cases properly
+            if not (full_path.startswith(self._output_dir + os.sep) or full_path == self._output_dir):
+                logger.error(f'UploadHandler: path traversal attempt blocked: {filename}')
+                return False
+
+            # Create subdirectories if needed
+            parent_dir = os.path.dirname(full_path)
+            if parent_dir and parent_dir != self._output_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+
+            # Write file
+            with open(full_path, 'wb') as f:
+                f.write(value)
+
+            logger.info(f'UploadHandler: wrote file {full_path} ({len(value)} bytes)')
+            return True
+
+        except IOError as e:
+            logger.error(f'UploadHandler I/O error: {e}')
+            return False
+        except Exception as e:
+            logger.error(f'UploadHandler unexpected error: {type(e).__name__}: {e}')
             logger.debug(traceback.format_exc())
             return False
 
@@ -1330,15 +1414,22 @@ def build_handlers(config, handler_names):
     handlers = []
 
     for handler_name in handler_names:
+        handler = None
+        key_filter = None
+
         if handler_name == 'stdout':
-            handlers.append(StdoutHandler())
+            handler = StdoutHandler()
+            # stdout handler can have key-filter if [stdout] section exists
+            if config.has_section('stdout'):
+                stdout_items = dict(config.items('stdout'))
+                key_filter = stdout_items.get('key-filter')
 
         elif handler_name == 'smtp':
             if not config.has_section('smtp'):
                 logger.error('Missing [smtp] section in config file')
                 sys.exit(1)
             smtp_items = dict(config.items('smtp'))
-            smtp_handler = SMTPHandler(
+            handler = SMTPHandler(
                 server=smtp_items.get('server', '127.0.0.1'),
                 port=int(smtp_items.get('port', 587)),
                 starttls=config.has_option('smtp', 'start-tls'),
@@ -1347,33 +1438,50 @@ def build_handlers(config, handler_names):
                 username=smtp_items.get('username', ''),
                 password=smtp_items.get('password', '')
             )
-            handlers.append(smtp_handler)
+            key_filter = smtp_items.get('key-filter')
 
-        elif handler_name == 'file':
-            if not config.has_section('file'):
-                logger.error('Missing [file] section in config file')
+        elif handler_name == 'upload':
+            if not config.has_section('upload'):
+                logger.error('Missing [upload] section in config file')
                 sys.exit(1)
-            file_items = dict(config.items('file'))
-            file_handler = FileHandler(
-                path=file_items.get('path', '/tmp/mumbojumbo.log'),
-                format=file_items.get('format', 'hex')
+            upload_items = dict(config.items('upload'))
+            handler = UploadHandler(
+                output_dir=upload_items.get('output-dir', '/tmp/mumbojumbo-files')
             )
-            handlers.append(file_handler)
+            key_filter = upload_items.get('key-filter')
+
+        elif handler_name == 'packetlog':
+            if not config.has_section('packetlog'):
+                logger.error('Missing [packetlog] section in config file')
+                sys.exit(1)
+            packetlog_items = dict(config.items('packetlog'))
+            handler = PacketLogHandler(
+                path=packetlog_items.get('path', '/tmp/mumbojumbo.log'),
+                format=packetlog_items.get('format', 'hex')
+            )
+            key_filter = packetlog_items.get('key-filter')
 
         elif handler_name == 'execute':
             if not config.has_section('execute'):
                 logger.error('Missing [execute] section in config file')
                 sys.exit(1)
             execute_items = dict(config.items('execute'))
-            execute_handler = ExecuteHandler(
+            handler = ExecuteHandler(
                 command=execute_items.get('command', '/bin/true'),
                 timeout=int(execute_items.get('timeout', 30))
             )
-            handlers.append(execute_handler)
+            key_filter = execute_items.get('key-filter')
 
         else:
-            logger.error(f'Unknown handler type "{handler_name}". Available: stdout, smtp, file, execute')
+            logger.error(f'Unknown handler type "{handler_name}". Available: stdout, smtp, file, packetlog, execute')
             sys.exit(1)
+
+        # Wrap handler with key filter if specified
+        if key_filter:
+            logger.info(f'Handler {handler_name} using key-filter: {key_filter}')
+            handler = FilteredHandler(handler, key_filter)
+
+        handlers.append(handler)
 
     return handlers
 
