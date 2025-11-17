@@ -924,7 +924,7 @@ domain = {domain}
 # Common values: macOS (en0, en1), Linux (eth0, ens4, ens5, wlan0)
 network-interface = {network_interface}
 # Handler pipeline: comma-separated list of handlers (REQUIRED)
-# Available handlers: stdout, smtp, file, execute
+# Available handlers: stdout, smtp, file, packetlog, execute
 handlers = stdout
 # Client key (master secret from which all keys are derived)
 client-key = {client_key}
@@ -941,6 +941,11 @@ from = someuser@somehost.xy
 to = otheruser@otherhost.xy
 
 [file]
+# Receive files from clients (key must be file:// URL)
+# key-filter = file://*
+output-dir = /var/mumbojumbo/files
+
+[packetlog]
 # Optional glob pattern to filter which keys this handler processes
 # key-filter = *debug*
 path = /var/log/mumbojumbo-packets.log
@@ -1132,8 +1137,8 @@ class SMTPHandler(PacketHandler):
                     pass
 
 
-class FileHandler(PacketHandler):
-    """Write packet data to a file. Supports raw, hex, and base64 formats."""
+class PacketLogHandler(PacketHandler):
+    """Write packet data to a log file. Supports raw, hex, and base64 formats."""
     def __init__(self, path, format='hex'):
         self._path = path
         if format not in ('raw', 'hex', 'base64'):
@@ -1171,14 +1176,71 @@ class FileHandler(PacketHandler):
 
                 f.write(b'\n')
 
-            logger.info(f'File handler: wrote key-value to {self._path} (key={key_str[:30]}, value_length={len(value)}, format={self._format})')
+            logger.info(f'PacketLog handler: wrote key-value to {self._path} (key={key_str[:30]}, value_length={len(value)}, format={self._format})')
             return True
 
         except IOError as e:
-            logger.error(f'File handler I/O error: {self._path}: {e}')
+            logger.error(f'PacketLog handler I/O error: {self._path}: {e}')
             return False
         except Exception as e:
-            logger.error(f'File handler unexpected error: {type(e).__name__}: {e}')
+            logger.error(f'PacketLog handler unexpected error: {type(e).__name__}: {e}')
+            logger.debug(traceback.format_exc())
+            return False
+
+
+class FileHandler(PacketHandler):
+    """Receive files from clients. Key is file:// URL, stripped to filename."""
+    def __init__(self, output_dir):
+        self._output_dir = os.path.realpath(output_dir)
+        os.makedirs(self._output_dir, exist_ok=True)
+
+    def handle(self, key, value, timestamp):
+        try:
+            # Decode key as UTF-8
+            try:
+                key_str = key.decode('utf-8')
+            except UnicodeDecodeError:
+                logger.error(f'FileHandler: key is not valid UTF-8')
+                return False
+
+            # Strip file:// prefix
+            if not key_str.startswith('file://'):
+                logger.error(f'FileHandler: key does not start with file:// prefix: {key_str[:50]}')
+                return False
+
+            filename = key_str.removeprefix('file://')
+
+            # Validate filename is not empty
+            if not filename:
+                logger.error('FileHandler: empty filename after stripping file:// prefix')
+                return False
+
+            # Build full path and validate it stays within output_dir
+            full_path = os.path.realpath(os.path.join(self._output_dir, filename))
+
+            # Security check: ensure path is within output_dir
+            # Use os.sep to handle both trailing slash cases properly
+            if not (full_path.startswith(self._output_dir + os.sep) or full_path == self._output_dir):
+                logger.error(f'FileHandler: path traversal attempt blocked: {filename}')
+                return False
+
+            # Create subdirectories if needed
+            parent_dir = os.path.dirname(full_path)
+            if parent_dir and parent_dir != self._output_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+
+            # Write file
+            with open(full_path, 'wb') as f:
+                f.write(value)
+
+            logger.info(f'FileHandler: wrote file {full_path} ({len(value)} bytes)')
+            return True
+
+        except IOError as e:
+            logger.error(f'FileHandler I/O error: {e}')
+            return False
+        except Exception as e:
+            logger.error(f'FileHandler unexpected error: {type(e).__name__}: {e}')
             logger.debug(traceback.format_exc())
             return False
 
@@ -1384,10 +1446,20 @@ def build_handlers(config, handler_names):
                 sys.exit(1)
             file_items = dict(config.items('file'))
             handler = FileHandler(
-                path=file_items.get('path', '/tmp/mumbojumbo.log'),
-                format=file_items.get('format', 'hex')
+                output_dir=file_items.get('output-dir', '/tmp/mumbojumbo-files')
             )
             key_filter = file_items.get('key-filter')
+
+        elif handler_name == 'packetlog':
+            if not config.has_section('packetlog'):
+                logger.error('Missing [packetlog] section in config file')
+                sys.exit(1)
+            packetlog_items = dict(config.items('packetlog'))
+            handler = PacketLogHandler(
+                path=packetlog_items.get('path', '/tmp/mumbojumbo.log'),
+                format=packetlog_items.get('format', 'hex')
+            )
+            key_filter = packetlog_items.get('key-filter')
 
         elif handler_name == 'execute':
             if not config.has_section('execute'):
@@ -1401,7 +1473,7 @@ def build_handlers(config, handler_names):
             key_filter = execute_items.get('key-filter')
 
         else:
-            logger.error(f'Unknown handler type "{handler_name}". Available: stdout, smtp, file, execute')
+            logger.error(f'Unknown handler type "{handler_name}". Available: stdout, smtp, file, packetlog, execute')
             sys.exit(1)
 
         # Wrap handler with key filter if specified
