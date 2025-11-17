@@ -902,71 +902,322 @@ def validate_domain(domain):
 
 
 # ============================================================================
+# Configuration Template
+# ============================================================================
+
+__config_skel__ = '''\
+#
+# !! remember to `chmod 0600` this file !!
+#
+# for use on client-side:
+#   domain = .example.com
+#   mumbojumbo_client_key = {client_key}
+#
+# Keys are in hex format with mj_cli_ prefix.
+# Format: mj_cli_<64_hex_chars>
+
+[main]
+# Domain including leading dot (REQUIRED)
+domain = {domain}
+# Network interface - auto-detected or platform default
+# Common values: macOS (en0, en1), Linux (eth0, ens4, ens5, wlan0)
+network-interface = {network_interface}
+# Handler pipeline: comma-separated list of handlers (REQUIRED)
+# Available handlers: stdout, smtp, file, execute
+handlers = stdout
+# Client key (master secret from which all keys are derived)
+client-key = {client_key}
+
+[smtp]
+server = 127.0.0.1
+port = 587
+start-tls
+username = someuser
+password = yourpasswordhere
+from = someuser@somehost.xy
+to = otheruser@otherhost.xy
+
+[file]
+path = /var/log/mumbojumbo-packets.log
+# Format: raw, hex (default), or base64
+format = hex
+
+[execute]
+command = /usr/local/bin/process-packet.sh
+# Timeout in seconds
+timeout = 5
+'''
+
+
+# ============================================================================
 # Packet Handlers (infrastructure - mostly unchanged)
 # ============================================================================
 
 class PacketHandler:
     """Base class for packet handlers."""
-    def handle(self, packet):
-        raise NotImplementedError()
+    def handle(self, key, value, timestamp):
+        """
+        Process a reassembled packet.
+
+        Args:
+            key: bytes, the packet key (empty bytes for null key)
+            value: bytes, the packet value
+            timestamp: datetime, UTC timestamp when packet was reassembled
+
+        Returns:
+            bool: True on success, False on failure
+        """
+        raise NotImplementedError('Subclasses must implement handle()')
 
 
 class StdoutHandler(PacketHandler):
-    """Print packets to stdout as JSON."""
-    def handle(self, packet):
-        key = packet.get('key', b'')
-        value = packet.get('value', b'')
-        key_length = packet.get('key_length', 0)
+    """Output packet metadata as JSON to stdout."""
+    def handle(self, key, value, timestamp):
+        """Handle key-value packets with separate fields."""
+        try:
+            # Handle null/empty keys
+            if len(key) == 0:
+                key_display = None
+            else:
+                # Convert key to string for preview
+                try:
+                    key_str = key.decode('utf-8')
+                except UnicodeDecodeError:
+                    key_str = key.hex()
+                    logger.debug('Key is binary, showing as hex in preview')
+                key_display = key_str[:100] + '...' if len(key_str) > 100 else key_str
 
-        # JSON output
-        output = {
-            'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
-            'event': 'packet_reassembled',
-            'key_length': key_length,
-            'value_length': len(value),
-            'key_preview': key[:100].decode('utf-8', errors='replace') if key else '',
-            'value_preview': value[:100].decode('utf-8', errors='replace')
-        }
+            # Convert value to string for preview
+            try:
+                value_str = value.decode('utf-8')
+            except UnicodeDecodeError:
+                value_str = value.hex()
+                logger.debug('Value is binary, showing as hex in preview')
 
-        print(json.dumps(output), flush=True)
-        logger.info(f'Packet: key_len={key_length}, value_len={len(value)}')
+            # Prepare value preview
+            value_preview = value_str[:100] + '...' if len(value_str) > 100 else value_str
+
+            # Output JSON with key-value fields (key can be null)
+            output = {
+                'timestamp': timestamp.isoformat(),
+                'event': 'packet_reassembled',
+                'key': key_display,
+                'key_length': len(key) if len(key) > 0 else None,
+                'value_length': len(value),
+                'value_preview': value_preview
+            }
+            print(json.dumps(output), flush=True)
+            logger.info(f'Stdout handler: Key-value JSON output written (key={key_display})')
+            return True
+        except Exception as e:
+            logger.error(f'Stdout handler error: {type(e).__name__}: {e}')
+            return False
 
 
 class SMTPHandler(PacketHandler):
-    """Forward packets via SMTP email."""
-    def __init__(self, config):
-        self.server = config.get('server')
-        self.port = config.getint('port', 587)
-        self.use_tls = config.getboolean('start-tls', True)
-        self.username = config.get('username')
-        self.password = config.get('password')
-        self.from_addr = config.get('from')
-        self.to_addr = config.get('to')
+    """Forward packet via email using SMTP."""
+    def __init__(self, server='', port=587, from_addr='', to_addr='', starttls=True,
+                 username=None, password=None):
+        self._server = server
+        self._port = int(port) if port else 587
+        self._from = from_addr
+        self._to = to_addr
+        self._starttls = starttls
+        self._username = username
+        self._password = password
 
-    def handle(self, packet):
-        key = packet.get('key', b'')
-        value = packet.get('value', b'')
+    def handle(self, key, value, timestamp):
+        """Send key-value packet via email."""
+        # Convert key to string
+        if len(key) == 0:
+            key_str = '(null)'
+        else:
+            try:
+                key_str = key.decode('utf-8')
+            except UnicodeDecodeError:
+                key_str = key.hex()
+                logger.debug('Binary key, sending as hex in email')
 
-        # Build email
-        subject = f'Mumbojumbo: {key.decode("utf-8", errors="replace")[:50] if key else "Data"}'
-        body = f'Key: {key.decode("utf-8", errors="replace")}\n\n'
-        body += f'Value ({len(value)} bytes):\n{value.decode("utf-8", errors="replace")[:1000]}'
-
-        msg = MIMEText(body)
-        msg['Subject'] = subject
-        msg['From'] = self.from_addr
-        msg['To'] = self.to_addr
-
+        # Convert value to string for email
         try:
-            with smtplib.SMTP(self.server, self.port, timeout=10) as smtp:
-                if self.use_tls:
-                    smtp.starttls()
-                if self.username and self.password:
-                    smtp.login(self.username, self.password)
-                smtp.send_message(msg)
-            logger.info('Email sent successfully')
+            value_str = value.decode('utf-8')
+        except UnicodeDecodeError:
+            value_str = value.hex()
+            logger.debug('Binary value, sending as hex in email')
+
+        smtp = None
+        try:
+            # Create email body with key-value format
+            body = f'Key: {key_str}\n\nValue:\n{value_str}'
+            msg = MIMEText(body)
+            msg.set_charset('utf-8')
+            msg['Subject'] = f'Mumbojumbo Packet: {key_str[:50]}'
+            msg['From'] = self._from
+            msg['To'] = self._to
+
+            logger.debug(f'SMTP handler: connecting to {self._server}:{self._port}')
+            smtp = smtplib.SMTP(self._server, port=self._port, timeout=30)
+            smtp.ehlo_or_helo_if_needed()
+
+            if self._starttls:
+                logger.debug('SMTP handler: starting TLS')
+                smtp.starttls()
+                smtp.ehlo()
+
+            if self._username or self._password:
+                logger.debug(f'SMTP handler: logging in as {self._username}')
+                smtp.login(self._username, self._password)
+
+            logger.debug(f'SMTP handler: sending email to {self._to}')
+            smtp.sendmail(self._from, [self._to], msg.as_string())
+            smtp.quit()
+            logger.info(f'SMTP handler: email sent successfully to {self._to} (key={key_str[:30]})')
+            return True
+
+        except (socket.gaierror, socket.herror) as e:
+            logger.error(f'SMTP handler DNS/network error: {self._server}:{self._port}: {e}')
+            return False
+        except socket.timeout:
+            logger.error(f'SMTP handler timeout: {self._server}:{self._port}')
+            return False
+        except ConnectionRefusedError:
+            logger.error(f'SMTP handler connection refused: {self._server}:{self._port}')
+            return False
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error(f'SMTP handler authentication failed: {self._username}: {e}')
+            return False
+        except smtplib.SMTPRecipientsRefused as e:
+            logger.error(f'SMTP handler recipient rejected: {self._to}: {e}')
+            return False
+        except smtplib.SMTPSenderRefused as e:
+            logger.error(f'SMTP handler sender rejected: {self._from}: {e}')
+            return False
+        except smtplib.SMTPDataError as e:
+            logger.error(f'SMTP handler data error: {e}')
+            return False
+        except smtplib.SMTPException as e:
+            logger.error(f'SMTP handler error: {e}')
+            return False
         except Exception as e:
-            logger.error(f'SMTP error: {type(e).__name__}: {e}')
+            logger.error(f'SMTP handler unexpected error: {type(e).__name__}: {e}')
+            logger.debug(traceback.format_exc())
+            return False
+        finally:
+            if smtp:
+                try:
+                    smtp.quit()
+                except Exception:
+                    pass
+
+
+class FileHandler(PacketHandler):
+    """Write packet data to a file. Supports raw, hex, and base64 formats."""
+    def __init__(self, path, format='hex'):
+        self._path = path
+        if format not in ('raw', 'hex', 'base64'):
+            raise ValueError(f'Invalid format: {format}. Must be raw, hex, or base64')
+        self._format = format
+
+    def handle(self, key, value, timestamp):
+        try:
+            # Convert key for display
+            if len(key) == 0:
+                key_str = '(null)'
+            else:
+                try:
+                    key_str = key.decode('utf-8')
+                except UnicodeDecodeError:
+                    key_str = key.hex()
+
+            # Format value according to config
+            if self._format == 'hex':
+                output_value = value.hex()
+            elif self._format == 'base64':
+                output_value = base64.b64encode(value).decode('ascii')
+            else:  # raw
+                output_value = value
+
+            # Write to file with metadata header
+            with open(self._path, 'ab') as f:
+                header = f'# {timestamp.isoformat()} - key: {key_str} - value_length: {len(value)} - format: {self._format}\n'
+                f.write(header.encode('utf-8'))
+
+                if isinstance(output_value, str):
+                    f.write(output_value.encode('utf-8'))
+                else:
+                    f.write(output_value)
+
+                f.write(b'\n')
+
+            logger.info(f'File handler: wrote key-value to {self._path} (key={key_str[:30]}, value_length={len(value)}, format={self._format})')
+            return True
+
+        except IOError as e:
+            logger.error(f'File handler I/O error: {self._path}: {e}')
+            return False
+        except Exception as e:
+            logger.error(f'File handler unexpected error: {type(e).__name__}: {e}')
+            logger.debug(traceback.format_exc())
+            return False
+
+
+class ExecuteHandler(PacketHandler):
+    """Execute a command with packet value as stdin. Passes key and metadata as environment variables."""
+    def __init__(self, command, timeout=30):
+        self._command = command
+        self._timeout = timeout
+
+    def handle(self, key, value, timestamp):
+        try:
+            # Convert key for environment variable
+            if len(key) == 0:
+                key_str = ''
+            else:
+                try:
+                    key_str = key.decode('utf-8')
+                except UnicodeDecodeError:
+                    key_str = key.hex()
+
+            # Prepare environment variables with metadata
+            env = os.environ.copy()
+            env['MUMBOJUMBO_TIMESTAMP'] = timestamp.isoformat()
+            env['MUMBOJUMBO_KEY'] = key_str
+            env['MUMBOJUMBO_KEY_LENGTH'] = str(len(key))
+            env['MUMBOJUMBO_VALUE_LENGTH'] = str(len(value))
+
+            logger.debug(f'Execute handler: running command: {self._command}')
+
+            # Execute command with value as stdin
+            result = subprocess.run(
+                self._command,
+                input=value,
+                shell=True,
+                capture_output=True,
+                timeout=self._timeout,
+                env=env
+            )
+
+            if result.returncode == 0:
+                logger.info(f'Execute handler: command succeeded (exit code 0, key={key_str[:30]})')
+                if result.stdout:
+                    logger.debug(f'Execute handler stdout: {result.stdout.decode("utf-8", errors="replace")}')
+                return True
+            else:
+                logger.error(f'Execute handler: command failed (exit code {result.returncode})')
+                if result.stderr:
+                    logger.error(f'Execute handler stderr: {result.stderr.decode("utf-8", errors="replace")}')
+                return False
+
+        except subprocess.TimeoutExpired:
+            logger.error(f'Execute handler: command timed out after {self._timeout}s')
+            return False
+        except FileNotFoundError as e:
+            logger.error(f'Execute handler: command not found: {e}')
+            return False
+        except Exception as e:
+            logger.error(f'Execute handler unexpected error: {type(e).__name__}: {e}')
+            logger.debug(traceback.format_exc())
+            return False
 
 
 # ============================================================================
@@ -1022,24 +1273,109 @@ def option_parser():
     """Parse command-line options."""
     parser = optparse.OptionParser(usage='%prog [options]')
 
-    # Keys
-    parser.add_option('--client-key', dest='client_key', help='Client key (mj_cli_...)')
+    # Config file
+    parser.add_option('-c', '--config', dest='config', metavar='path',
+                      help='Use this config file (default: mumbojumbo.conf)')
 
-    # Network
-    parser.add_option('-i', '--interface', dest='interface', default='en0',
-                      help='Network interface (default: en0)')
+    # Keys (override config/env)
+    parser.add_option('--client-key', dest='client_key',
+                      help='Client key (mj_cli_...) - overrides config/env')
+
+    # Network (override config/env)
+    parser.add_option('-i', '--interface', dest='interface',
+                      help='Network interface (overrides config/env, default: en0)')
     parser.add_option('-d', '--domain', dest='domain',
-                      help='DNS domain suffix (e.g., .example.com) or set MUMBOJUMBO_DOMAIN env var')
+                      help='DNS domain suffix (e.g., .example.com) - overrides config/env')
 
-    # Actions
+    # Config generation
     parser.add_option('--gen-keys', dest='gen_keys', action='store_true',
                       help='Generate client key and print environment variables')
+    parser.add_option('--gen-conf', dest='gen_conf', action='store_true',
+                      help='Generate config skeleton file (mumbojumbo.conf)')
+
+    # Testing
+    parser.add_option('--test-handlers', dest='test_handlers', action='store_true',
+                      help='Test all configured handlers in the pipeline')
 
     # Logging
     parser.add_option('-v', '--verbose', dest='verbose', action='store_true',
-                      help='Verbose output to stderr')
+                      help='Verbose output to stderr (default: logs only to mumbojumbo.log)')
 
     return parser
+
+
+def get_default_interface():
+    """Get default network interface for platform."""
+    import platform
+    system = platform.system()
+    if system == 'Darwin':
+        return 'en0'
+    elif system == 'Linux':
+        return 'eth0'
+    else:
+        return 'eth0'
+
+
+def build_handlers(config, handler_names):
+    """
+    Build handler pipeline from config.
+
+    Args:
+        config: ConfigParser instance
+        handler_names: list of handler name strings
+
+    Returns:
+        list of PacketHandler instances
+    """
+    handlers = []
+
+    for handler_name in handler_names:
+        if handler_name == 'stdout':
+            handlers.append(StdoutHandler())
+
+        elif handler_name == 'smtp':
+            if not config.has_section('smtp'):
+                logger.error('Missing [smtp] section in config file')
+                sys.exit(1)
+            smtp_items = dict(config.items('smtp'))
+            smtp_handler = SMTPHandler(
+                server=smtp_items.get('server', '127.0.0.1'),
+                port=int(smtp_items.get('port', 587)),
+                starttls=config.has_option('smtp', 'start-tls'),
+                from_addr=smtp_items.get('from', ''),
+                to_addr=smtp_items.get('to', ''),
+                username=smtp_items.get('username', ''),
+                password=smtp_items.get('password', '')
+            )
+            handlers.append(smtp_handler)
+
+        elif handler_name == 'file':
+            if not config.has_section('file'):
+                logger.error('Missing [file] section in config file')
+                sys.exit(1)
+            file_items = dict(config.items('file'))
+            file_handler = FileHandler(
+                path=file_items.get('path', '/tmp/mumbojumbo.log'),
+                format=file_items.get('format', 'hex')
+            )
+            handlers.append(file_handler)
+
+        elif handler_name == 'execute':
+            if not config.has_section('execute'):
+                logger.error('Missing [execute] section in config file')
+                sys.exit(1)
+            execute_items = dict(config.items('execute'))
+            execute_handler = ExecuteHandler(
+                command=execute_items.get('command', '/bin/true'),
+                timeout=int(execute_items.get('timeout', 30))
+            )
+            handlers.append(execute_handler)
+
+        else:
+            logger.error(f'Unknown handler type "{handler_name}". Available: stdout, smtp, file, execute')
+            sys.exit(1)
+
+    return handlers
 
 
 def main():
@@ -1050,7 +1386,7 @@ def main():
     # Setup logging
     setup_logging(verbose=opts.verbose)
 
-    # Generate keys
+    # Generate keys (env var format)
     if opts.gen_keys:
         client_key = get_client_key_hex()
         domain = opts.domain or os.getenv('MUMBOJUMBO_DOMAIN') or f'.{secrets.token_hex(3)}.{secrets.token_hex(3)}'
@@ -1060,17 +1396,94 @@ def main():
         print(f'export MUMBOJUMBO_DOMAIN={domain}')
         return 0
 
-    # Get client key from opts or environment
-    client_key_str = opts.client_key or os.getenv('MUMBOJUMBO_CLIENT_KEY')
-    domain = opts.domain or os.getenv('MUMBOJUMBO_DOMAIN')
+    # Generate config skeleton
+    if opts.gen_conf:
+        client_key = get_client_key_hex()
+        domain = opts.domain or os.getenv('MUMBOJUMBO_DOMAIN') or '.example.com'
+        network_interface = get_default_interface()
 
-    if not client_key_str:
-        logger.error('Client key not provided. Use --gen-keys or set MUMBOJUMBO_CLIENT_KEY.')
+        config_content = __config_skel__.format(
+            client_key=client_key,
+            domain=domain,
+            network_interface=network_interface
+        )
+
+        config_file = opts.config or 'mumbojumbo.conf'
+        with open(config_file, 'w') as f:
+            f.write(config_content)
+
+        print(f'Generated config file: {config_file}')
+        print(f'Remember to `chmod 0600 {config_file}` to protect keys!')
+        return 0
+
+    # ============================================================
+    # Load configuration with harmonized hierarchy: CLI > env > config file
+    # ============================================================
+
+    # Determine config file path
+    config_file = opts.config or 'mumbojumbo.conf'
+    use_config_file = os.path.exists(config_file)
+
+    # Parse config file if it exists
+    config = configparser.ConfigParser(allow_no_value=True)
+    if use_config_file:
+        config.read(config_file)
+        logger.info(f'Loaded config file: {config_file}')
+
+    # Get client key with precedence: CLI > env > config
+    client_key_str = None
+    if opts.client_key:
+        client_key_str = opts.client_key
+        logger.warning('Client key provided via CLI - visible in process list!')
+    elif os.getenv('MUMBOJUMBO_CLIENT_KEY'):
+        client_key_str = os.getenv('MUMBOJUMBO_CLIENT_KEY')
+        logger.info('Using client key from MUMBOJUMBO_CLIENT_KEY environment variable')
+    elif use_config_file and config.has_option('main', 'client-key'):
+        client_key_str = config.get('main', 'client-key')
+        logger.info('Using client key from config file')
+    else:
+        logger.error('Missing client-key: must be provided via --client-key, MUMBOJUMBO_CLIENT_KEY, or config file')
+        print('Error: Client key not provided.')
+        print('Options:')
+        print('  1. Set environment variable: export MUMBOJUMBO_CLIENT_KEY=mj_cli_...')
+        print('  2. Use CLI argument: --client-key mj_cli_...')
+        print('  3. Create config file: --gen-conf')
         return 1
 
-    if not domain:
-        logger.error('Domain not provided. Use -d/--domain or set MUMBOJUMBO_DOMAIN env var.')
+    # Get domain with precedence: CLI > env > config
+    domain = None
+    if opts.domain:
+        domain = opts.domain
+        logger.info(f'Using domain from CLI argument: {domain}')
+    elif os.getenv('MUMBOJUMBO_DOMAIN'):
+        domain = os.getenv('MUMBOJUMBO_DOMAIN')
+        logger.info(f'Using domain from MUMBOJUMBO_DOMAIN environment variable: {domain}')
+    elif use_config_file and config.has_option('main', 'domain'):
+        domain = config.get('main', 'domain')
+        logger.info(f'Using domain from config file: {domain}')
+    else:
+        logger.error('Missing domain: must be provided via --domain, MUMBOJUMBO_DOMAIN, or config file')
+        print('Error: Domain not provided.')
+        print('Options:')
+        print('  1. Set environment variable: export MUMBOJUMBO_DOMAIN=.example.com')
+        print('  2. Use CLI argument: -d .example.com')
+        print('  3. Create config file: --gen-conf')
         return 1
+
+    # Get network interface with precedence: CLI > env > config > default
+    interface = None
+    if opts.interface:
+        interface = opts.interface
+        logger.info(f'Using interface from CLI argument: {interface}')
+    elif os.getenv('MUMBOJUMBO_INTERFACE'):
+        interface = os.getenv('MUMBOJUMBO_INTERFACE')
+        logger.info(f'Using interface from MUMBOJUMBO_INTERFACE environment variable: {interface}')
+    elif use_config_file and config.has_option('main', 'network-interface'):
+        interface = config.get('main', 'network-interface')
+        logger.info(f'Using interface from config file: {interface}')
+    else:
+        interface = get_default_interface()
+        logger.info(f'Using default interface: {interface}')
 
     # Decode and derive keys
     try:
@@ -1086,6 +1499,47 @@ def main():
         logger.error(f'Invalid domain: {msg}')
         return 1
 
+    # Build handler pipeline with precedence: config file (required section)
+    handler_names = ['stdout']  # default
+    if use_config_file and config.has_option('main', 'handlers'):
+        handler_names_str = config.get('main', 'handlers')
+        handler_names = [h.strip() for h in handler_names_str.split(',')]
+        logger.info(f'Using handlers from config file: {handler_names}')
+    elif use_config_file and not config.has_option('main', 'handlers'):
+        logger.warning('No handlers specified in config file [main] section, using default: stdout')
+
+    handlers = build_handlers(config, handler_names)
+    logger.info(f'Handler pipeline: {[type(h).__name__ for h in handlers]}')
+
+    # Test handlers if requested
+    if opts.test_handlers:
+        print(f'Testing {len(handlers)} handlers...')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+        test_key = b'test_key'
+        test_value = b'This is a test packet from --test-handlers'
+
+        all_success = True
+        for i, handler in enumerate(handlers):
+            handler_name = type(handler).__name__
+            print(f'  [{i+1}] Testing {handler_name}...', end=' ')
+            try:
+                result = handler.handle(test_key, test_value, timestamp)
+                if result:
+                    print('SUCCESS')
+                else:
+                    print('FAILED')
+                    all_success = False
+            except Exception as e:
+                print(f'ERROR: {type(e).__name__}: {e}')
+                all_success = False
+
+        if all_success:
+            print('All handlers tested successfully.')
+            return 0
+        else:
+            print('Some handlers failed. Check mumbojumbo.log for details.')
+            return 1
+
     # Check requirements
     if not check_tshark():
         logger.error('tshark not found. Install with: brew install wireshark (macOS) or apt-get install tshark (Linux)')
@@ -1097,7 +1551,7 @@ def main():
 
     logger.info('Mumbojumbo starting')
     logger.info(f'Domain: {domain}')
-    logger.info(f'Interface: {opts.interface}')
+    logger.info(f'Interface: {interface}')
 
     # Setup fragment class
     frag_cls = DnsFragment.bind(
@@ -1115,11 +1569,8 @@ def main():
         frag_key=frag_key_bytes
     )
 
-    # Setup handlers
-    handlers = [StdoutHandler()]
-
     # Start DNS capture and processing
-    reader = DnsQueryReader(interface=opts.interface, domain=domain)
+    reader = DnsQueryReader(interface=interface, domain=domain)
 
     logger.info('Ready to receive packets')
 
@@ -1131,8 +1582,15 @@ def main():
             # Handle completed packets
             while not engine.packet_outqueue.empty():
                 packet = engine.packet_outqueue.get()
+                key = packet.get('key', b'')
+                value = packet.get('value', b'')
+                timestamp = datetime.datetime.now(datetime.timezone.utc)
+
                 for handler in handlers:
-                    handler.handle(packet)
+                    try:
+                        handler.handle(key, value, timestamp)
+                    except Exception as e:
+                        logger.error(f'Handler {type(handler).__name__} error: {type(e).__name__}: {e}')
 
     except KeyboardInterrupt:
         logger.info('Shutting down')
