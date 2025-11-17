@@ -13,6 +13,7 @@ For educational and authorized security testing only.
 """
 
 import base64
+import fnmatch
 import functools
 import logging
 import logging.handlers
@@ -970,6 +971,21 @@ class PacketHandler:
         raise NotImplementedError('Subclasses must implement handle()')
 
 
+class FilteredHandler(PacketHandler):
+    """Wrapper that filters packets by key pattern using glob matching."""
+    def __init__(self, handler, key_pattern):
+        self._handler = handler
+        self._pattern = key_pattern
+
+    def handle(self, key, value, timestamp):
+        """Only pass through packets whose key matches the glob pattern."""
+        key_str = key.decode('utf-8', errors='replace')
+        if not fnmatch.fnmatch(key_str, self._pattern):
+            logger.debug(f'Key {key_str!r} does not match pattern {self._pattern!r}, skipping handler')
+            return True  # Skip non-matching keys
+        return self._handler.handle(key, value, timestamp)
+
+
 class StdoutHandler(PacketHandler):
     """Output packet metadata as JSON to stdout."""
     def handle(self, key, value, timestamp):
@@ -1330,15 +1346,22 @@ def build_handlers(config, handler_names):
     handlers = []
 
     for handler_name in handler_names:
+        handler = None
+        key_filter = None
+
         if handler_name == 'stdout':
-            handlers.append(StdoutHandler())
+            handler = StdoutHandler()
+            # stdout handler can have key-filter if [stdout] section exists
+            if config.has_section('stdout'):
+                stdout_items = dict(config.items('stdout'))
+                key_filter = stdout_items.get('key-filter')
 
         elif handler_name == 'smtp':
             if not config.has_section('smtp'):
                 logger.error('Missing [smtp] section in config file')
                 sys.exit(1)
             smtp_items = dict(config.items('smtp'))
-            smtp_handler = SMTPHandler(
+            handler = SMTPHandler(
                 server=smtp_items.get('server', '127.0.0.1'),
                 port=int(smtp_items.get('port', 587)),
                 starttls=config.has_option('smtp', 'start-tls'),
@@ -1347,33 +1370,40 @@ def build_handlers(config, handler_names):
                 username=smtp_items.get('username', ''),
                 password=smtp_items.get('password', '')
             )
-            handlers.append(smtp_handler)
+            key_filter = smtp_items.get('key-filter')
 
         elif handler_name == 'file':
             if not config.has_section('file'):
                 logger.error('Missing [file] section in config file')
                 sys.exit(1)
             file_items = dict(config.items('file'))
-            file_handler = FileHandler(
+            handler = FileHandler(
                 path=file_items.get('path', '/tmp/mumbojumbo.log'),
                 format=file_items.get('format', 'hex')
             )
-            handlers.append(file_handler)
+            key_filter = file_items.get('key-filter')
 
         elif handler_name == 'execute':
             if not config.has_section('execute'):
                 logger.error('Missing [execute] section in config file')
                 sys.exit(1)
             execute_items = dict(config.items('execute'))
-            execute_handler = ExecuteHandler(
+            handler = ExecuteHandler(
                 command=execute_items.get('command', '/bin/true'),
                 timeout=int(execute_items.get('timeout', 30))
             )
-            handlers.append(execute_handler)
+            key_filter = execute_items.get('key-filter')
 
         else:
             logger.error(f'Unknown handler type "{handler_name}". Available: stdout, smtp, file, execute')
             sys.exit(1)
+
+        # Wrap handler with key filter if specified
+        if key_filter:
+            logger.info(f'Handler {handler_name} using key-filter: {key_filter}')
+            handler = FilteredHandler(handler, key_filter)
+
+        handlers.append(handler)
 
     return handlers
 

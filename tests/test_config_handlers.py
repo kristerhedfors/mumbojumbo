@@ -17,6 +17,7 @@ from mumbojumbo import (
     SMTPHandler,
     FileHandler,
     ExecuteHandler,
+    FilteredHandler,
     build_handlers,
     get_default_interface,
     __config_skel__,
@@ -469,3 +470,264 @@ class TestGetClientKeyHex:
         key1 = get_client_key_hex()
         key2 = get_client_key_hex()
         assert key1 != key2
+
+
+class TestFilteredHandler:
+    """Test FilteredHandler wrapper functionality."""
+
+    def test_matching_key_passes_through(self, capsys):
+        """Matching key should be passed to underlying handler."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'sensor_*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = filtered.handle(b'sensor_temperature', b'25.5', timestamp)
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert '"key": "sensor_temperature"' in captured.out
+
+    def test_non_matching_key_skipped(self, capsys):
+        """Non-matching key should be skipped."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'sensor_*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = filtered.handle(b'log_error', b'some error', timestamp)
+
+        assert result is True  # Returns True to indicate "handled" (skipped)
+        captured = capsys.readouterr()
+        assert captured.out == ''  # No output
+
+    def test_glob_star_pattern(self, capsys):
+        """Test * glob pattern matches any characters."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, '*debug*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match
+        result = filtered.handle(b'app_debug_log', b'value', timestamp)
+        assert result is True
+        captured = capsys.readouterr()
+        assert '"key": "app_debug_log"' in captured.out
+
+        # Should not match
+        result = filtered.handle(b'app_info_log', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_glob_question_mark_pattern(self, capsys):
+        """Test ? glob pattern matches single character."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'log_?')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match
+        result = filtered.handle(b'log_1', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "log_1"' in captured.out
+
+        # Should not match (too long)
+        result = filtered.handle(b'log_12', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_glob_bracket_pattern(self, capsys):
+        """Test [seq] glob pattern matches character in sequence."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'data_[abc]')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match
+        result = filtered.handle(b'data_a', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "data_a"' in captured.out
+
+        # Should not match
+        result = filtered.handle(b'data_d', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_glob_negated_bracket_pattern(self, capsys):
+        """Test [!seq] glob pattern matches character not in sequence."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'key_[!0-9]')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match (letter, not digit)
+        result = filtered.handle(b'key_a', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "key_a"' in captured.out
+
+        # Should not match (digit)
+        result = filtered.handle(b'key_5', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_utf8_key_decoding(self, capsys):
+        """Test that UTF-8 keys are properly decoded for pattern matching."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'café_*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match UTF-8 key
+        result = filtered.handle('café_order'.encode('utf-8'), b'latte', timestamp)
+        captured = capsys.readouterr()
+        # JSON escapes non-ASCII, so check for either form
+        assert 'caf' in captured.out and 'order' in captured.out
+        assert result is True
+
+    def test_invalid_utf8_key_uses_replacement(self, capsys):
+        """Test that invalid UTF-8 bytes use replacement character."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, '*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Invalid UTF-8 should still be handled (with replacement char)
+        result = filtered.handle(b'\xff\xfe', b'value', timestamp)
+        assert result is True
+        captured = capsys.readouterr()
+        assert captured.out != ''  # Should output something
+
+    def test_empty_key_matches_empty_pattern(self, capsys):
+        """Test that empty key matches empty pattern or * pattern."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, '*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = filtered.handle(b'', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": null' in captured.out
+
+    def test_exact_match_pattern(self, capsys):
+        """Test exact match without wildcards."""
+        inner_handler = StdoutHandler()
+        filtered = FilteredHandler(inner_handler, 'exact_key')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should match
+        result = filtered.handle(b'exact_key', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "exact_key"' in captured.out
+
+        # Should not match
+        result = filtered.handle(b'exact_key_2', b'value', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
+
+    def test_handler_return_value_propagated(self):
+        """Test that underlying handler's return value is propagated."""
+        # Use ExecuteHandler that returns False on failure
+        inner_handler = ExecuteHandler('exit 1', timeout=1)
+        filtered = FilteredHandler(inner_handler, '*')
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = filtered.handle(b'key', b'value', timestamp)
+        assert result is False  # Propagated from inner handler
+
+
+class TestBuildHandlersWithKeyFilter:
+    """Test handler pipeline building with key-filter support."""
+
+    def test_build_stdout_with_key_filter(self):
+        """Should wrap StdoutHandler with FilteredHandler when key-filter specified."""
+        config = configparser.ConfigParser()
+        config.add_section('stdout')
+        config.set('stdout', 'key-filter', 'sensor_*')
+
+        handlers = build_handlers(config, ['stdout'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], FilteredHandler)
+        assert isinstance(handlers[0]._handler, StdoutHandler)
+        assert handlers[0]._pattern == 'sensor_*'
+
+    def test_build_file_with_key_filter(self, tmp_path):
+        """Should wrap FileHandler with FilteredHandler when key-filter specified."""
+        config = configparser.ConfigParser()
+        config.add_section('file')
+        config.set('file', 'path', str(tmp_path / 'test.log'))
+        config.set('file', 'format', 'hex')
+        config.set('file', 'key-filter', '*debug*')
+
+        handlers = build_handlers(config, ['file'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], FilteredHandler)
+        assert isinstance(handlers[0]._handler, FileHandler)
+        assert handlers[0]._pattern == '*debug*'
+
+    def test_build_execute_with_key_filter(self):
+        """Should wrap ExecuteHandler with FilteredHandler when key-filter specified."""
+        config = configparser.ConfigParser()
+        config.add_section('execute')
+        config.set('execute', 'command', '/bin/true')
+        config.set('execute', 'timeout', '30')
+        config.set('execute', 'key-filter', 'alert_*')
+
+        handlers = build_handlers(config, ['execute'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], FilteredHandler)
+        assert isinstance(handlers[0]._handler, ExecuteHandler)
+        assert handlers[0]._pattern == 'alert_*'
+
+    def test_build_handler_without_key_filter(self):
+        """Handler without key-filter should not be wrapped."""
+        config = configparser.ConfigParser()
+        config.add_section('file')
+        config.set('file', 'path', '/tmp/test.log')
+        config.set('file', 'format', 'hex')
+        # No key-filter
+
+        handlers = build_handlers(config, ['file'])
+
+        assert len(handlers) == 1
+        assert isinstance(handlers[0], FileHandler)
+        assert not isinstance(handlers[0], FilteredHandler)
+
+    def test_build_multiple_handlers_with_different_filters(self, tmp_path):
+        """Multiple handlers can have different key filters."""
+        config = configparser.ConfigParser()
+        config.add_section('stdout')
+        config.set('stdout', 'key-filter', 'sensor_*')
+        config.add_section('file')
+        config.set('file', 'path', str(tmp_path / 'test.log'))
+        config.set('file', 'format', 'hex')
+        config.set('file', 'key-filter', '*debug*')
+        config.add_section('execute')
+        config.set('execute', 'command', '/bin/true')
+        config.set('execute', 'timeout', '30')
+        # No key-filter for execute
+
+        handlers = build_handlers(config, ['stdout', 'file', 'execute'])
+
+        assert len(handlers) == 3
+        # stdout - filtered
+        assert isinstance(handlers[0], FilteredHandler)
+        assert handlers[0]._pattern == 'sensor_*'
+        # file - filtered
+        assert isinstance(handlers[1], FilteredHandler)
+        assert handlers[1]._pattern == '*debug*'
+        # execute - not filtered
+        assert isinstance(handlers[2], ExecuteHandler)
+        assert not isinstance(handlers[2], FilteredHandler)
+
+    def test_functional_key_filtering(self, capsys, tmp_path):
+        """Test that key filtering actually works in pipeline."""
+        config = configparser.ConfigParser()
+        config.add_section('stdout')
+        config.set('stdout', 'key-filter', 'sensor_*')
+
+        handlers = build_handlers(config, ['stdout'])
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        # Should be processed
+        handlers[0].handle(b'sensor_temp', b'25', timestamp)
+        captured = capsys.readouterr()
+        assert '"key": "sensor_temp"' in captured.out
+
+        # Should be skipped
+        handlers[0].handle(b'log_error', b'err', timestamp)
+        captured = capsys.readouterr()
+        assert captured.out == ''
