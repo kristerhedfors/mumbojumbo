@@ -15,7 +15,7 @@ import pytest
 from mumbojumbo import (
     StdoutHandler,
     SMTPHandler,
-    FileHandler,
+    UploadHandler,
     PacketLogHandler,
     ExecuteHandler,
     FilteredHandler,
@@ -31,7 +31,7 @@ class TestConfigSkeleton:
     """Test config skeleton generation."""
 
     def test_config_skeleton_has_all_sections(self):
-        """Config skeleton should have main, smtp, file, packetlog, execute sections."""
+        """Config skeleton should have main, smtp, upload, packetlog, execute sections."""
         # Fill in placeholders
         config_content = __config_skel__.format(
             client_key='mj_cli_' + '00' * 32,
@@ -44,7 +44,7 @@ class TestConfigSkeleton:
 
         assert config.has_section('main')
         assert config.has_section('smtp')
-        assert config.has_section('file')
+        assert config.has_section('upload')
         assert config.has_section('packetlog')
         assert config.has_section('execute')
 
@@ -82,8 +82,8 @@ class TestConfigSkeleton:
         assert config.has_option('smtp', 'from')
         assert config.has_option('smtp', 'to')
 
-    def test_config_skeleton_file_section_fields(self):
-        """File section should have output-dir."""
+    def test_config_skeleton_upload_section_fields(self):
+        """Upload section should have output-dir."""
         config_content = __config_skel__.format(
             client_key='mj_cli_' + '00' * 32,
             domain='.test.example.com',
@@ -93,7 +93,7 @@ class TestConfigSkeleton:
         config = configparser.ConfigParser(allow_no_value=True)
         config.read_string(config_content)
 
-        assert config.has_option('file', 'output-dir')
+        assert config.has_option('upload', 'output-dir')
 
     def test_config_skeleton_packetlog_section_fields(self):
         """Packetlog section should have path and format."""
@@ -281,26 +281,39 @@ class TestPacketLogHandler:
         assert result is False
 
 
-class TestFileHandler:
-    """Test FileHandler functionality for receiving files from clients."""
+class TestUploadHandler:
+    """Test UploadHandler functionality for receiving files from clients."""
 
     def test_init_creates_output_dir(self, tmp_path):
-        """FileHandler should create output directory if it doesn't exist."""
+        """UploadHandler should create output directory if it doesn't exist."""
         output_dir = tmp_path / 'new_dir'
         assert not output_dir.exists()
 
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
 
         assert output_dir.exists()
         assert output_dir.is_dir()
 
-    def test_handle_writes_file(self, tmp_path):
-        """FileHandler should write file with correct content."""
+    def test_handle_writes_file_short_prefix(self, tmp_path):
+        """UploadHandler should write file with u:// prefix."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
-        result = handler.handle(b'file://test.txt', b'Hello, World!', timestamp)
+        result = handler.handle(b'u://test.txt', b'Hello, World!', timestamp)
+
+        assert result is True
+        written_file = output_dir / 'test.txt'
+        assert written_file.exists()
+        assert written_file.read_bytes() == b'Hello, World!'
+
+    def test_handle_writes_file_long_prefix(self, tmp_path):
+        """UploadHandler should write file with upload:// prefix."""
+        output_dir = tmp_path / 'files'
+        handler = UploadHandler(str(output_dir))
+        timestamp = datetime.datetime.now(datetime.timezone.utc)
+
+        result = handler.handle(b'upload://test.txt', b'Hello, World!', timestamp)
 
         assert result is True
         written_file = output_dir / 'test.txt'
@@ -308,12 +321,12 @@ class TestFileHandler:
         assert written_file.read_bytes() == b'Hello, World!'
 
     def test_handle_creates_subdirectories(self, tmp_path):
-        """FileHandler should create subdirectories as needed."""
+        """UploadHandler should create subdirectories as needed."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
-        result = handler.handle(b'file://subdir/nested/file.txt', b'nested content', timestamp)
+        result = handler.handle(b'u://subdir/nested/file.txt', b'nested content', timestamp)
 
         assert result is True
         written_file = output_dir / 'subdir' / 'nested' / 'file.txt'
@@ -321,31 +334,31 @@ class TestFileHandler:
         assert written_file.read_bytes() == b'nested content'
 
     def test_handle_blocks_path_traversal_dotdot(self, tmp_path):
-        """FileHandler should block path traversal with .. in filename."""
+        """UploadHandler should block path traversal with .. in filename."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
-        result = handler.handle(b'file://../../../etc/passwd', b'malicious', timestamp)
+        result = handler.handle(b'u://../../../etc/passwd', b'malicious', timestamp)
 
         assert result is False
         # Ensure no file was created outside output_dir
         assert not (tmp_path / 'etc').exists()
 
     def test_handle_blocks_absolute_path(self, tmp_path):
-        """FileHandler should block absolute paths."""
+        """UploadHandler should block absolute paths."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
-        result = handler.handle(b'file:///etc/passwd', b'malicious', timestamp)
+        result = handler.handle(b'u:///etc/passwd', b'malicious', timestamp)
 
         assert result is False
 
-    def test_handle_rejects_non_file_prefix(self, tmp_path):
-        """FileHandler should reject keys without file:// prefix."""
+    def test_handle_rejects_non_upload_prefix(self, tmp_path):
+        """UploadHandler should reject keys without u:// or upload:// prefix."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         result = handler.handle(b'data.txt', b'content', timestamp)
@@ -353,19 +366,19 @@ class TestFileHandler:
         assert result is False
 
     def test_handle_rejects_empty_filename(self, tmp_path):
-        """FileHandler should reject empty filename after prefix."""
+        """UploadHandler should reject empty filename after prefix."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
-        result = handler.handle(b'file://', b'content', timestamp)
+        result = handler.handle(b'u://', b'content', timestamp)
 
         assert result is False
 
     def test_handle_rejects_invalid_utf8_key(self, tmp_path):
-        """FileHandler should reject non-UTF-8 keys."""
+        """UploadHandler should reject non-UTF-8 keys."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         result = handler.handle(b'\xff\xfe\xfd', b'content', timestamp)
@@ -373,26 +386,26 @@ class TestFileHandler:
         assert result is False
 
     def test_handle_binary_content(self, tmp_path):
-        """FileHandler should handle binary file content."""
+        """UploadHandler should handle binary file content."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
         binary_data = bytes(range(256))
 
-        result = handler.handle(b'file://binary.bin', binary_data, timestamp)
+        result = handler.handle(b'u://binary.bin', binary_data, timestamp)
 
         assert result is True
         written_file = output_dir / 'binary.bin'
         assert written_file.read_bytes() == binary_data
 
     def test_handle_overwrites_existing_file(self, tmp_path):
-        """FileHandler should overwrite existing files."""
+        """UploadHandler should overwrite existing files."""
         output_dir = tmp_path / 'files'
-        handler = FileHandler(str(output_dir))
+        handler = UploadHandler(str(output_dir))
         timestamp = datetime.datetime.now(datetime.timezone.utc)
 
-        handler.handle(b'file://test.txt', b'original', timestamp)
-        result = handler.handle(b'file://test.txt', b'updated', timestamp)
+        handler.handle(b'u://test.txt', b'original', timestamp)
+        result = handler.handle(b'u://test.txt', b'updated', timestamp)
 
         assert result is True
         written_file = output_dir / 'test.txt'
@@ -492,16 +505,16 @@ class TestBuildHandlers:
         assert len(handlers) == 1
         assert isinstance(handlers[0], StdoutHandler)
 
-    def test_build_file_handler(self, tmp_path):
-        """Should build FileHandler from config."""
+    def test_build_upload_handler(self, tmp_path):
+        """Should build UploadHandler from config."""
         config = configparser.ConfigParser()
-        config.add_section('file')
-        config.set('file', 'output-dir', str(tmp_path / 'files'))
+        config.add_section('upload')
+        config.set('upload', 'output-dir', str(tmp_path / 'files'))
 
-        handlers = build_handlers(config, ['file'])
+        handlers = build_handlers(config, ['upload'])
 
         assert len(handlers) == 1
-        assert isinstance(handlers[0], FileHandler)
+        assert isinstance(handlers[0], UploadHandler)
 
     def test_build_packetlog_handler(self, tmp_path):
         """Should build PacketLogHandler from config."""
@@ -543,10 +556,10 @@ class TestBuildHandlers:
     def test_build_missing_section_exits(self):
         """Should exit if required section is missing."""
         config = configparser.ConfigParser()
-        # No 'file' section
+        # No 'upload' section
 
         with pytest.raises(SystemExit):
-            build_handlers(config, ['file'])
+            build_handlers(config, ['upload'])
 
     def test_build_unknown_handler_exits(self):
         """Should exit for unknown handler type."""
@@ -786,19 +799,19 @@ class TestBuildHandlersWithKeyFilter:
         assert isinstance(handlers[0]._handler, StdoutHandler)
         assert handlers[0]._pattern == 'sensor_*'
 
-    def test_build_file_with_key_filter(self, tmp_path):
-        """Should wrap FileHandler with FilteredHandler when key-filter specified."""
+    def test_build_upload_with_key_filter(self, tmp_path):
+        """Should wrap UploadHandler with FilteredHandler when key-filter specified."""
         config = configparser.ConfigParser()
-        config.add_section('file')
-        config.set('file', 'output-dir', str(tmp_path / 'files'))
-        config.set('file', 'key-filter', 'file://*')
+        config.add_section('upload')
+        config.set('upload', 'output-dir', str(tmp_path / 'files'))
+        config.set('upload', 'key-filter', 'u://*')
 
-        handlers = build_handlers(config, ['file'])
+        handlers = build_handlers(config, ['upload'])
 
         assert len(handlers) == 1
         assert isinstance(handlers[0], FilteredHandler)
-        assert isinstance(handlers[0]._handler, FileHandler)
-        assert handlers[0]._pattern == 'file://*'
+        assert isinstance(handlers[0]._handler, UploadHandler)
+        assert handlers[0]._pattern == 'u://*'
 
     def test_build_packetlog_with_key_filter(self, tmp_path):
         """Should wrap PacketLogHandler with FilteredHandler when key-filter specified."""

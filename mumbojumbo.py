@@ -924,7 +924,7 @@ domain = {domain}
 # Common values: macOS (en0, en1), Linux (eth0, ens4, ens5, wlan0)
 network-interface = {network_interface}
 # Handler pipeline: comma-separated list of handlers (REQUIRED)
-# Available handlers: stdout, smtp, file, packetlog, execute
+# Available handlers: stdout, smtp, upload, packetlog, execute
 handlers = stdout
 # Client key (master secret from which all keys are derived)
 client-key = {client_key}
@@ -940,9 +940,9 @@ password = yourpasswordhere
 from = someuser@somehost.xy
 to = otheruser@otherhost.xy
 
-[file]
-# Receive files from clients (key must be file:// URL)
-# key-filter = file://*
+[upload]
+# Receive files from clients (key must be u:// or upload:// URL)
+# key-filter = u://*
 output-dir = /var/mumbojumbo/files
 
 [packetlog]
@@ -1188,8 +1188,8 @@ class PacketLogHandler(PacketHandler):
             return False
 
 
-class FileHandler(PacketHandler):
-    """Receive files from clients. Key is file:// URL, stripped to filename."""
+class UploadHandler(PacketHandler):
+    """Receive files from clients. Key is u:// or upload:// URL, stripped to filename."""
     def __init__(self, output_dir):
         self._output_dir = os.path.realpath(output_dir)
         os.makedirs(self._output_dir, exist_ok=True)
@@ -1200,19 +1200,19 @@ class FileHandler(PacketHandler):
             try:
                 key_str = key.decode('utf-8')
             except UnicodeDecodeError:
-                logger.error(f'FileHandler: key is not valid UTF-8')
+                logger.error(f'UploadHandler: key is not valid UTF-8')
                 return False
 
-            # Strip file:// prefix
-            if not key_str.startswith('file://'):
-                logger.error(f'FileHandler: key does not start with file:// prefix: {key_str[:50]}')
+            # Strip u:// or upload:// prefix
+            if key_str.startswith('u://') or key_str.startswith('upload://'):
+                filename = key_str.removeprefix('u://') if key_str.startswith('u://') else key_str.removeprefix('upload://')
+            else:
+                logger.error(f'UploadHandler: key does not start with u:// or upload:// prefix: {key_str[:50]}')
                 return False
-
-            filename = key_str.removeprefix('file://')
 
             # Validate filename is not empty
             if not filename:
-                logger.error('FileHandler: empty filename after stripping file:// prefix')
+                logger.error('UploadHandler: empty filename after stripping prefix')
                 return False
 
             # Build full path and validate it stays within output_dir
@@ -1221,7 +1221,7 @@ class FileHandler(PacketHandler):
             # Security check: ensure path is within output_dir
             # Use os.sep to handle both trailing slash cases properly
             if not (full_path.startswith(self._output_dir + os.sep) or full_path == self._output_dir):
-                logger.error(f'FileHandler: path traversal attempt blocked: {filename}')
+                logger.error(f'UploadHandler: path traversal attempt blocked: {filename}')
                 return False
 
             # Create subdirectories if needed
@@ -1233,14 +1233,14 @@ class FileHandler(PacketHandler):
             with open(full_path, 'wb') as f:
                 f.write(value)
 
-            logger.info(f'FileHandler: wrote file {full_path} ({len(value)} bytes)')
+            logger.info(f'UploadHandler: wrote file {full_path} ({len(value)} bytes)')
             return True
 
         except IOError as e:
-            logger.error(f'FileHandler I/O error: {e}')
+            logger.error(f'UploadHandler I/O error: {e}')
             return False
         except Exception as e:
-            logger.error(f'FileHandler unexpected error: {type(e).__name__}: {e}')
+            logger.error(f'UploadHandler unexpected error: {type(e).__name__}: {e}')
             logger.debug(traceback.format_exc())
             return False
 
@@ -1440,15 +1440,15 @@ def build_handlers(config, handler_names):
             )
             key_filter = smtp_items.get('key-filter')
 
-        elif handler_name == 'file':
-            if not config.has_section('file'):
-                logger.error('Missing [file] section in config file')
+        elif handler_name == 'upload':
+            if not config.has_section('upload'):
+                logger.error('Missing [upload] section in config file')
                 sys.exit(1)
-            file_items = dict(config.items('file'))
-            handler = FileHandler(
-                output_dir=file_items.get('output-dir', '/tmp/mumbojumbo-files')
+            upload_items = dict(config.items('upload'))
+            handler = UploadHandler(
+                output_dir=upload_items.get('output-dir', '/tmp/mumbojumbo-files')
             )
-            key_filter = file_items.get('key-filter')
+            key_filter = upload_items.get('key-filter')
 
         elif handler_name == 'packetlog':
             if not config.has_section('packetlog'):
