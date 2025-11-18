@@ -23,10 +23,19 @@ Usage as library:
     # Send value only (no key)
     client.send(value=b'Data without key')
 
+    # Upload files (key format: u://<filename>)
+    with open('document.pdf', 'rb') as f:
+        client.send(key=b'u://document.pdf', value=f.read())
+
 Usage from CLI:
+    # Send key-value pair
     ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com -k mykey -v myvalue
 
+    # Pipe data from stdin
     echo "data" | ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com
+
+    # Upload files (key automatically set to u://<filename>)
+    ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com -u file1.txt file2.pdf
 """
 
 import sys
@@ -285,10 +294,9 @@ class MumbojumboClient:
 
         Structure (40 bytes total):
             Packet ID (4B): u32, big-endian, UNENCRYPTED
+            Fragment flags (4B): u32 bitfield, UNENCRYPTED (first flag, more flag, 30-bit index)
             MAC (4B): Poly1305 over encrypted portion, UNENCRYPTED
-            Encrypted (32B): ChaCha20 encrypted with nonce = packet_id * 3
-                - flags+index (4B)
-                - payload (28B): fragment data
+            Encrypted payload (28B): ChaCha20 encrypted with nonce = packet_id + fragment_flags
         """
         # Build flags+index (4B)
         flags = 0
@@ -305,23 +313,19 @@ class MumbojumboClient:
         # Pad to 28 bytes
         if len(payload) < FRAGMENT_PAYLOAD_SIZE:
             payload += b'\x00' * (FRAGMENT_PAYLOAD_SIZE - len(payload))
+        assert len(payload) == FRAGMENT_PAYLOAD_SIZE
 
-        # Assemble inner packet (to be encrypted): flags + payload
-        inner = flags_bytes + payload
-        assert len(inner) == 32
-
-        # Encrypt inner packet with ChaCha20
-        # Nonce = packet_id (4 bytes) repeated 3 times = 12 bytes
+        # Encrypt payload only (flags are now unencrypted)
         packet_id_bytes = struct.pack('!I', packet_id)
-        nonce = packet_id_bytes * 3
-        encrypted_inner = chacha20_encrypt(self.enc_key, nonce, inner)
+        nonce = packet_id_bytes + flags_bytes  # 8 bytes: packet_id + fragment_flags
+        encrypted_payload = chacha20_encrypt(self.enc_key, nonce, payload)
 
-        # Compute 4-byte fragment MAC over encrypted portion (validate before decrypt)
-        mac_full = poly1305_mac(self.frag_key, encrypted_inner)
+        # Compute 4-byte fragment MAC over encrypted payload
+        mac_full = poly1305_mac(self.frag_key, encrypted_payload)
         mac = mac_full[:4]
 
-        # Assemble final packet: packet_id + mac + encrypted_inner
-        packet = packet_id_bytes + mac + encrypted_inner
+        # Assemble final packet: packet_id + flags + mac + encrypted_payload
+        packet = packet_id_bytes + flags_bytes + mac + encrypted_payload
         assert len(packet) == BINARY_PACKET_SIZE
         return packet
 
@@ -556,7 +560,7 @@ def main():
                 print(f'Error reading {filepath}: {e}', file=sys.stderr)
                 return 1
 
-            # Construct key as u://<filename>
+            # Construct key as u://<filename> (upload protocol format)
             filename = os.path.basename(filepath)
             upload_key = f'u://{filename}'.encode('utf-8')
 
