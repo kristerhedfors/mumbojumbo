@@ -17,7 +17,7 @@ from mumbojumbo import (
     DnsFragment,
     derive_keys,
     get_client_key_hex,
-    decode_key_hex,
+    decode_mumbojumbo_key,
     validate_domain,
 )
 
@@ -43,7 +43,7 @@ class TestFullProtocolFlow:
         queries = mc.generate_queries(key=b'secret.txt', value=b'Top secret data!')
 
         # Step 3: Server uses same key to receive
-        client_key_bytes = decode_key_hex(client_key_hex)
+        client_key_bytes = decode_mumbojumbo_key(client_key_hex)
         enc_key, auth_key, frag_key = derive_keys(client_key_bytes)
         frag_cls = DnsFragment.bind(
             domain='.example.com',
@@ -432,7 +432,7 @@ class TestCLIKeyGeneration:
                 key_str = line.split('=')[1].strip()
 
                 # Should be decodable
-                key_bytes = decode_key_hex(key_str)
+                key_bytes = decode_mumbojumbo_key(key_str)
                 assert len(key_bytes) == 32
 
                 # Should be able to derive keys

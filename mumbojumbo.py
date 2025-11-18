@@ -249,10 +249,9 @@ class Fragment(BaseFragment):
 
     Wire format (40 bytes):
         4 bytes: Packet ID (u32, big-endian, UNENCRYPTED)
+        4 bytes: Fragment flags (u32 bitfield, UNENCRYPTED: first flag, more flag, 30-bit index)
         4 bytes: Truncated Poly1305 MAC (over encrypted portion, UNENCRYPTED)
-        32 bytes: Encrypted portion (ChaCha20 with nonce = packet_id × 3)
-            - 4 bytes: Fragment flags (u32 bitfield: first flag, more flag, 30-bit index)
-            - 28 bytes: Fragment payload (message chunk)
+        28 bytes: Encrypted payload (ChaCha20 with nonce = packet_id + fragment_flags)
 
     Base36 encoded to 63 characters for DNS label.
     """
@@ -292,7 +291,7 @@ class Fragment(BaseFragment):
         Serialize to 40-byte binary packet with dual-layer encryption.
 
         Returns:
-            40 bytes: [packet_id (4B)][MAC (4B)][encrypted (32B)]
+            40 bytes: [packet_id (4B)][flags (4B)][MAC (4B)][encrypted_payload (28B)]
         """
         # Build flags
         flags_bytes = self._build_flags()
@@ -301,28 +300,21 @@ class Fragment(BaseFragment):
         payload = self._frag_data[:FRAGMENT_PAYLOAD_SIZE]
         if len(payload) < FRAGMENT_PAYLOAD_SIZE:
             payload += b'\x00' * (FRAGMENT_PAYLOAD_SIZE - len(payload))
+        assert len(payload) == FRAGMENT_PAYLOAD_SIZE
 
-        # Assemble inner packet (to be encrypted): flags + payload
-        inner = flags_bytes + payload
-        assert len(inner) == 32
-
-        # Encrypt inner packet with ChaCha20
+        # Encrypt payload only (flags are now unencrypted)
         packet_id_bytes = struct.pack('!I', self._packet_id)
-        nonce = packet_id_bytes * 3  # 12 bytes
-        if self._enc_key:
-            encrypted_inner = chacha20_encrypt(self._enc_key, nonce, inner)
-        else:
-            encrypted_inner = inner
+        nonce = packet_id_bytes + flags_bytes  # 8 bytes: packet_id + fragment_flags
+        assert self._enc_key is not None, 'BUG: enc_key not set (should be derived from mumbojumbo key)'
+        encrypted_payload = chacha20_encrypt(self._enc_key, nonce, payload)
 
-        # Compute 4-byte fragment MAC over encrypted portion
-        if self._frag_key:
-            mac_full = poly1305_mac(self._frag_key, encrypted_inner)
-            mac = mac_full[:4]
-        else:
-            mac = b'\x00\x00\x00\x00'
+        # Compute 4-byte fragment MAC over encrypted payload
+        assert self._frag_key is not None, 'BUG: frag_key not set (should be derived from mumbojumbo key)'
+        mac_full = poly1305_mac(self._frag_key, encrypted_payload)
+        mac = mac_full[:4]
 
-        # Assemble final packet
-        packet = packet_id_bytes + mac + encrypted_inner
+        # Assemble final packet: packet_id + flags + mac + encrypted_payload
+        packet = packet_id_bytes + flags_bytes + mac + encrypted_payload
         assert len(packet) == BINARY_PACKET_SIZE
         return packet
 
@@ -340,28 +332,23 @@ class Fragment(BaseFragment):
             logger.debug(f'Invalid packet size: {len(packet)} (expected {BINARY_PACKET_SIZE})')
             return None
 
-        # Parse packet
+        # Parse packet (new format: packet_id + flags + mac + encrypted_payload)
         packet_id_bytes = packet[0:4]
-        mac = packet[4:8]
-        encrypted_inner = packet[8:40]
+        flags_bytes = packet[4:8]
+        mac = packet[8:12]
+        encrypted_payload = packet[12:40]
 
         # Verify fragment MAC BEFORE decryption
-        if self._frag_key:
-            mac_computed = poly1305_mac(self._frag_key, encrypted_inner)[:4]
-            if mac != mac_computed:
-                logger.debug('Fragment MAC verification failed')
-                return None
+        assert self._frag_key is not None, 'BUG: frag_key not set (should be derived from mumbojumbo key)'
+        mac_computed = poly1305_mac(self._frag_key, encrypted_payload)[:4]
+        if mac != mac_computed:
+            logger.debug('Fragment MAC verification failed')
+            return None
 
-        # Decrypt inner packet
-        nonce = packet_id_bytes * 3
-        if self._enc_key:
-            inner = chacha20_decrypt(self._enc_key, nonce, encrypted_inner)
-        else:
-            inner = encrypted_inner
-
-        # Parse inner packet
-        flags_bytes = inner[0:4]
-        payload = inner[4:32]
+        # Decrypt payload
+        nonce = packet_id_bytes + flags_bytes  # 8 bytes: packet_id + fragment_flags
+        assert self._enc_key is not None, 'BUG: enc_key not set (should be derived from mumbojumbo key)'
+        payload = chacha20_decrypt(self._enc_key, nonce, encrypted_payload)
 
         # Parse flags
         is_first, has_more, frag_index = self._parse_flags(flags_bytes)
@@ -410,9 +397,9 @@ class EncryptedFragment(Fragment):
             frag_key: 32-byte Poly1305 key (for fragment MACs, from parent)
         """
         if isinstance(enc_key, str):
-            enc_key = decode_key_hex(enc_key)
+            enc_key = decode_mumbojumbo_key(enc_key)
         if isinstance(auth_key, str):
-            auth_key = decode_key_hex(auth_key)
+            auth_key = decode_mumbojumbo_key(auth_key)
 
         self._enc_key = enc_key
         self._auth_key = auth_key
@@ -828,12 +815,12 @@ def encode_key_hex(key_bytes, key_type='cli'):
     return f'mj_{key_type}_{hex_str}'
 
 
-def decode_key_hex(key_str):
+def decode_mumbojumbo_key(key_str):
     """
-    Decode hex key string to bytes.
+    Decode mumbojumbo key string to bytes.
 
     Args:
-        key_str: mj_<type>_<64_hex_chars> or raw hex
+        key_str: mj_cli_<64_hex_chars> or raw hex
 
     Returns:
         bytes: 32-byte key
@@ -1026,7 +1013,7 @@ class StdoutHandler(PacketHandler):
 
             # Output JSON with key-value fields (key can be null)
             output = {
-                'timestamp': timestamp.isoformat(),
+                'timestamp': timestamp.isoformat(timespec='seconds'),
                 'event': 'packet_reassembled',
                 'key': key_display,
                 'key_length': len(key) if len(key) > 0 else None,
@@ -1166,7 +1153,7 @@ class PacketLogHandler(PacketHandler):
 
             # Write to file with metadata header
             with open(self._path, 'ab') as f:
-                header = f'# {timestamp.isoformat()} - key: {key_str} - value_length: {len(value)} - format: {self._format}\n'
+                header = f'# {timestamp.isoformat(timespec="seconds")} - key: {key_str} - value_length: {len(value)} - format: {self._format}\n'
                 f.write(header.encode('utf-8'))
 
                 if isinstance(output_value, str):
@@ -1189,7 +1176,17 @@ class PacketLogHandler(PacketHandler):
 
 
 class UploadHandler(PacketHandler):
-    """Receive files from clients. Key is u:// or upload:// URL, stripped to filename."""
+    """
+    Receive files from clients via upload protocol.
+
+    Upload Protocol:
+        - Key format: u://<filename> or upload://<filename>
+        - Value: Raw file contents (bytes)
+        - Example: key=b'u://document.pdf', value=<PDF bytes>
+
+    Files are saved to output_dir with the filename from the key.
+    The u:// or upload:// prefix is stripped before saving.
+    """
     def __init__(self, output_dir):
         self._output_dir = os.path.realpath(output_dir)
         os.makedirs(self._output_dir, exist_ok=True)
@@ -1264,7 +1261,7 @@ class ExecuteHandler(PacketHandler):
 
             # Prepare environment variables with metadata
             env = os.environ.copy()
-            env['MUMBOJUMBO_TIMESTAMP'] = timestamp.isoformat()
+            env['MUMBOJUMBO_TIMESTAMP'] = timestamp.isoformat(timespec='seconds')
             env['MUMBOJUMBO_KEY'] = key_str
             env['MUMBOJUMBO_KEY_LENGTH'] = str(len(key))
             env['MUMBOJUMBO_VALUE_LENGTH'] = str(len(value))
@@ -1595,7 +1592,7 @@ def main():
 
     # Decode and derive keys
     try:
-        client_key_bytes = decode_key_hex(client_key_str)
+        client_key_bytes = decode_mumbojumbo_key(client_key_str)
         enc_key_bytes, auth_key_bytes, frag_key_bytes = derive_keys(client_key_bytes)
     except ValueError as e:
         logger.error(f'Invalid key: {e}')

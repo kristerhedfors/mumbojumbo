@@ -1,387 +1,401 @@
 # Multi-Language Client Implementation Guide
 
-This guide provides the exact specifications for implementing mumbojumbo clients in Node.js, Go, Rust, and C.
+This guide provides exact specifications for implementing mumbojumbo clients in any language.
 
 ## Reference Implementation: Python ✅
 
-The Python client ([clients/python/mumbojumbo-client.py](python/mumbojumbo-client.py)) is the reference implementation. All other clients MUST follow the same pattern and protocol.
+The Python client ([clients/python/mumbojumbo-client.py](python/mumbojumbo-client.py)) is the **reference implementation**. All other clients MUST follow the same protocol.
 
 ---
 
-## Protocol Specification
+## Protocol Overview
 
-### Fragment Header Format (18 bytes)
+Mumbojumbo v2.0 uses ChaCha20-Poly1305 symmetric encryption with dual-layer authentication:
+
+- **Single master key:** All parties (server + clients) share one 32-byte key (`mj_cli_*`)
+- **Key derivation:** 3 keys derived via Poly1305-based KDF
+- **Dual encryption:** Fragment-level + message-level ChaCha20
+- **Fragment authentication:** 4-byte MAC verified before decryption
+- **Message integrity:** 8-byte MAC verified before inner decryption
+- **Wire format:** 40 bytes per fragment
+- **Encoding:** Base36 (63 characters per DNS label)
+
+---
+
+## Wire Format (40 bytes)
 
 All fields in **big-endian** (network byte order):
 
 ```
-Bytes  0-7:  packet_id      (u64) - Packet identifier (0 to 2^64-1)
-Bytes  8-11: frag_index     (u32) - Fragment index (0 to count-1)
-Bytes 12-15: frag_count     (u32) - Total fragments (up to 4.3 billion)
-Bytes 16-17: frag_data_len  (u16) - Fragment data length (0-80 bytes)
-Bytes 18+:   frag_data      (var) - Actual data (max 80 bytes)
+Bytes  0-3:   packet_id        (u32, UNENCRYPTED) - Packet identifier
+Bytes  4-7:   fragment_flags   (u32, UNENCRYPTED) - first/more flags + index
+Bytes  8-11:  fragment_mac     (4B, UNENCRYPTED)  - Poly1305 MAC (truncated)
+Bytes 12-39:  encrypted_payload (28B, ENCRYPTED)  - ChaCha20-encrypted data
 ```
 
-### Struct Definitions by Language
+### Fragment Flags Bitfield (u32, big-endian)
 
-**Python:**
+```
+Bit 31 (MSB):  First Fragment Flag (1 = first, 0 = continuation)
+Bit 30:        More Fragments Flag (1 = more coming, 0 = last)
+Bits 29-0:     Fragment Index (0 to 1,073,741,823)
+```
+
+**Examples:**
+- `0x80000000` = First & last (single fragment), index 0
+- `0xC0000000` = First fragment, more coming, index 0
+- `0x40000001` = Continuation, more coming, index 1
+- `0x00000002` = Last fragment, index 2
+
+---
+
+## Key Management
+
+### Key Format
+
+```
+mj_cli_<64_hex_chars>
+
+Example:
+mj_cli_6eaa1b50a62694a695c605b7491eb5cf87f1b210284b52cc5c99b3f3e2176048
+```
+
+### Key Derivation (Poly1305-based KDF)
+
+From the 32-byte master key, derive three 32-byte keys:
+
 ```python
-struct.pack('!QIIH', packet_id, frag_index, frag_count, data_len)
-# ! = big-endian, Q = u64, I = u32, H = u16
+def derive_keys(client_key):
+    # Each derived key is two 16-byte Poly1305 MACs concatenated
+    enc_key = poly1305(client_key, b'enc') + poly1305(client_key, b'enc2')
+    auth_key = poly1305(client_key, b'auth') + poly1305(client_key, b'auth2')
+    frag_key = poly1305(client_key, b'frag') + poly1305(client_key, b'frag2')
+    return enc_key, auth_key, frag_key  # Each 32 bytes
 ```
 
-**Node.js / JavaScript:**
-```javascript
-const buffer = Buffer.allocUnsafe(18);
-// Write u64 as two u32 values
-buffer.writeUInt32BE(Math.floor(packet_id / 0x100000000), 0); // high 32 bits
-buffer.writeUInt32BE(packet_id >>> 0, 4);                      // low 32 bits
-buffer.writeUInt32BE(frag_index, 8);
-buffer.writeUInt32BE(frag_count, 12);
-buffer.writeUInt16BE(data_len, 16);
-```
+**Libraries:**
+- Python: Use built-in Poly1305 (available in Python 3.10+ or implement manually)
+- Node.js: `tweetnacl` (Poly1305 available via `crypto_onetimeauth`)
+- Go: `golang.org/x/crypto/poly1305`
+- Rust: `poly1305` crate
+- C: `libsodium` (`crypto_onetimeauth_poly1305`)
 
-**Go:**
-```go
-binary.BigEndian.PutUint64(header[0:8], packet_id)
-binary.BigEndian.PutUint32(header[8:12], frag_index)
-binary.BigEndian.PutUint32(header[12:16], frag_count)
-binary.BigEndian.PutUint16(header[16:18], data_len)
-```
+---
 
-**Rust:**
-```rust
-header[0..8].copy_from_slice(&packet_id.to_be_bytes());
-header[8..12].copy_from_slice(&frag_index.to_be_bytes());
-header[12..16].copy_from_slice(&frag_count.to_be_bytes());
-header[16..18].copy_from_slice(&data_len.to_be_bytes());
-```
+## Encryption Protocol
 
-**C:**
-```c
-// Write u64 manually (no direct htonll on all platforms)
-header[0] = (packet_id >> 56) & 0xFF;
-header[1] = (packet_id >> 48) & 0xFF;
-header[2] = (packet_id >> 40) & 0xFF;
-header[3] = (packet_id >> 32) & 0xFF;
-header[4] = (packet_id >> 24) & 0xFF;
-header[5] = (packet_id >> 16) & 0xFF;
-header[6] = (packet_id >> 8) & 0xFF;
-header[7] = packet_id & 0xFF;
+### Message Structure (Before Fragmentation)
 
-uint32_t frag_index_be = htonl(frag_index);
-uint32_t frag_count_be = htonl(frag_count);
-uint16_t data_len_be = htons(data_len);
+1. **Build plaintext:**
+   ```
+   [1 byte: key_length][N bytes: key][M bytes: value]
+   ```
 
-memcpy(header + 8, &frag_index_be, 4);
-memcpy(header + 12, &frag_count_be, 4);
-memcpy(header + 16, &data_len_be, 2);
+2. **Inner encryption (message level):**
+   ```python
+   nonce_inner = os.urandom(8)  # 8-byte random nonce
+   encrypted_kv = chacha20_encrypt(enc_key, nonce_inner, plaintext)
+   integrity_mac = poly1305(auth_key, nonce_inner + encrypted_kv)[:8]
+   message = nonce_inner + integrity_mac + encrypted_kv
+   ```
+
+3. **Fragment into 28-byte chunks:**
+   ```python
+   fragments = [message[i:i+28] for i in range(0, len(message), 28)]
+   ```
+
+### Fragment Wire Format
+
+For each 28-byte fragment chunk:
+
+```python
+# Build flags
+flags = (is_first << 31) | (has_more << 30) | fragment_index
+flags_bytes = struct.pack('!I', flags)
+
+# Pad payload to 28 bytes
+payload = fragment_chunk.ljust(28, b'\x00')
+
+# Fragment-level encryption
+packet_id_bytes = struct.pack('!I', packet_id)
+nonce = packet_id_bytes + flags_bytes  # 8 bytes total
+nonce_12 = nonce + b'\x00\x00\x00\x00'  # Pad to 12 bytes for ChaCha20
+encrypted_payload = chacha20_encrypt(enc_key, nonce_12, payload)
+
+# Compute MAC over encrypted payload
+fragment_mac = poly1305(frag_key, encrypted_payload)[:4]
+
+# Assemble wire packet
+wire_packet = packet_id_bytes + flags_bytes + fragment_mac + encrypted_payload
+# Total: 4 + 4 + 4 + 28 = 40 bytes
 ```
 
 ---
 
-## Client Class/Module Design
+## Encoding: Base36
 
-Every client MUST implement this exact interface:
+**Alphabet:** `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ` (case-insensitive decode)
 
-### Class: `MumbojumboClient`
-
-**Constructor:**
-```
-MumbojumboClient(server_public_key, domain, [max_fragment_size=80])
-```
-
-**Methods:**
-1. `send_data(data)` → `[(query, success), ...]` - Send data via DNS queries
-2. `generate_queries(data)` → `[query1, query2, ...]` - Generate queries without sending
-
-**Internal State:**
-- `_next_packet_id` - Auto-incrementing u64 counter (wraps at 2^64-1)
-- `server_client_key` - Server's public key (32 bytes)
-- `domain` - DNS domain suffix (e.g., `.asd.qwe`)
-- `max_fragment_size` - Max bytes per fragment (default: 80)
-
-### Helper Functions
-
-All clients MUST provide these helpers (can be private):
-
-1. **`parse_key_hex(key_str)`** - Parse `mj_cli_<hex>` format
-2. **`create_fragment(packet_id, frag_index, frag_count, frag_data)`** - Build 18-byte header + data
-3. **`encrypt_fragment(plaintext, server_client_key)`** - NaCl SealedBox encryption
-4. **`base32_encode(data)`** - Lowercase, no padding
-5. **`split_to_labels(data, max_len=63)`** - Split into DNS labels
-6. **`create_dns_query(encrypted, domain)`** - Full DNS name
-7. **`send_dns_query(dns_name)`** - Send via system DNS resolver
-8. **`fragment_data(data, max_size=80)`** - Split data into chunks
-
----
-
-## Encryption: NaCl SealedBox
-
-All clients use **NaCl SealedBox** for anonymous public-key encryption.
-
-### Libraries by Language
-
-| Language | Library | Package |
-|----------|---------|---------|
-| Python | `pynacl` | `nacl.public.SealedBox` |
-| Node.js | `tweetnacl` + `tweetnacl-sealedbox-js` | `sealedbox.seal()` |
-| Go | `golang.org/x/crypto/nacl/box` | Custom SealedBox wrapper |
-| Rust | `sodiumoxide` | `sealedbox::seal()` |
-| C | `libsodium` | `crypto_box_seal()` |
-
-### Encryption Details
-
-- **Algorithm:** X25519 (key exchange) + XSalsa20-Poly1305 (encryption)
-- **Overhead:** 48 bytes (32-byte ephemeral public key + 16-byte auth tag)
-- **Client needs:** Only server's public key (32 bytes)
-- **Server needs:** Its private key (32 bytes) for decryption
-- **Nonce:** Handled automatically by SealedBox
-
----
-
-## Base32 Encoding
-
-- **Alphabet:** `ABCDEFGHIJKLMNOPQRSTUVWXYZ234567`
-- **Output:** Lowercase (`abcdefghijklmnopqrstuvwxyz234567`)
-- **Padding:** NONE - remove all `=` characters
-- **Standard:** RFC 4648
+40 bytes → 63 characters (exact fit for single DNS label)
 
 ### Implementation by Language
 
 **Python:**
 ```python
-base64.b32encode(data).replace(b'=', b'').lower().decode('ascii')
+import base64
+# Use custom base36 encoder (see reference implementation)
 ```
 
 **Node.js:**
 ```javascript
-const base32 = require('base32');
-base32.encode(data).replace(/=/g, '').toLowerCase();
+// Use base-x or custom implementation
+const BASE36 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 ```
 
 **Go:**
 ```go
-base32.StdEncoding.EncodeToString(data)
-// Convert to lowercase, remove padding
+import "math/big"
+// Use big.Int for base conversion
 ```
 
 **Rust:**
 ```rust
-use base32;
-base32::encode(base32::Alphabet::RFC4648 { padding: false }, data).to_lowercase()
+// Use num-bigint crate
 ```
 
 **C:**
 ```c
-// Manual implementation or use base32.c library
+// Manual implementation with division/modulo
 ```
 
 ---
 
-## DNS Query Encoding
+## Cryptographic Primitives
 
-After base32 encoding:
+### ChaCha20 Encryption
 
-1. **Split into 63-character labels**
-   - DNS label max length: 63 characters
-   - Split string every 63 chars
+**Nonce:** 12 bytes (8 bytes from packet_id+flags, zero-padded)
+**Key:** 32 bytes (derived keys)
+**Block counter:** Starts at 0
 
-2. **Join with dots**
-   - `label1.label2.label3`
+**Libraries:**
+- Python: `cryptography.hazmat.primitives.ciphers`
+- Node.js: `tweetnacl` (XChaCha20) or Node crypto module
+- Go: `golang.org/x/crypto/chacha20`
+- Rust: `chacha20` crate
+- C: `libsodium` (`crypto_stream_chacha20`)
 
-3. **Append domain suffix**
-   - Final: `label1.label2.label3.asd.qwe`
+### Poly1305 MAC
 
-### Example
+**Key:** 32 bytes (one-time)
+**Output:** 16 bytes (truncate to 4 or 8 bytes as needed)
+
+**Libraries:**
+- Python: Implement manually or use `cryptography`
+- Node.js: `tweetnacl` (`crypto_onetimeauth`)
+- Go: `golang.org/x/crypto/poly1305`
+- Rust: `poly1305` crate
+- C: `libsodium` (`crypto_onetimeauth_poly1305`)
+
+---
+
+## DNS Query Format
 
 ```
-Encrypted: [71 bytes]
-Base32: "jjvruxg4bfjrq2lbmfxgs43pn5tuk6bqmfzwk5dzn7ytgu3fmeza"
-Labels: ["jjvruxg4bfjrq2lbmfxgs43pn5tuk6bqmfzwk5dzn7ytgu3fmeza"]
-DNS: "jjvruxg4bfjrq2lbmfxgs43pn5tuk6bqmfzwk5dzn7ytgu3fmeza.asd.qwe"
+<63-character-base36-fragment>.<domain>
+
+Example:
+X3K9LABC...DEF123.asd.qwe
+```
+
+**Sending:**
+- Use system DNS resolver
+- Type A query (any type works, server only captures)
+- No response needed (one-way covert channel)
+
+---
+
+## Client Interface
+
+Every client MUST implement this interface:
+
+### Class: `MumbojumboClient`
+
+**Constructor:**
+```
+MumbojumboClient(client_key, domain, [max_packet_id=None])
+```
+
+**Methods:**
+1. `send(key, value)` → Send key-value pair via DNS
+2. `send_data(data)` → Send raw data with empty key
+3. `upload_file(filepath, remote_path)` → Upload file with `u://` key
+
+**Internal State:**
+- `client_key` - 32-byte master key
+- `enc_key, auth_key, frag_key` - Derived keys
+- `domain` - DNS suffix (e.g., `.asd.qwe`)
+- `packet_id_counter` - Auto-increment u32 (wraps at 2^32)
+
+### Required Functions
+
+Clients MUST implement these functions:
+
+1. **Key Management:**
+   - `parse_key(key_str)` - Parse `mj_cli_<hex>` → 32 bytes
+   - `derive_keys(client_key)` - KDF → (enc_key, auth_key, frag_key)
+
+2. **Message Building:**
+   - `build_plaintext(key, value)` - Create key-value plaintext
+   - `inner_encrypt(plaintext, enc_key, auth_key)` - Message-level encryption
+   - `fragment_message(message)` - Split into 28-byte chunks
+
+3. **Fragment Building:**
+   - `build_flags(is_first, has_more, index)` - Create flags u32
+   - `outer_encrypt(payload, enc_key, packet_id, flags)` - Fragment encryption
+   - `compute_fragment_mac(encrypted_payload, frag_key)` - 4-byte MAC
+   - `build_wire_packet(packet_id, flags, mac, encrypted_payload)` - 40 bytes
+
+4. **Encoding & Sending:**
+   - `base36_encode(data)` - 40 bytes → 63 chars
+   - `send_dns_query(label, domain)` - Issue DNS query
+
+---
+
+## Full Send Algorithm
+
+```python
+def send(key, value, client_key, domain):
+    # 1. Derive keys
+    enc_key, auth_key, frag_key = derive_keys(client_key)
+
+    # 2. Build plaintext
+    plaintext = bytes([len(key)]) + key + value
+
+    # 3. Inner encryption (message level)
+    nonce_inner = os.urandom(8)
+    encrypted_kv = chacha20_encrypt(enc_key, nonce_inner, plaintext)
+    integrity = poly1305(auth_key, nonce_inner + encrypted_kv)[:8]
+    message = nonce_inner + integrity + encrypted_kv
+
+    # 4. Fragment into 28-byte chunks
+    packet_id = random.randint(0, 0xFFFFFFFF)
+    fragments = [message[i:i+28] for i in range(0, len(message), 28)]
+
+    # 5. Build and send each fragment
+    for i, chunk in enumerate(fragments):
+        is_first = (i == 0)
+        has_more = (i < len(fragments) - 1)
+
+        # Build flags (UNENCRYPTED)
+        flags = (is_first << 31) | (has_more << 30) | i
+        flags_bytes = struct.pack('!I', flags)
+
+        # Pad to 28 bytes
+        payload = chunk.ljust(28, b'\x00')
+
+        # Fragment encryption
+        packet_id_bytes = struct.pack('!I', packet_id)
+        nonce = packet_id_bytes + flags_bytes + b'\x00\x00\x00\x00'
+        encrypted_payload = chacha20_encrypt(enc_key, nonce, payload)
+
+        # MAC
+        mac = poly1305(frag_key, encrypted_payload)[:4]
+
+        # Wire packet
+        wire = packet_id_bytes + flags_bytes + mac + encrypted_payload
+
+        # Encode and send
+        label = base36_encode(wire)
+        send_dns_query(f"{label}{domain}")
 ```
 
 ---
 
-## CLI Interface
+## Testing & Validation
 
-All clients MUST support the same command-line interface:
+### Test Vectors
 
-### Arguments
+Implement these test cases:
 
-- `-k, --key <public_key>` - Server public key (mj_cli_... format) **REQUIRED**
-- `-d, --domain <domain>` - DNS domain suffix (e.g., `.asd.qwe`) **REQUIRED**
-- `-f, --file <path>` - Input file path, use `-` for stdin (default: stdin)
-- `-v, --verbose` - Enable verbose output to stderr
+1. **Single-fragment message:** `key=""`, `value=b"HI"`
+2. **Multi-fragment message:** `key="test"`, `value=b"A"*100`
+3. **Upload protocol:** `key="u://test.txt"`, `value=b"file contents"`
+4. **Large key:** `key="x"*255`, `value=b"y"`
 
-### Examples
+### Validation
+
+Compare your client's output with Python reference:
 
 ```bash
-# Send from stdin
-echo "Hello" | ./mumbojumbo-client -k mj_cli_... -d .asd.qwe
+# Generate same packet_id test
+echo "test" | ./mumbojumbo-client.py -k mj_cli_... -d .test.com
 
-# Send from file
-./mumbojumbo-client -k mj_cli_... -d .asd.qwe -f message.txt
-
-# Verbose mode
-./mumbojumbo-client -k mj_cli_... -d .asd.qwe -v
-```
-
-### Output
-
-**stdout:** DNS query names (one per line)
-**stderr:** Verbose info (only if `-v` flag)
-
----
-
-## Complete Data Flow
-
-```
-1. Read input (file or stdin)
-2. Initialize client with server public key and domain
-3. Split data into 80-byte chunks (fragments)
-4. For each fragment:
-   a. Build 12-byte header (packet_id, frag_index, frag_count, data_len)
-   b. Append fragment data
-   c. Encrypt with NaCl SealedBox
-   d. Base32 encode (lowercase, no padding)
-   e. Split into 63-char labels
-   f. Join labels with dots
-   g. Append domain
-   h. Send DNS query (or just generate if dry-run)
-5. Return results
+# Compare Base36-encoded fragments
 ```
 
 ---
 
-## Testing Requirements
+## Environment Variables
 
-Each client MUST have comprehensive tests covering:
+Support these for auto-configuration:
 
-### Unit Tests
-- Key parsing (valid, invalid, wrong format)
-- Fragment header creation (basic, multi-fragment, empty, oversized)
-- Encryption/decryption round-trips
-- Base32 encoding (basic, no padding, lowercase)
-- DNS label splitting (short, long, exactly 63 chars, empty)
-- Data fragmentation (small, exact size, overflow)
+- `MUMBOJUMBO_CLIENT_KEY` - Master key (mj_cli_...)
+- `MUMBOJUMBO_DOMAIN` - DNS suffix (.example.com)
 
-### Integration Tests
-- Client initialization
-- Query generation without sending
-- Multi-fragment messages
-- Internal packet ID management (not exposed to users)
+**Priority:** CLI args > Environment > Config file
 
-### End-to-End Tests
-- Full encrypt → encode → decode → decrypt flow
-- Single-fragment messages
-- Multi-fragment messages
-- CLI interface (help, missing args, stdin, file input)
+---
 
-### Cross-Compatibility Tests
-- All clients MUST generate identical DNS queries for same input
-- All clients MUST work with Python server (mumbojumbo.py)
+## Error Handling
+
+Clients MUST handle:
+
+1. **Invalid key format:** Reject non-hex, wrong length, wrong prefix
+2. **DNS failures:** Retry or report (don't crash)
+3. **Empty data:** Reject or send minimum 1-byte value
+4. **Large data:** Warn if >30GB (protocol maximum)
+
+---
+
+## Security Notes
+
+- **Keep keys secret:** Master key is symmetric (shared by all)
+- **No authentication:** Anyone with key can send
+- **No confidentiality of metadata:** Flags are unencrypted
+- **Replay attacks:** No timestamp protection
+- **Use for authorized testing only**
 
 ---
 
 ## Implementation Checklist
 
-For each language:
-
-- [ ] Create client directory structure
-- [ ] Implement `MumbojumboClient` class/module
-  - [ ] Constructor with key, domain, max_fragment_size
-  - [ ] `send_data()` method
-  - [ ] `generate_queries()` method
-  - [ ] Internal packet ID management
-- [ ] Implement helper functions
-  - [ ] `parse_key_hex()`
-  - [ ] `create_fragment()` with 12-byte header
-  - [ ] `encrypt_fragment()` with NaCl SealedBox
-  - [ ] `base32_encode()`
-  - [ ] `split_to_labels()`
-  - [ ] `create_dns_query()`
-  - [ ] `send_dns_query()`
-  - [ ] `fragment_data()`
-- [ ] Implement CLI wrapper
-  - [ ] Argument parsing (-k, -d, -f, -v)
-  - [ ] File/stdin input
-  - [ ] Verbose output
-- [ ] Write comprehensive tests
-  - [ ] Unit tests (all helpers)
-  - [ ] Integration tests (client class)
-  - [ ] E2E tests (full flow)
-  - [ ] CLI tests
-- [ ] Cross-compatibility testing
-  - [ ] Generate same queries as Python client
-  - [ ] Test against Python server
-- [ ] Documentation
-  - [ ] README.md
-  - [ ] API.md
-  - [ ] Usage examples
+- [ ] Parse `mj_cli_` key format
+- [ ] Implement Poly1305-based KDF
+- [ ] Implement ChaCha20 encryption
+- [ ] Implement Poly1305 MAC
+- [ ] Build key-value plaintext
+- [ ] Inner encryption with nonce + integrity
+- [ ] Fragment into 28-byte chunks
+- [ ] Build fragment flags correctly
+- [ ] Outer encryption with packet_id + flags nonce
+- [ ] Compute 4-byte fragment MAC
+- [ ] Assemble 40-byte wire packets
+- [ ] Base36 encode to 63 characters
+- [ ] Send DNS queries
+- [ ] Support environment variables
+- [ ] Handle upload protocol (`u://` keys)
+- [ ] Test against Python reference
 
 ---
 
-## Language-Specific Notes
+## Additional Resources
 
-### Node.js
-- Use ES6 modules or CommonJS
-- Single file or minimal package
-- Dependencies: `tweetnacl`, `tweetnacl-sealedbox-js`
-- Test framework: Jest or Node test runner
-
-### Go
-- Use standard library where possible
-- Single package or minimal module
-- Dependencies: `golang.org/x/crypto/nacl/box`
-- Implement custom SealedBox wrapper
-- Test framework: `go test`
-
-### Rust
-- Use Cargo project
-- Dependencies: `sodiumoxide` or `crypto_box`
-- Minimize external crates
-- Test framework: Built-in `cargo test`
-
-### C
-- Single .c file or minimal project
-- Dependencies: `libsodium` only
-- Manual base32 implementation or minimal library
-- Test framework: Check or minimal custom harness
+- [PROTOCOL.md](../PROTOCOL.md) - Complete protocol specification
+- [clients/python/mumbojumbo-client.py](python/mumbojumbo-client.py) - Reference implementation
+- [clients/python/API.md](python/API.md) - Python API documentation
+- [RFC 7539](https://tools.ietf.org/html/rfc7539) - ChaCha20 and Poly1305
 
 ---
 
-## Key Design Principles
-
-1. **Simplicity** - Single file or minimal dependencies
-2. **Consistency** - All clients follow exact same pattern
-3. **Modularity** - Clean class/module interface
-4. **Testability** - Comprehensive test coverage
-5. **Compatibility** - Work with Python server
-6. **No backwards compatibility** - Always use latest/greatest
-7. **Clean API** - Packet ID is internal, not exposed
-
----
-
-## Reference: Python Client API
-
-```python
-from mumbojumbo_client import MumbojumboClient, parse_key_hex
-
-# Initialize
-key = parse_key_hex('mj_cli_abc123...')
-client = MumbojumboClient(key, '.asd.qwe')
-
-# Send data
-results = client.send_data(b"Hello World")
-for dns_query, success in results:
-    print(f"{dns_query}: {'✓' if success else '✗'}")
-
-# Or just generate queries
-queries = client.generate_queries(b"Test")
-for query in queries:
-    print(query)
-```
-
-This is the pattern ALL clients must follow!
+**NOTE:** The Python client is the authoritative implementation. When in doubt, match Python's behavior exactly.

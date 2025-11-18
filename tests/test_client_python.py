@@ -23,7 +23,7 @@ from mumbojumbo import (
     DnsFragment,
     derive_keys,
     encode_key_hex,
-    decode_key_hex,
+    decode_mumbojumbo_key,
 )
 
 

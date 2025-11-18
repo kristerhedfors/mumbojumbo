@@ -57,8 +57,8 @@ class TestFragmentSerialization:
         recovered_id = struct.unpack('!I', serialized[:4])[0]
         assert recovered_id == packet_id
 
-    def test_mac_in_bytes_4_to_8(self, enc_key, frag_key):
-        """Fragment MAC should be in bytes 4-8."""
+    def test_mac_in_bytes_8_to_12(self, enc_key, frag_key):
+        """Fragment MAC should be in bytes 8-11 (new format)."""
         frag = Fragment(
             packet_id=0x12345678,
             frag_index=0,
@@ -70,13 +70,13 @@ class TestFragmentSerialization:
         )
         serialized = frag.serialize()
 
-        # Bytes 4-8 are MAC (should be non-zero)
-        mac = serialized[4:8]
+        # Bytes 8-11 are MAC (should be non-zero)
+        mac = serialized[8:12]
         assert len(mac) == 4
         assert mac != b'\x00\x00\x00\x00'
 
-    def test_encrypted_portion_is_32_bytes(self, enc_key, frag_key):
-        """Encrypted portion (bytes 8-40) should be 32 bytes."""
+    def test_encrypted_portion_is_28_bytes(self, enc_key, frag_key):
+        """Encrypted payload (bytes 12-39) should be 28 bytes (new format)."""
         frag = Fragment(
             packet_id=0x12345678,
             frag_index=0,
@@ -88,8 +88,8 @@ class TestFragmentSerialization:
         )
         serialized = frag.serialize()
 
-        encrypted = serialized[8:40]
-        assert len(encrypted) == 32
+        encrypted_payload = serialized[12:40]
+        assert len(encrypted_payload) == 28
 
     def test_payload_padded_to_28_bytes(self, enc_key, frag_key):
         """Fragment payload should be padded to 28 bytes."""
@@ -215,8 +215,8 @@ class TestFragmentDeserialization:
         )
         serialized = bytearray(frag.serialize())
 
-        # Corrupt MAC (bytes 4-8)
-        serialized[4] ^= 0xFF
+        # Corrupt MAC (bytes 8-11 in new format)
+        serialized[8] ^= 0xFF
 
         recovered = frag.deserialize(bytes(serialized))
         assert recovered is None
@@ -256,41 +256,46 @@ class TestFragmentDeserialization:
 
 
 class TestFragmentWithoutEncryption:
-    """Test Fragment without encryption keys (plaintext mode)."""
+    """Test Fragment packet format (encryption is now mandatory in v2.0)."""
 
-    def test_serialize_without_keys_no_encryption(self):
-        """Without keys, fragment should serialize but not encrypt."""
+    def test_encrypted_portion_is_28_bytes(self, enc_key, frag_key):
+        """Encrypted portion should be 28 bytes (payload only, flags are unencrypted)."""
         frag = Fragment(
             packet_id=0x12345678,
             frag_index=0,
             is_first=True,
             has_more=False,
             frag_data=b'test',
-            enc_key=None,
-            frag_key=None
+            enc_key=enc_key,
+            frag_key=frag_key
         )
         serialized = frag.serialize()
         assert len(serialized) == BINARY_PACKET_SIZE
 
-        # MAC should be zeros when no frag_key
-        mac = serialized[4:8]
-        assert mac == b'\x00\x00\x00\x00'
+        # Encrypted payload is bytes 12-39 (28 bytes)
+        encrypted_payload = serialized[12:40]
+        assert len(encrypted_payload) == 28
 
-    def test_deserialize_without_keys_skips_mac_check(self):
-        """Without frag_key, MAC verification should be skipped."""
+    def test_packet_format_has_unencrypted_flags(self, enc_key, frag_key):
+        """Flags should be unencrypted at bytes 4-7."""
         frag = Fragment(
             packet_id=0x12345678,
-            frag_index=0,
-            is_first=True,
-            has_more=False,
+            frag_index=42,
+            is_first=False,
+            has_more=True,
             frag_data=b'test',
-            enc_key=None,
-            frag_key=None
+            enc_key=enc_key,
+            frag_key=frag_key
         )
-        recovered = frag.deserialize(frag.serialize())
-        assert recovered._packet_id == 0x12345678
-        # Last fragment (has_more=False): trailing zeros stripped
-        assert recovered._frag_data == b'test'
+        serialized = frag.serialize()
+
+        # Extract flags from bytes 4-7 (unencrypted)
+        flags_bytes = serialized[4:8]
+        flags = struct.unpack('!I', flags_bytes)[0]
+
+        # Verify we can read the fragment index directly (flags are unencrypted)
+        frag_index = flags & 0x3FFFFFFF
+        assert frag_index == 42
 
 
 class TestDnsFragment:
@@ -572,3 +577,161 @@ class TestFragmentEdgeCases:
             )
             recovered = frag.deserialize(frag.serialize())
             assert recovered._frag_index == index
+
+
+class TestFragmentNonceUniqueness:
+    """Test that each fragment uses a unique nonce for encryption."""
+
+    def test_different_fragments_use_different_encrypted_payloads(self, enc_key, frag_key):
+        """Fragments with same payload but different indices should have different encrypted payloads.
+
+        This verifies that nonce reuse doesn't occur - each fragment should use
+        a unique nonce based on packet_id + fragment_flags.
+        """
+        packet_id = 0x12345678
+        payload = b'A' * FRAGMENT_PAYLOAD_SIZE
+
+        # Create two fragments with identical payload but different indices
+        frag0 = Fragment(
+            packet_id=packet_id,
+            frag_index=0,
+            is_first=True,
+            has_more=True,
+            frag_data=payload,
+            enc_key=enc_key,
+            frag_key=frag_key
+        )
+
+        frag1 = Fragment(
+            packet_id=packet_id,
+            frag_index=1,
+            is_first=False,
+            has_more=True,
+            frag_data=payload,
+            enc_key=enc_key,
+            frag_key=frag_key
+        )
+
+        # Serialize both fragments
+        packet0 = frag0.serialize()
+        packet1 = frag1.serialize()
+
+        # Extract encrypted payloads (bytes 12-39 in new format)
+        encrypted_payload0 = packet0[12:40]
+        encrypted_payload1 = packet1[12:40]
+
+        # Encrypted payloads MUST be different despite identical plaintext
+        # This proves unique nonces are used
+        assert encrypted_payload0 != encrypted_payload1, \
+            "Nonce reuse detected! Same encrypted payload for different fragments."
+
+    def test_fragment_flags_in_correct_position(self, enc_key, frag_key):
+        """Fragment flags should be at bytes 4-7 (unencrypted)."""
+        packet_id = 0xAABBCCDD
+        frag_index = 42
+
+        frag = Fragment(
+            packet_id=packet_id,
+            frag_index=frag_index,
+            is_first=False,
+            has_more=True,
+            frag_data=b'test',
+            enc_key=enc_key,
+            frag_key=frag_key
+        )
+
+        packet = frag.serialize()
+
+        # Parse fragment flags from bytes 4-7
+        flags_bytes = packet[4:8]
+        flags = struct.unpack('!I', flags_bytes)[0]
+
+        # Extract index from flags (lower 30 bits)
+        extracted_index = flags & 0x3FFFFFFF
+        assert extracted_index == frag_index
+
+        # Check has_more flag (bit 30)
+        has_more = bool(flags & 0x40000000)
+        assert has_more is True
+
+        # Check is_first flag (bit 31)
+        is_first = bool(flags & 0x80000000)
+        assert is_first is False
+
+    def test_nonce_construction_packet_id_plus_flags(self, enc_key, frag_key):
+        """Verify nonce is constructed as packet_id (4B) + fragment_flags (4B)."""
+        # This test verifies the nonce format by checking that modifying
+        # either packet_id or fragment_flags produces different ciphertexts
+
+        payload = b'test data for nonce verification'
+
+        # Same packet_id, different flags -> different ciphertext
+        frag_a = Fragment(
+            packet_id=100,
+            frag_index=0,
+            is_first=True,
+            has_more=False,
+            frag_data=payload,
+            enc_key=enc_key,
+            frag_key=frag_key
+        )
+
+        frag_b = Fragment(
+            packet_id=100,  # SAME packet_id
+            frag_index=1,   # DIFFERENT index (changes flags)
+            is_first=False,
+            has_more=False,
+            frag_data=payload,
+            enc_key=enc_key,
+            frag_key=frag_key
+        )
+
+        packet_a = frag_a.serialize()
+        packet_b = frag_b.serialize()
+
+        # Different flags -> different encrypted payloads
+        assert packet_a[12:40] != packet_b[12:40]
+
+        # Different packet_id, same flags -> different ciphertext
+        frag_c = Fragment(
+            packet_id=200,  # DIFFERENT packet_id
+            frag_index=0,   # SAME index
+            is_first=True,
+            has_more=False,
+            frag_data=payload,
+            enc_key=enc_key,
+            frag_key=frag_key
+        )
+
+        packet_c = frag_c.serialize()
+
+        # Different packet_id -> different encrypted payloads
+        assert packet_a[12:40] != packet_c[12:40]
+
+    def test_multifragment_packet_no_nonce_reuse(self, enc_key, frag_key):
+        """Simulate a multi-fragment packet - all encrypted payloads must differ."""
+        packet_id = 0xDEADBEEF
+        num_fragments = 10
+        payload = b'X' * FRAGMENT_PAYLOAD_SIZE
+
+        encrypted_payloads = []
+
+        for i in range(num_fragments):
+            frag = Fragment(
+                packet_id=packet_id,
+                frag_index=i,
+                is_first=(i == 0),
+                has_more=(i < num_fragments - 1),
+                frag_data=payload,
+                enc_key=enc_key,
+                frag_key=frag_key
+            )
+            packet = frag.serialize()
+            encrypted_payload = packet[12:40]
+            encrypted_payloads.append(encrypted_payload)
+
+        # All encrypted payloads must be unique (no nonce reuse)
+        unique_payloads = set(encrypted_payloads)
+        assert len(unique_payloads) == num_fragments, \
+            f"Nonce reuse detected! Only {len(unique_payloads)} unique encrypted " \
+            f"payloads out of {num_fragments} fragments."

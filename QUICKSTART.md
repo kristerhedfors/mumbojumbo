@@ -2,18 +2,18 @@
 
 ## What is Mumbojumbo?
 
-Mumbojumbo is a DNS tunnel that sends encrypted data via DNS queries. It uses NaCl public key cryptography (SealedBox) to encrypt messages, fragments them into chunks, and encodes each fragment as a DNS subdomain query.
+Mumbojumbo is a DNS covert channel that sends encrypted key-value data via DNS queries. It uses ChaCha20-Poly1305 symmetric encryption with dual-layer authentication, fragments messages into 28-byte chunks, and encodes each fragment as a Base36 DNS subdomain query.
 
 ## Quick Test (Recommended: Environment Variables)
 
 ### Terminal 1 - Server
 ```bash
 # 1. Generate keys and export to environment (do this once)
-./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
 source ~/.mumbojumbo_env
 
-# 2. Start server (requires sudo for packet capture, uses env vars)
-sudo -E ./venv/bin/python3 mumbojumbo.py
+# 2. Start server (requires sudo for packet capture, -E preserves env vars)
+sudo -E python3 mumbojumbo.py
 ```
 
 ### Terminal 2 - Client
@@ -21,20 +21,22 @@ sudo -E ./venv/bin/python3 mumbojumbo.py
 # Load the same environment variables
 source ~/.mumbojumbo_env
 
-# Send data using Python client (no arguments needed!)
-echo "Hello World" | ./clients/python/mumbojumbo-client.py
+# Send data using Python client (no arguments needed, no dependencies!)
+echo "Hello World" | python3 clients/python/mumbojumbo_client.py
 ```
+
+**Note:** No dependencies required - uses Python 3.8+ standard library only!
 
 ## Alternative: Using Config File
 
 ### Terminal 1 - Server
 ```bash
 # Generate config (do this once)
-./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
+python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 chmod 600 mumbojumbo.conf
 
 # Start server (requires sudo for packet capture)
-sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
+sudo python3 mumbojumbo.py --config mumbojumbo.conf
 ```
 
 ### Terminal 2 - Client
@@ -42,58 +44,59 @@ sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
 # Extract client key from config file comments
 # Look for: mumbojumbo_client_key = mj_cli_<64_hex_chars>
 # Use that key with any client
-echo "Hello" | ./clients/python/mumbojumbo-client.py \
-  -k mj_cli_<your_key_here> \
+echo "Hello" | python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<your_key_here> \
   -d .asd.qwe
 ```
 
-## HTML Client
+## Python Client
 
-I've created `client.html` - a single-page web application that:
-- Takes server public key and domain suffix as separate inputs
-- Has a textarea for your message
-- Encrypts and fragments the message using NaCl
-- Generates DNS queries (shows them in browser console)
-- Works entirely in the browser with no backend needed
+The Python client (`clients/python/mumbojumbo_client.py`) is the reference implementation.
 
-**To use:**
+**Features:**
+- **No dependencies:** Uses Python 3.8+ standard library only
+- **Key-value protocol:** Send structured data with keys for server-side routing
+- **Upload mode:** Transfer files with special `u://` protocol
+- **Auto-configuration:** Uses environment variables when available
+- **Flexible input:** Read from stdin, files, or command-line arguments
+
+**Basic usage:**
 ```bash
-# 1. Generate config
-./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
+# Simple message (piped from stdin, no key)
+echo "Hello World" | python3 clients/python/mumbojumbo_client.py
 
-# 2. Open client in browser
-open client.html   # macOS
-xdg-open client.html   # Linux
+# Named key-value pair for routing
+python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<hex> \
+  -d .example.com \
+  -k "logs:error" \
+  -v "Database connection failed"
+
+# Upload file (key automatically set to u://<filename>)
+python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<hex> \
+  -d .example.com \
+  -u /path/to/local/db.sql
 ```
 
-Then:
-1. Copy the `server_client_key` value from the config comments and paste into "Server Public Key" field
-2. Copy the `domain` value (e.g., `.asd.qwe`) and paste into "Domain Suffix" field
-3. Type your message in the textarea
-4. Click "Send via DNS"
-5. Open browser console (F12) to see the DNS queries that would be sent
-6. The first query is automatically copied to your clipboard
+See [clients/python/README.md](clients/python/README.md) for complete documentation.
 
 ## Exact Commands to Run
 
 ### Setup (one time)
 ```bash
-# 1. Create virtual environment (if not exists)
-python3 -m venv venv
+# Generate keys and save to environment file
+python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
 
-# 2. Install dependencies
-./venv/bin/pip install pynacl
-
-# 3. Generate keys and save to environment file
-./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
-
-# 4. Load environment variables
+# Load environment variables
 source ~/.mumbojumbo_env
 
 # Alternatively, generate a config file
-./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
+python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 chmod 600 mumbojumbo.conf
 ```
+
+**Note:** No dependencies or virtual environment needed - uses Python 3.8+ standard library only!
 
 ### Running the Server
 
@@ -103,20 +106,20 @@ chmod 600 mumbojumbo.conf
 source ~/.mumbojumbo_env
 
 # Start server (sudo -E preserves environment variables)
-sudo -E ./venv/bin/python3 mumbojumbo.py
+sudo -E python3 mumbojumbo.py
 ```
 
 **Option B - With config file:**
 ```bash
 # Start server with config
-sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
+sudo python3 mumbojumbo.py --config mumbojumbo.conf
 ```
 
 **Option C - With CLI overrides:**
 ```bash
 # Override specific settings
-sudo ./venv/bin/python3 mumbojumbo.py \
-  -k mj_srv_<64_hex_chars> \
+sudo python3 mumbojumbo.py \
+  -k mj_cli_<64_hex_chars> \
   -d .example.com
 ```
 
@@ -124,62 +127,67 @@ sudo ./venv/bin/python3 mumbojumbo.py \
 
 ### Sending Data
 
-**Option A - Python client with env vars:**
+**Option A - Python client with env vars (recommended):**
 ```bash
 source ~/.mumbojumbo_env
-echo "Hello World" | ./clients/python/mumbojumbo-client.py
-# (No arguments needed - uses environment variables automatically)
+echo "Hello World" | python3 clients/python/mumbojumbo_client.py
+# No arguments needed - uses environment variables automatically
+# No dependencies - uses Python 3.8+ standard library only
 ```
 
-**Option B - Go client:**
+**Option B - Python client with explicit arguments:**
 ```bash
-# Build first
+echo "Hello" | python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<64_hex_chars> \
+  -d .example.com
+```
+
+**Option C - Go client:**
+```bash
+# Build first (requires Go toolchain)
 cd clients/go
 go build -o mumbojumbo-client mumbojumbo-client.go
 
 # Use client
 echo "Hello" | ./mumbojumbo-client \
-  -k mj_cli_<64_hex_chars> \
+  --client-key mj_cli_<64_hex_chars> \
   -d .example.com
 ```
 
-**Option C - Node.js client:**
+**Option D - Node.js client:**
 ```bash
 cd clients/nodejs
-npm install
+npm install  # Install dependencies first
 echo "Hello" | ./mumbojumbo-client.js \
-  -k mj_cli_<64_hex_chars> \
+  --client-key mj_cli_<64_hex_chars> \
   -d .example.com
-```
-
-**Option D - HTML client:**
-```bash
-# Open client.html in browser
-open client.html
-# (paste your mj_cli_ key and domain into the form)
 ```
 
 ## Key Format
 
-Mumbojumbo uses hex-encoded keys with prefixes for easy identification:
+Mumbojumbo uses a single 32-byte master key (symmetric encryption):
 
-- **Server key:** `mj_srv_<64_hex_chars>` - Server's private key (keep secret!)
-- **Client key:** `mj_cli_<64_hex_chars>` - Server's public key (safe to share)
+- **Client key:** `mj_cli_<64_hex_chars>` - Master symmetric key shared by server and all clients
+
+**IMPORTANT:** This is **not** public key cryptography. All parties (server and clients) use the same key.
 
 Example:
 ```bash
-# Server private key (used by server only, keep secret)
-mj_srv_f24d8109d69ffc89c688ffd069715691b8c1c583faeda28dfab9a1a092785d8c
-
-# Client public key (given to all clients, safe to share)
+# Master symmetric key (used by server AND clients, keep secret!)
 mj_cli_6eaa1b50a62694a695c605b7491eb5cf87f1b210284b52cc5c99b3f3e2176048
 ```
+
+**Key Derivation:**
+The master key derives three 32-byte keys using Poly1305-based KDF:
+- `enc_key` - ChaCha20 encryption
+- `auth_key` - Message integrity MAC
+- `frag_key` - Fragment authentication MAC
 
 ## Configuration Precedence
 
 The server checks configuration in this order:
 1. **CLI arguments** (`-k`, `-d`) - highest priority
-2. **Environment variables** (`MUMBOJUMBO_SERVER_KEY`, `MUMBOJUMBO_DOMAIN`)
+2. **Environment variables** (`MUMBOJUMBO_CLIENT_KEY`, `MUMBOJUMBO_DOMAIN`)
 3. **Config file** (`--config mumbojumbo.conf`) - lowest priority
 
 This allows flexible deployment scenarios.
@@ -190,10 +198,13 @@ Mumbojumbo supports multiple output handlers for received packets:
 
 ### Available Handlers
 
-1. **stdout** - Print to console (default)
-2. **smtp** - Forward via email
-3. **file** - Write to log file
-4. **execute** - Run external command
+1. **stdout** - Print packet data to console as JSON (default)
+2. **smtp** - Forward packets via email
+3. **upload** - Save uploaded files to disk (for `u://` keys)
+4. **packetlog** - Log all packet metadata and data
+5. **file** - Write packet data to files
+6. **execute** - Run external command with packet data as input
+7. **filtered** - Route packets to specific handlers based on key glob patterns
 
 ### Configuration
 
@@ -245,8 +256,7 @@ timeout = 5
 [main]
 domain = .asd.qwe
 network-interface = en0  # macOS: en0, en1; Linux: eth0, wlan0
-handlers = stdout  # Comma-separated: stdout, smtp, file, execute
-server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
+handlers = stdout  # Comma-separated: stdout, smtp, upload, packetlog, file, execute, filtered
 client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
 
 # Optional handler configurations
@@ -271,17 +281,26 @@ timeout = 5
 ## How It Works
 
 1. **Client Side:**
-   - Encrypts message with NaCl public key encryption
-   - Fragments into chunks (80 bytes default)
-   - Encodes each fragment as base32
-   - Creates DNS query: `<base32-fragment>.asd.qwe`
+   - Builds key-value plaintext (1B key length + key + value)
+   - Inner encryption: ChaCha20 with 8-byte random nonce + 8-byte integrity MAC
+   - Fragments into 28-byte chunks
+   - Per-fragment encryption: ChaCha20 with nonce = packet_id + flags
+   - Adds 4-byte fragment MAC (verified before decryption)
+   - Wire format: 40 bytes total (4B packet_id + 4B flags + 4B MAC + 28B encrypted payload)
+   - Encodes as Base36 (63 characters)
+   - Creates DNS query: `<63-char-base36-fragment>.asd.qwe`
 
 2. **Server Side:**
    - Captures DNS queries with `tshark`
    - Filters for configured domain
-   - Decodes base32 and decrypts
-   - Reassembles fragments
-   - Forwards complete message via SMTP or prints
+   - Decodes Base36 → 40 bytes
+   - Verifies 4-byte fragment MAC BEFORE decryption
+   - Decrypts 28-byte payload using nonce = packet_id + flags
+   - Reassembles fragments by packet_id
+   - Verifies 8-byte message integrity MAC
+   - Decrypts message to get key-value pair
+   - Routes to handlers based on key (glob pattern matching)
+   - Handlers process data (stdout, SMTP, file upload, etc.)
 
 ## Troubleshooting
 

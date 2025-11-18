@@ -17,7 +17,7 @@ from mumbojumbo import (
     base36_decode,
     derive_keys,
     encode_key_hex,
-    decode_key_hex,
+    decode_mumbojumbo_key,
 )
 
 
@@ -311,7 +311,7 @@ class TestKeyEncoding:
         """Test decoding mj_cli_ prefixed key."""
         key_bytes = secrets.token_bytes(32)
         encoded = encode_key_hex(key_bytes, key_type='cli')
-        decoded = decode_key_hex(encoded)
+        decoded = decode_mumbojumbo_key(encoded)
 
         assert decoded == key_bytes
 
@@ -319,7 +319,7 @@ class TestKeyEncoding:
         """Test encode/decode round trip."""
         key_bytes = secrets.token_bytes(32)
         encoded = encode_key_hex(key_bytes, key_type='cli')
-        decoded = decode_key_hex(encoded)
+        decoded = decode_mumbojumbo_key(encoded)
 
         assert decoded == key_bytes
 
@@ -327,7 +327,7 @@ class TestKeyEncoding:
         """Test decoding raw hex without prefix."""
         key_bytes = secrets.token_bytes(32)
         hex_str = key_bytes.hex()
-        decoded = decode_key_hex(hex_str)
+        decoded = decode_mumbojumbo_key(hex_str)
 
         assert decoded == key_bytes
 
@@ -339,9 +339,9 @@ class TestKeyEncoding:
     def test_invalid_hex_decode_raises(self):
         """Invalid hex in key should raise ValueError."""
         with pytest.raises(ValueError, match='Invalid hex string'):
-            decode_key_hex('mj_cli_' + 'ZZZZ' * 16)  # Z is not valid hex
+            decode_mumbojumbo_key('mj_cli_' + 'ZZZZ' * 16)  # Z is not valid hex
 
     def test_wrong_length_hex_decode_raises(self):
         """Wrong length hex should raise ValueError."""
         with pytest.raises(ValueError, match='Key must be 32 bytes'):
-            decode_key_hex('mj_cli_' + 'aa' * 10)  # Too short
+            decode_mumbojumbo_key('mj_cli_' + 'aa' * 10)  # Too short

@@ -8,7 +8,7 @@ import secrets
 import pytest
 
 # Import from mumbojumbo - new v2.0 protocol
-from mumbojumbo import derive_keys, encode_key_hex, decode_key_hex
+from mumbojumbo import derive_keys, encode_key_hex, decode_mumbojumbo_key
 
 # Configure logging for tests
 logging.basicConfig(level=logging.INFO)
