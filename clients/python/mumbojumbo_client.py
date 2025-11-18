@@ -31,8 +31,8 @@ Usage from CLI:
     # Send key-value pair
     ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com -k mykey -v myvalue
 
-    # Pipe data from stdin
-    echo "data" | ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com
+    # Read value from stdin (use '-' explicitly)
+    echo "data" | ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com -v -
 
     # Upload files (key automatically set to u://<filename>)
     ./mumbojumbo_client.py --client-key mj_cli_... -d .example.com -u file1.txt file2.pdf
@@ -523,13 +523,13 @@ def main():
     if args.value_file:
         with open(args.value_file, 'rb') as f:
             value = f.read()
+    elif args.value == '-':
+        # Read from stdin when '-' is explicitly provided
+        value = sys.stdin.buffer.read()
     elif args.value:
         value = args.value.encode('utf-8')
-    elif not sys.stdin.isatty():
-        # Read from stdin
-        value = sys.stdin.buffer.read()
     elif not args.upload:
-        parser.error('No value provided. Use -v, --value-file, -u/--upload, or pipe data to stdin.')
+        parser.error('No value provided. Use -v, --value-file, -u/--upload, or -v - to read from stdin.')
 
     if not value and not args.upload:
         parser.error('Value cannot be empty')
