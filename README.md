@@ -1,68 +1,74 @@
 # Mumbojumbo
 
-DNS tunnel with NaCl SealedBox encryption. Sends encrypted messages via DNS queries using anonymous one-way encryption.
+DNS tunnel with ChaCha20-Poly1305 encryption. Sends encrypted key-value messages via DNS queries using dual-layer authenticated encryption.
 
 ## Quick Start
 
 ### Option 1: Environment Variables (Recommended)
 
 ```bash
-# 1. Install
-python3 -m venv venv
-./venv/bin/pip install pynacl
-
-# 2. Generate keys and export to environment
-./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
+# 1. Generate keys and export to environment
+python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
 source ~/.mumbojumbo_env
 
-# 3. Run server (uses env vars automatically)
-sudo ./venv/bin/python3 mumbojumbo.py
+# 2. Run server (uses env vars automatically, requires sudo for packet capture)
+sudo -E python3 mumbojumbo.py
 
-# 4. Send data from client (uses env vars automatically)
-echo "Hello" | ./clients/python/mumbojumbo-client.py
+# 3. Send data from client (uses env vars automatically)
+echo "Hello" | python3 clients/python/mumbojumbo_client.py
 ```
+
+**Note:** No dependencies required - uses Python 3.8+ standard library only!
 
 ### Option 2: Config File
 
 ```bash
-# 1. Install
-python3 -m venv venv
-./venv/bin/pip install pynacl
-
-# 2. Generate config file
-./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
+# 1. Generate config file
+python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 chmod 600 mumbojumbo.conf
 
-# 3. Run server with config
-sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
+# 2. Run server with config (requires sudo for packet capture)
+sudo python3 mumbojumbo.py --config mumbojumbo.conf
 
-# 4. Use client with keys from config file comments
-# (See mumbojumbo_client_key in config comments)
+# 3. Use client with keys from config file comments
+python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<key_from_config> \
+  -d .asd.qwe
 ```
 
 ## What It Does
 
-- Encrypts messages with NaCl SealedBox (anonymous public key cryptography)
-- Fragments encrypted data into chunks
-- Encodes chunks as DNS subdomain queries
-- Server captures DNS packets and reassembles messages
-- Optional SMTP forwarding
-- Client only needs server's public key (no client keypair required)
+- **Dual-layer encryption:** ChaCha20-Poly1305 at fragment and message levels
+- **Key-value protocol:** Send structured key-value pairs with automatic routing
+- **Fragment authentication:** MAC verification before decryption (prevents amplification attacks)
+- **Encodes as DNS queries:** Base36-encoded fragments in DNS subdomain labels
+- **Server-side reassembly:** Captures DNS packets and reassembles complete messages
+- **Flexible handlers:** Route data to stdout, SMTP, files, uploads, or custom executables
+- **Filtered routing:** Use glob patterns in keys for handler selection (e.g., `logs:/*` → file handler)
+- **Upload protocol:** Special `u://` keys for large file transfers with automatic chunking
 
 ## Protocol Capacity
 
-- **Maximum packet size:** ~320 GB (343,597,383,600 bytes)
-- **Fragment support:** Up to 4.3 billion fragments per packet
-- **Fragment data size:** 80 bytes per fragment
-- **Practical use:** Supports multi-GB file transfers
+- **Maximum packet size:** ~30 GB (30,064,771,072 bytes)
+- **Fragment support:** Up to 1 billion fragments per packet (30-bit index)
+- **Wire format:** 40 bytes per fragment (12 bytes header + 28 bytes encrypted payload)
+- **Fragment payload:** 28 bytes encrypted data per fragment
+- **Encoding:** Base36 (40 bytes → 63 characters per DNS label)
+- **Practical use:** Supports multi-GB file transfers with upload protocol
 
 ## Configuration
 
 ### Key Format
 
-Keys use hex encoding with prefixes for easy identification:
-- **Server keys:** `mj_srv_<64_hex_chars>` - Server's private key (keep secret!)
-- **Client keys:** `mj_cli_<64_hex_chars>` - Server's public key (safe to share with clients)
+Mumbojumbo uses a single 32-byte master key with KDF (Key Derivation Function):
+
+- **Client key:** `mj_cli_<64_hex_chars>` - Master symmetric key (keep secret!)
+  - Derives 3 keys using Poly1305-based KDF:
+    - `enc_key` (32 bytes) - ChaCha20 encryption key
+    - `auth_key` (32 bytes) - Message integrity MAC key
+    - `frag_key` (32 bytes) - Fragment authentication MAC key
+
+**Security:** All parties (server and clients) use the same master key. This is a symmetric encryption system, not public key cryptography.
 
 ### Environment Variables (Recommended)
 
@@ -73,18 +79,19 @@ Generate and use environment variables:
 ./venv/bin/python3 mumbojumbo.py --gen-keys > ~/.mumbojumbo_env
 
 # Example output:
-# export MUMBOJUMBO_SERVER_KEY=mj_srv_<64_hex_chars>  # Server private key
-# export MUMBOJUMBO_CLIENT_KEY=mj_cli_<64_hex_chars>  # Client public key (use with -k)
-# export MUMBOJUMBO_DOMAIN=.example.com              # Domain for both server and client
+# export MUMBOJUMBO_CLIENT_KEY=mj_cli_<64_hex_chars>  # Master symmetric key (use with -k)
+# export MUMBOJUMBO_DOMAIN=.example.com               # Domain for both server and client
 
 # Load into environment
 source ~/.mumbojumbo_env
 
-# Run server (uses env vars automatically)
+# Run server (uses MUMBOJUMBO_CLIENT_KEY env var automatically)
 sudo ./venv/bin/python3 mumbojumbo.py
 ```
 
 **Configuration Precedence:** CLI args > Environment variables > Config file
+
+**Note:** The server and client share the same master key (`MUMBOJUMBO_CLIENT_KEY`).
 
 ### Config File Format
 
@@ -102,9 +109,8 @@ The generated `mumbojumbo.conf` includes configuration for server and clients:
 [main]
 domain = .asd.qwe
 network-interface = en0
-# Handler pipeline: comma-separated list (stdout, smtp, file, execute)
+# Handler pipeline: comma-separated list (stdout, smtp, upload, packetlog, file, execute, filtered)
 handlers = stdout
-server-key = mj_srv_3f552aca453bf2e7160c7bd43e3e7208900f512b46d97216e73d5f880bbacb72
 client-key = mj_cli_063063395197359dda591317d66d3cb7876cb098ad6908c22116cb02257fb679
 
 [smtp]
@@ -129,10 +135,9 @@ timeout = 5
 
 ## Requirements
 
-- Python 3.6+
-- `pynacl` library
-- `tshark` for packet capture
-- Root/sudo access for server
+- Python 3.8+ (uses standard library only - no external dependencies)
+- `tshark` for packet capture (Wireshark command-line tool)
+- Root/sudo access for server (required for packet capture)
 
 ## Install tshark
 
@@ -148,32 +153,31 @@ sudo apt-get install tshark
 
 ```bash
 # Show help
-./venv/bin/python3 mumbojumbo.py --help
+python3 mumbojumbo.py --help
 
 # Generate keys as environment variables (for easy sourcing)
-./venv/bin/python3 mumbojumbo.py --gen-keys
+python3 mumbojumbo.py --gen-keys
 
 # Generate config file skeleton
-./venv/bin/python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
+python3 mumbojumbo.py --gen-conf > mumbojumbo.conf
 
-# Run with config file
-sudo ./venv/bin/python3 mumbojumbo.py --config mumbojumbo.conf
+# Run with config file (requires sudo for packet capture)
+sudo python3 mumbojumbo.py --config mumbojumbo.conf
 
-# Run with environment variables
-sudo ./venv/bin/python3 mumbojumbo.py
-# (uses MUMBOJUMBO_SERVER_KEY and MUMBOJUMBO_DOMAIN if set)
+# Run with environment variables (requires sudo, -E preserves env vars)
+sudo -E python3 mumbojumbo.py
 
 # Override config with CLI arguments
-sudo ./venv/bin/python3 mumbojumbo.py -k mj_srv_<hex> -d .example.com
+sudo python3 mumbojumbo.py -k mj_cli_<hex> -d .example.com
 
 # Verbose mode (show logs to stderr)
-sudo ./venv/bin/python3 mumbojumbo.py -v
+sudo python3 mumbojumbo.py -v
 
 # Test all configured handlers
-./venv/bin/python3 mumbojumbo.py --test-handlers
+python3 mumbojumbo.py --test-handlers
 
 # Run unit tests
-./venv/bin/python3 test.py
+python3 test.py
 ```
 
 ### Client Examples
@@ -181,19 +185,24 @@ sudo ./venv/bin/python3 mumbojumbo.py -v
 See [clients/](clients/) directory for Python, Go, Node.js, Rust, and C implementations.
 
 ```bash
-# Python client
-echo "Hello" | ./clients/python/mumbojumbo-client.py \
-  -k mj_cli_<64_hex_chars> \
+# Python client (no dependencies - standard library only)
+echo "Hello" | python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<64_hex_chars> \
   -d .example.com
 
-# Go client
+# Or use environment variables
+export MUMBOJUMBO_CLIENT_KEY=mj_cli_<64_hex_chars>
+export MUMBOJUMBO_DOMAIN=.example.com
+echo "Hello" | python3 clients/python/mumbojumbo_client.py
+
+# Go client (requires Go toolchain)
 echo "Hello" | ./clients/go/mumbojumbo-client \
-  -k mj_cli_<64_hex_chars> \
+  --client-key mj_cli_<64_hex_chars> \
   -d .example.com
 
-# Node.js client
+# Node.js client (requires npm install)
 echo "Hello" | ./clients/nodejs/mumbojumbo-client.js \
-  -k mj_cli_<64_hex_chars> \
+  --client-key mj_cli_<64_hex_chars> \
   -d .example.com
 ```
 
@@ -201,22 +210,85 @@ echo "Hello" | ./clients/nodejs/mumbojumbo-client.js \
 
 - [QUICKSTART.md](QUICKSTART.md) - Detailed setup guide
 - [PROTOCOL.md](PROTOCOL.md) - Protocol specification
+- [HANDLERS.md](HANDLERS.md) - Handler types and configuration
+- [clients/python/README.md](clients/python/README.md) - Python client reference
+- [clients/python/API.md](clients/python/API.md) - Python client API documentation
 
 ## Security Warning
 
 **Educational/testing purposes only.** Not for production use.
 
 Known limitations:
-- No sender authentication (anonymous encryption)
-- No timestamp protection (replay attacks)
-- No perfect forward secrecy
-- No rate limiting
+- **Shared symmetric key:** All parties use the same master key (not public key crypto)
+- **No sender authentication:** Anyone with the key can send messages
+- **No timestamp protection:** Vulnerable to replay attacks
+- **No perfect forward secrecy:** Key compromise reveals all past messages
+- **No rate limiting:** Server processes all valid packets
+- **Fragment MAC truncation:** 4-byte MAC provides ~32 bits of security (acceptable for covert channel but not for general use)
 
 Use only for:
 - Education
 - Authorized security testing
 - CTF challenges
 - Research
+
+## Key-Value Protocol
+
+Mumbojumbo uses a structured key-value protocol for automatic routing and filtering:
+
+```bash
+# Send simple message (piped from stdin, no key)
+echo "Hello World" | python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<hex> -d .example.com
+
+# Send with explicit key-value pair
+python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<hex> \
+  -d .example.com \
+  -k "myapp:event" \
+  -v "data"
+
+# Upload file with special u:// protocol (automatic)
+python3 clients/python/mumbojumbo_client.py \
+  --client-key mj_cli_<hex> \
+  -d .example.com \
+  -u /path/to/local/app.log
+```
+
+**Key features:**
+- **Automatic routing:** Keys like `logs:/*` can be routed to specific handlers
+- **Pattern matching:** Use glob patterns in handler configs (`key-filter` option)
+- **Upload protocol:** Keys starting with `u://` trigger upload handler with path extraction
+- **Metadata:** Keys provide context for server-side processing
+
+## Handler Pipeline
+
+Configure multiple handlers to process reassembled packets:
+
+```ini
+# In mumbojumbo.conf
+handlers = stdout, smtp, filtered
+
+[filtered]
+handler = upload
+key-filter = u://**
+
+[filtered_logs]
+handler = file
+key-filter = logs:/*
+path = /var/log/app-logs/
+```
+
+**Available handlers:**
+- `stdout` - Print packet data to stdout (JSON format)
+- `smtp` - Email packets to configured recipients
+- `upload` - Save uploaded files to disk (extracts path from `u://` keys)
+- `packetlog` - Log all packet metadata and data
+- `file` - Save packet data to files
+- `execute` - Run external command with packet data
+- `filtered` - Route packets to specific handlers based on key glob patterns
+
+See [HANDLERS.md](HANDLERS.md) for detailed handler documentation.
 
 ## Cloud Deployment
 
@@ -335,7 +407,6 @@ docker run -d \
   --network host \
   --cap-add NET_ADMIN \
   --cap-add NET_RAW \
-  -e MUMBOJUMBO_SERVER_KEY=mj_srv_... \
   -e MUMBOJUMBO_CLIENT_KEY=mj_cli_... \
   -e MUMBOJUMBO_DOMAIN=.asd.qwe.foo \
   mumbojumbo:latest \
@@ -374,7 +445,6 @@ docker push gcr.io/my-project/mumbojumbo:latest
 # 2. Create secret with keys
 kubectl create namespace mumbojumbo
 kubectl create secret generic mumbojumbo-keys -n mumbojumbo \
-  --from-literal=server-key='mj_srv_...' \
   --from-literal=client-key='mj_cli_...' \
   --from-literal=domain='.asd.qwe.foo'
 
